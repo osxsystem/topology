@@ -408,3 +408,142 @@ mod tests {
         assert!(!parse_review(SPEC_FAIL_SAMPLE).unwrap().verdict_pass);
     }
 }
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use std::env;
+
+    fn run(root: &Path, args: &[&str]) {
+        let ok = Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    // Build a repo with one commit on `main`; return (root, head_sha).
+    fn repo(tag: &str) -> (PathBuf, String) {
+        let root = env::temp_dir().join(format!("topo_gate_{}_{}", tag, std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]);
+        run(&root, &["config", "user.email", "t@t.t"]);
+        run(&root, &["config", "user.name", "t"]);
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "init"]);
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        (root, head)
+    }
+
+    fn write_artifact(root: &Path, head: &str, base: &str, verdict_pass: bool) {
+        let dir = root.join("docs").join("reviews");
+        fs::create_dir_all(&dir).unwrap();
+        let (v, blk) = if verdict_pass {
+            ("pass", "None.")
+        } else {
+            ("fail", "- a.txt:1 — wrong")
+        };
+        let body = format!(
+            "VERDICT: {v}\nHEAD: {head}\nBASE: {base}\n\n# Review\n\n## Blocking findings\n{blk}\n\n## Criteria checked\n### Spec/plan\n- crit — met\n### Standards\n- rule — met\n"
+        );
+        fs::write(dir.join("2026-06-05-code-review-gate.md"), body).unwrap();
+    }
+
+    #[test]
+    fn fresh_pass_exits_zero() {
+        let (root, head) = repo("pass");
+        write_artifact(&root, &head, &head, true); // single-commit repo: merge-base(main,HEAD)==HEAD
+        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn fresh_artifact_does_not_self_dirty() {
+        // The untracked artifact under docs/reviews/ is present (-uall shows it) ...
+        let (root, head) = repo("selfdirty");
+        write_artifact(&root, &head, &head, true);
+        let porcelain = git(&root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
+        assert!(porcelain.lines().any(|l| l.contains("docs/reviews/")));
+        // ... yet the gate still passes, because the clean-tree check excludes docs/reviews/.
+        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn stale_head_exits_one() {
+        let (root, head) = repo("stale");
+        write_artifact(&root, "0000000000000000000000000000000000000000", &head, true);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn dirty_outside_reviews_exits_one() {
+        let (root, head) = repo("dirty");
+        write_artifact(&root, &head, &head, true);
+        fs::write(root.join("a.txt"), "changed\n").unwrap(); // tracked file modified
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn untracked_outside_reviews_exits_one() {
+        // An untracked file OUTSIDE docs/reviews/ must dirty the tree (proves the filter scope).
+        let (root, head) = repo("untracked_out");
+        write_artifact(&root, &head, &head, true);
+        fs::write(root.join("stray.txt"), "junk\n").unwrap();
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn wrong_base_exits_one() {
+        let (root, head) = repo("wrongbase");
+        write_artifact(&root, &head, "1111111111111111111111111111111111111111", true);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn fail_verdict_exits_one() {
+        let (root, head) = repo("failv");
+        write_artifact(&root, &head, &head, false);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn unresolvable_base_exits_one() {
+        let (root, head) = repo("nobase");
+        write_artifact(&root, &head, &head, true);
+        assert_eq!(gate_review(&root, "code-review-gate", Some("no-such-branch")), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn not_a_repo_exits_one() {
+        let root = env::temp_dir().join(format!("topo_gate_norepo_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn ambiguous_two_artifacts_same_head_exits_one() {
+        let (root, head) = repo("ambig");
+        write_artifact(&root, &head, &head, true); // 2026-06-05-code-review-gate.md
+        let body = fs::read_to_string(root.join("docs/reviews/2026-06-05-code-review-gate.md")).unwrap();
+        fs::write(root.join("docs/reviews/2026-06-06-code-review-gate.md"), body).unwrap();
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn divergent_branch_uses_fork_point_as_base() {
+        // Real divergence: main stays at C0; feature advances to C1. merge-base(main,HEAD)==C0.
+        let (root, base) = repo("divergent");
+        run(&root, &["checkout", "-q", "-b", "feature"]);
+        fs::write(root.join("a.txt"), "two\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "feature work"]);
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        assert_ne!(head, base);
+        // Correct review: BASE is the fork point, not HEAD.
+        write_artifact(&root, &head, &base, true);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        // A review lying with BASE == HEAD must be rejected (merge-base != HEAD here).
+        write_artifact(&root, &head, &head, true);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+}
