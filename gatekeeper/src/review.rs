@@ -174,7 +174,12 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
     })
 }
 
-/// Run `git -C <root> <args>`, returning trimmed stdout on success.
+/// Run `git -C <root> <args>`, returning stdout with the trailing newline removed
+/// on success. Uses `trim_end` (not `trim`) so the leading space of a porcelain
+/// status line (the X column, e.g. " M path") is preserved — trimming it would
+/// shift the first line and corrupt the clean-tree path classification. SHA
+/// outputs (rev-parse, merge-base) have no leading whitespace, so they are
+/// unaffected.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -183,7 +188,7 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .output()
         .ok()?;
     if out.status.success() {
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Some(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
         None
     }
@@ -653,6 +658,24 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         let dir = root.join("docs").join("reviews");
         fs::write(dir.join("bad-code-review-gate.md"), b"\xff\xfe\x00\x9f").unwrap();
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn first_line_leading_space_not_trimmed_away() {
+        // git() must use trim_end, not trim: the X column of the FIRST porcelain line is a
+        // significant leading space for unstaged changes. A dirty tracked file named
+        // "<x>docs/reviews/..." that sorts first must not be left-shifted into "docs/reviews/...".
+        let (root, _h0) = repo("trimbug");
+        let sneaky = root.join("adocs").join("reviews");
+        fs::create_dir_all(&sneaky).unwrap();
+        fs::write(sneaky.join("x.rs"), "one\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "track adocs file"]);
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        write_artifact(&root, &head, &head, true);
+        // Unstaged modification -> porcelain " M adocs/reviews/x.rs" (sorts before docs/).
+        fs::write(sneaky.join("x.rs"), "two\n").unwrap();
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
