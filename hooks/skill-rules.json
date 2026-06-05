@@ -49,6 +49,14 @@
         "keywords": ["done", "finished", "complete", "verify", "is it working", "ready"]
       }
     },
+    "code-review": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["review", "audit", "critique", "before merge", "code review"]
+      }
+    },
     "finish-branch": {
       "type": "process",
       "enforcement": "suggest",
