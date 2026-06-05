@@ -111,8 +111,8 @@ Every Topology agent, on every coding task, in any harness:
 ## 4. The gate sequence
 
 ```
-research ─► brainstorm-design ─► write-plan ─► tdd-loop ─► verify-before-done ─► finish-branch
-(research)    (design gate)      (plan gate)   (tdd gate)     (verify gate)        (finish gate)
+research ─► brainstorm-design ─► write-plan ─► tdd-loop ─► verify-before-done ─► code-review ─► finish-branch
+(research)    (design gate)      (plan gate)   (tdd gate)     (verify gate)      (review gate)   (finish gate)
 [planned]                                          ▲
                                          systematic-debug (invoked on failure)
 ```
@@ -124,6 +124,7 @@ research ─► brainstorm-design ─► write-plan ─► tdd-loop ─► verif
 | **plan** `[built]` | a placeholder-free plan exists at `docs/plans/<date>-<feature>.md` | `gatekeeper check plan --feature <slug>` |
 | **tdd** `[built]` | every behavior had a test you watched fail *before* the code existed | discipline; enforced by review |
 | **verify** `[built]` | the original symptom is reproduced-then-resolved with evidence | `gatekeeper check verify --feature <slug>` |
+| **review** `[built]` | a fresh-context critic's artifact passes — bound to the current clean `HEAD` and merge-base, both rubric dimensions present, no blocking findings | `gatekeeper check review --feature <slug> [--base <ref>]` |
 | **finish** `[built]` | the full test suite passes | `gatekeeper check finish -- <cmd>` |
 
 You may not write production code until **design** and **plan** pass (and, once shipped, **research**).
@@ -139,8 +140,8 @@ it embodies.
 Progressive-disclosure units of methodology and expertise. A skill is a directory with a `SKILL.md`
 whose YAML frontmatter (`name`, `description`) is always loaded; the body loads on trigger; bundled
 `references/` load on demand. Three kinds: **process** (the gated spine), **domain** (stack-specific
-expertise), **meta** (the framework maintaining itself). Today: 7 process skills. Planned: domain
-skills, plus meta skills `capture-gotcha`, `new-skill`, and a `code-review` critic.
+expertise), **meta** (the framework maintaining itself). Today: 8 process skills (including the `code-review` critic). Planned: domain
+skills, plus meta skills `capture-gotcha` and `new-skill`.
 → *Anthropic, [Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills): progressive disclosure as the core scaling principle.*
 
 ### Pillar 2 — Instincts `[planned]`

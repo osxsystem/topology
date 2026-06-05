@@ -4,7 +4,7 @@ The path from today's Topology (gates + Claude Code) to the full operator system
 separately-approved unit of work with its own deliverables and a concrete **verify** check — nothing
 is "done" without a check that proves it.
 
-> This is the plan, not a changelog. Only **Phase 0** is delivered. Phases 1–6 are designed and
+> This is the plan, not a changelog. **Phase 0** is delivered, plus the **code-review gate** pulled forward from Phase 5 (Phase 1.5 below). Phases 1–6 are otherwise designed and
 > ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
@@ -124,7 +124,7 @@ skill in each; regenerating is idempotent (no drift vs. a hand check).
 - `memory/` protocol — handoff + compaction artifact format; `gatekeeper` helpers to write/read them.
 - RTK integration documented and wired as the default shell proxy.
 - `research` gate: `gatekeeper check research` + `skills/research-first/SKILL.md`, prepended to the sequence.
-- Domain skills for the house stack + a `code-review` critic skill that dispatches a fresh-context subagent.
+- Domain skills for the house stack. *(The `code-review` critic skill + `review` gate were pulled forward and delivered 2026-06-05 — see `docs/adr/0006-code-review-gate.md`.)*
 
 **New `gatekeeper` surface.** `gatekeeper check research --feature <slug>`; memory read/write helpers.
 
@@ -159,6 +159,7 @@ release ships a static binary.
 |---|---|---|
 | 0 | Blueprint (docs + diagrams + roadmap) | ✅ delivered |
 | 1 | Security scanning | ⏳ planned (next) |
+| 1.5 | Code-review gate (pulled forward) | ✅ delivered |
 | 2 | Instincts engine | ⏳ planned |
 | 3 | Continuous learning | ⏳ planned |
 | 4 | Cross-harness adapters | ⏳ planned |

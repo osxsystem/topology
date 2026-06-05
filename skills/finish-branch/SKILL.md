@@ -5,7 +5,7 @@ description: Close out a development branch cleanly once work is verified. Use w
 
 # Finish Branch (the finish gate)
 
-Only enter after `verify-before-done` passes.
+Only enter after `code-review` passes (which itself follows `verify-before-done`).
 
 ## Process
 
@@ -20,7 +20,7 @@ Only enter after `verify-before-done` passes.
    - open a PR (summarize the design, the plan, and the verification evidence)
    - keep the branch
    - discard
-4. **On merge/PR**, write the summary from the design + verify docs so the history is legible.
+4. **On merge/PR**, first commit the review artifact for this `HEAD` (`git add docs/reviews/ && git commit -m "docs(review): <feature> code review"`) so the merge records the review, then write the summary from the design, verify, and review docs so the history is legible.
 5. **Clean up** the worktree/branch if one was created for this work.
 
 ## Don't
