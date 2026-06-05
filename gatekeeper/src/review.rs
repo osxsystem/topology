@@ -189,6 +189,20 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
+/// True only if a `git status --porcelain` line is a change confined to
+/// `docs/reviews/`. Rename/copy entries (`R`/`C`) — which the review workflow
+/// never produces — are never treated as clean, so a rename moving a file *out*
+/// of `docs/reviews/` cannot slip a dirty worktree past the gate (a rename's path
+/// field is `<old> -> <new>` and begins with the old path, which may itself be
+/// under `docs/reviews/` even when the destination is not).
+fn is_clean_review_path(line: &str) -> bool {
+    let status = line.get(0..2).unwrap_or("");
+    if status.contains('R') || status.contains('C') {
+        return false;
+    }
+    line.get(3..).unwrap_or("").starts_with("docs/reviews/")
+}
+
 /// The `review` gate. `root` is the framework root; all git runs with `-C root`
 /// so the result is independent of the process working directory. Returns a
 /// process exit code: 0 pass, 1 veto, 2 usage error.
@@ -219,7 +233,7 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
     };
     let dirty: Vec<&str> = porcelain
         .lines()
-        .filter(|l| !l.get(3..).unwrap_or("").starts_with("docs/reviews/"))
+        .filter(|l| !is_clean_review_path(l))
         .collect();
     if !dirty.is_empty() {
         println!("FAIL review gate: uncommitted changes outside docs/reviews/:");
@@ -592,6 +606,25 @@ mod gate_tests {
         assert_eq!(gate_review(&root, "code-review-gate", None), 0);
         // A review lying with BASE == HEAD must be rejected (merge-base != HEAD here).
         write_artifact(&root, &head, &head, true);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn staged_rename_out_of_reviews_exits_one() {
+        // A staged rename moving a TRACKED file OUT of docs/reviews/ is an uncommitted change
+        // outside docs/reviews/. Its porcelain line is "R  docs/reviews/<old> -> <new>", whose
+        // path field begins with docs/reviews/ — it must NOT be mistaken for an artifact change.
+        let (root, _h0) = repo("rename_out");
+        let dir = root.join("docs").join("reviews");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("tracked.md"), "old\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "track a review file"]);
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        // A valid pass artifact naming the current HEAD (untracked, correctly excluded).
+        write_artifact(&root, &head, &head, true);
+        // Stage a rename moving the tracked review file out of docs/reviews/.
+        run(&root, &["mv", "docs/reviews/tracked.md", "moved.rs"]);
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
