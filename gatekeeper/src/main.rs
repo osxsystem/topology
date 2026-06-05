@@ -191,7 +191,11 @@ fn cmd_check(args: &[String]) -> i32 {
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
-        "review" => review::gate_review(&framework_root(), &feature_arg(args), base_arg(args).as_deref()),
+        "review" => review::gate_review(
+            &framework_root(),
+            &feature_arg(args),
+            base_arg(args).as_deref(),
+        ),
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
@@ -313,7 +317,10 @@ fn gate_finish(args: &[String]) -> i32 {
             0
         }
         Ok(s) => {
-            println!("FAIL finish gate: test command exited {}", s.code().unwrap_or(-1));
+            println!(
+                "FAIL finish gate: test command exited {}",
+                s.code().unwrap_or(-1)
+            );
             1
         }
         Err(e) => {
@@ -330,7 +337,10 @@ mod tests {
     #[test]
     fn detects_placeholders() {
         assert_eq!(find_placeholder("step 1: TBD"), Some("tbd".into()));
-        assert_eq!(find_placeholder("similar to Task 2"), Some("similar to task".into()));
+        assert_eq!(
+            find_placeholder("similar to Task 2"),
+            Some("similar to task".into())
+        );
         assert_eq!(find_placeholder("a complete, concrete plan"), None);
     }
 
@@ -355,7 +365,11 @@ mod tests {
         let dir = env::temp_dir().join("topology_test_skill");
         let _ = fs::create_dir_all(&dir);
         let md = dir.join("SKILL.md");
-        fs::write(&md, "---\nname: x\ndescription: Do a thing. Use when needed.\n---\nbody").unwrap();
+        fs::write(
+            &md,
+            "---\nname: x\ndescription: Do a thing. Use when needed.\n---\nbody",
+        )
+        .unwrap();
         assert_eq!(
             read_description(&md).as_deref(),
             Some("Do a thing. Use when needed.")

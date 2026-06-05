@@ -3,7 +3,13 @@ use std::path::Path;
 use std::process::Command;
 
 fn git(root: &Path, args: &[&str]) {
-    let ok = Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .unwrap()
+        .success();
     assert!(ok, "git {args:?} failed");
 }
 
@@ -41,6 +47,10 @@ fn review_gate_runs_from_nested_subdir() {
         .args(["check", "review", "--feature", "code-review-gate"])
         .status()
         .unwrap();
-    assert_eq!(status.code(), Some(0), "gate should pass from a nested subdir");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "gate should pass from a nested subdir"
+    );
     let _ = fs::remove_dir_all(&root);
 }

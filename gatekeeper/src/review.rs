@@ -35,11 +35,15 @@ fn parse_sha_line(line: &str, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("line must start with '{key}: '; got '{line}'"))?;
     let len_ok = sha.len() == 40 || sha.len() == 64;
     let hex_ok = !sha.is_empty()
-        && sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
     if len_ok && hex_ok {
         Ok(sha.to_string())
     } else {
-        Err(format!("{key} must be a full 40/64-char lowercase hex sha; got '{sha}'"))
+        Err(format!(
+            "{key} must be a full 40/64-char lowercase hex sha; got '{sha}'"
+        ))
     }
 }
 
@@ -111,7 +115,11 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
     let verdict_pass = match lines[0] {
         "VERDICT: pass" => true,
         "VERDICT: fail" => false,
-        other => return Err(format!("line 1 must be 'VERDICT: pass|fail'; got '{other}'")),
+        other => {
+            return Err(format!(
+                "line 1 must be 'VERDICT: pass|fail'; got '{other}'"
+            ))
+        }
     };
 
     // Lines 2-3: full-hex HEAD / BASE.
@@ -141,7 +149,7 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
         }
     } else {
         let has_item = content.iter().any(|l| l.starts_with("- "));
-        let has_none = content.iter().any(|l| *l == "None.");
+        let has_none = content.contains(&"None.");
         if !has_item || has_none {
             return Err("fail requires >=1 blocking '- ' item and no 'None.' sentinel".into());
         }
@@ -159,12 +167,21 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
     check_subsection(&criteria, "### Spec/plan")?;
     check_subsection(&criteria, "### Standards")?;
 
-    Ok(ParsedReview { verdict_pass, head, base })
+    Ok(ParsedReview {
+        verdict_pass,
+        head,
+        base,
+    })
 }
 
 /// Run `git -C <root> <args>`, returning trimmed stdout on success.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -350,7 +367,11 @@ mod tests {
     }
     #[test]
     fn two_blocking_headings_rejected() {
-        let t = PASS.replacen("## Criteria checked", "## Blocking findings\nNone.\n\n## Criteria checked", 1);
+        let t = PASS.replacen(
+            "## Criteria checked",
+            "## Blocking findings\nNone.\n\n## Criteria checked",
+            1,
+        );
         assert!(parse_review(&t).is_err());
     }
     #[test]
@@ -396,7 +417,11 @@ mod tests {
     }
     #[test]
     fn honest_quoting_of_verdict_does_not_false_fail() {
-        let t = PASS.replacen("# Review\n", "# Review\n\nthe critic wrote VERDICT: pass in prose\n", 1);
+        let t = PASS.replacen(
+            "# Review\n",
+            "# Review\n\nthe critic wrote VERDICT: pass in prose\n",
+            1,
+        );
         assert!(parse_review(&t).unwrap().verdict_pass);
     }
     #[test]
@@ -415,7 +440,13 @@ mod gate_tests {
     use std::env;
 
     fn run(root: &Path, args: &[&str]) {
-        let ok = Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
         assert!(ok, "git {args:?} failed");
     }
 
@@ -469,7 +500,12 @@ mod gate_tests {
     #[test]
     fn stale_head_exits_one() {
         let (root, head) = repo("stale");
-        write_artifact(&root, "0000000000000000000000000000000000000000", &head, true);
+        write_artifact(
+            &root,
+            "0000000000000000000000000000000000000000",
+            &head,
+            true,
+        );
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -493,7 +529,12 @@ mod gate_tests {
     #[test]
     fn wrong_base_exits_one() {
         let (root, head) = repo("wrongbase");
-        write_artifact(&root, &head, "1111111111111111111111111111111111111111", true);
+        write_artifact(
+            &root,
+            &head,
+            "1111111111111111111111111111111111111111",
+            true,
+        );
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -508,7 +549,10 @@ mod gate_tests {
     fn unresolvable_base_exits_one() {
         let (root, head) = repo("nobase");
         write_artifact(&root, &head, &head, true);
-        assert_eq!(gate_review(&root, "code-review-gate", Some("no-such-branch")), 1);
+        assert_eq!(
+            gate_review(&root, "code-review-gate", Some("no-such-branch")),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -523,8 +567,13 @@ mod gate_tests {
     fn ambiguous_two_artifacts_same_head_exits_one() {
         let (root, head) = repo("ambig");
         write_artifact(&root, &head, &head, true); // 2026-06-05-code-review-gate.md
-        let body = fs::read_to_string(root.join("docs/reviews/2026-06-05-code-review-gate.md")).unwrap();
-        fs::write(root.join("docs/reviews/2026-06-06-code-review-gate.md"), body).unwrap();
+        let body =
+            fs::read_to_string(root.join("docs/reviews/2026-06-05-code-review-gate.md")).unwrap();
+        fs::write(
+            root.join("docs/reviews/2026-06-06-code-review-gate.md"),
+            body,
+        )
+        .unwrap();
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
