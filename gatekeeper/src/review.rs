@@ -267,7 +267,18 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
             if !name.ends_with(&suffix) {
                 continue;
             }
-            let txt = fs::read_to_string(&p).unwrap_or_default();
+            // Fail-closed: a suffix-matching artifact we cannot read (I/O error or
+            // invalid UTF-8) is a deviation, not a file to silently skip.
+            let txt = match fs::read_to_string(&p) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!(
+                        "FAIL review gate: cannot read candidate {}: {e}",
+                        p.display()
+                    );
+                    return 1;
+                }
+            };
             if normalize(&txt).split('\n').nth(1) == Some(want_head.as_str()) {
                 matches.push(p);
             }
@@ -281,7 +292,13 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
         }
         1 => {
             let path = &matches[0];
-            let text = fs::read_to_string(path).unwrap_or_default();
+            let text = match fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("FAIL review gate: cannot read {}: {e}", path.display());
+                    return 1;
+                }
+            };
             match parse_review(&text) {
                 Err(e) => {
                     println!("FAIL review gate: {} — {e}", path.display());
@@ -625,6 +642,17 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         // Stage a rename moving the tracked review file out of docs/reviews/.
         run(&root, &["mv", "docs/reviews/tracked.md", "moved.rs"]);
+        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn unreadable_candidate_artifact_exits_one() {
+        // A suffix-matching artifact that is not valid UTF-8 must veto (fail-closed),
+        // not be silently skipped — even when a valid pass artifact also names HEAD.
+        let (root, head) = repo("unreadable");
+        write_artifact(&root, &head, &head, true);
+        let dir = root.join("docs").join("reviews");
+        fs::write(dir.join("bad-code-review-gate.md"), b"\xff\xfe\x00\x9f").unwrap();
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
