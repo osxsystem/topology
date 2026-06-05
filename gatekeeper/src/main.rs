@@ -6,6 +6,7 @@
 //!   gatekeeper check design  --feature S    Design gate: a spec doc exists.
 //!   gatekeeper check plan    --feature S    Plan gate: a placeholder-free plan exists.
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
+//!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
 //!
 //! Dependency-free (std only) so it builds offline and ships as one static binary.
@@ -56,6 +57,7 @@ fn print_help() {
          gatekeeper check design --feature <slug>\n  \
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
+         gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n"
     );
 }
@@ -189,6 +191,7 @@ fn cmd_check(args: &[String]) -> i32 {
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
+        "review" => review::gate_review(&framework_root(), &feature_arg(args), base_arg(args).as_deref()),
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
@@ -204,6 +207,16 @@ fn feature_arg(args: &[String]) -> String {
         }
     }
     String::new()
+}
+
+fn base_arg(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--base" {
+            return it.next().cloned();
+        }
+    }
+    None
 }
 
 /// Find a markdown doc under docs/<sub>/ whose filename contains the feature slug.

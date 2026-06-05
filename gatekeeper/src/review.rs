@@ -162,6 +162,130 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
     Ok(ParsedReview { verdict_pass, head, base })
 }
 
+/// Run `git -C <root> <args>`, returning trimmed stdout on success.
+fn git(root: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+/// The `review` gate. `root` is the framework root; all git runs with `-C root`
+/// so the result is independent of the process working directory. Returns a
+/// process exit code: 0 pass, 1 veto, 2 usage error.
+pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
+    if feature.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+
+    let head = match git(root, &["rev-parse", "HEAD"]) {
+        Some(h) => h,
+        None => {
+            println!("FAIL review gate: not a git repository (git rev-parse HEAD failed)");
+            return 1;
+        }
+    };
+
+    // Clean worktree, ignoring untracked/modified paths under docs/reviews/.
+    // `--untracked-files=all` lists files individually so an untracked directory is NOT
+    // collapsed to a bare `docs/` entry (which would slip past the docs/reviews/ filter).
+    // A failed status is fail-closed, never assumed clean.
+    let porcelain = match git(root, &["status", "--porcelain", "--untracked-files=all"]) {
+        Some(p) => p,
+        None => {
+            println!("FAIL review gate: git status failed");
+            return 1;
+        }
+    };
+    let dirty: Vec<&str> = porcelain
+        .lines()
+        .filter(|l| !l.get(3..).unwrap_or("").starts_with("docs/reviews/"))
+        .collect();
+    if !dirty.is_empty() {
+        println!("FAIL review gate: uncommitted changes outside docs/reviews/:");
+        for l in &dirty {
+            println!("  {l}");
+        }
+        return 1;
+    }
+
+    let branch = base_ref.unwrap_or("main");
+    let base = match git(root, &["merge-base", branch, "HEAD"]) {
+        Some(b) => b,
+        None => {
+            println!("FAIL review gate: cannot resolve merge-base of '{branch}' and HEAD");
+            return 1;
+        }
+    };
+
+    // Select artifacts whose line-2 HEAD equals the current HEAD.
+    let dir = root.join("docs").join("reviews");
+    let suffix = format!("-{feature}.md");
+    let want_head = format!("HEAD: {head}");
+    let mut matches: Vec<PathBuf> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = match p.file_name() {
+                Some(n) => n.to_string_lossy().to_string(),
+                None => continue,
+            };
+            if !name.ends_with(&suffix) {
+                continue;
+            }
+            let txt = fs::read_to_string(&p).unwrap_or_default();
+            if normalize(&txt).split('\n').nth(1) == Some(want_head.as_str()) {
+                matches.push(p);
+            }
+        }
+    }
+
+    match matches.len() {
+        0 => {
+            println!("FAIL review gate: no review artifact names current HEAD {head}");
+            1
+        }
+        1 => {
+            let path = &matches[0];
+            let text = fs::read_to_string(path).unwrap_or_default();
+            match parse_review(&text) {
+                Err(e) => {
+                    println!("FAIL review gate: {} — {e}", path.display());
+                    1
+                }
+                Ok(r) => {
+                    if r.base != base {
+                        println!(
+                            "FAIL review gate: BASE {} != computed merge-base {base}",
+                            r.base
+                        );
+                        return 1;
+                    }
+                    if !r.verdict_pass {
+                        println!("FAIL review gate: verdict is fail ({})", path.display());
+                        return 1;
+                    }
+                    println!("PASS review gate: {}", path.display());
+                    0
+                }
+            }
+        }
+        _ => {
+            println!(
+                "FAIL review gate: {} artifacts name current HEAD (ambiguous):",
+                matches.len()
+            );
+            for p in &matches {
+                println!("  {}", p.display());
+            }
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
