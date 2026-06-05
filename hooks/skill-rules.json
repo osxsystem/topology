@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "skills": {
+    "getting-started": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["start", "begin", "new feature", "what next", "where do i", "kick off"]
+      }
+    },
+    "brainstorm-design": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["design", "build", "feature", "add a", "implement", "create", "idea", "should we"]
+      }
+    },
+    "write-plan": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["plan", "breakdown", "break down", "tasks", "steps", "decompose"]
+      }
+    },
+    "tdd-loop": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["test", "implement", "write code", "fix", "function", "method", "refactor"]
+      }
+    },
+    "systematic-debug": {
+      "type": "process",
+      "enforcement": "suggest",
+      "priority": "medium",
+      "promptTriggers": {
+        "keywords": ["bug", "error", "fails", "failing", "broken", "stack trace", "doesn't work", "crash"]
+      }
+    },
+    "verify-before-done": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["done", "finished", "complete", "verify", "is it working", "ready"]
+      }
+    },
+    "finish-branch": {
+      "type": "process",
+      "enforcement": "suggest",
+      "priority": "medium",
+      "promptTriggers": {
+        "keywords": ["merge", "pr", "pull request", "wrap up", "ship", "cleanup", "close out"]
+      }
+    }
+  }
+}

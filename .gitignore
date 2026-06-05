@@ -1,0 +1,5 @@
+# Rust build output
+/gatekeeper/target/
+
+# macOS
+.DS_Store
