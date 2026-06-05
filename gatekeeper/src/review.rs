@@ -167,11 +167,120 @@ mod tests {
     use super::*;
 
     const PASS: &str = "VERDICT: pass\nHEAD: 9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a\nBASE: 2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210\n\n# Review\n\n## Blocking findings\nNone.\n\n## Criteria checked\n### Spec/plan\n- crit one — met\n### Standards\n- adr rule — met\n";
+    const FAIL_DOC: &str = "VERDICT: fail\nHEAD: 9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a\nBASE: 2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210\n\n# Review\n\n## Blocking findings\n- src/foo.rs:42 — wrong and why\n\n## Criteria checked\n### Spec/plan\n- crit — partial\n### Standards\n- rule — violated\n";
+
+    // The literal pass/fail examples from the spec (docs/specs/2026-06-05-code-review-gate.md,
+    // the two ```markdown blocks). Regression guard against a documented-but-invalid template.
+    const SPEC_PASS_SAMPLE: &str = "VERDICT: pass\nHEAD: 9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a\nBASE: 2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210\n\n# Review: <feature> (<date>)\n\n## Blocking findings\nNone.\n\n## Non-blocking notes\n- <nits — never gate on these>\n\n## Criteria checked\n### Spec/plan\n- <acceptance criterion 1> — <how the diff satisfies it>\n### Standards\n- <ADR/AGENTS rule> — <conformance evidence>\n";
+    const SPEC_FAIL_SAMPLE: &str = "VERDICT: fail\nHEAD: 9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a\nBASE: 2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210\n\n# Review: <feature> (<date>)\n\n## Blocking findings\n- src/foo.rs:42 — <what's wrong and why it blocks>\n\n## Non-blocking notes\n- ...\n\n## Criteria checked\n### Spec/plan\n- ...\n### Standards\n- ...\n";
 
     #[test]
     fn smoke_valid_pass_parses() {
         let r = parse_review(PASS).unwrap();
         assert!(r.verdict_pass);
         assert_eq!(r.head, "9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a");
+    }
+    #[test]
+    fn fail_doc_parses_as_fail() {
+        assert!(!parse_review(FAIL_DOC).unwrap().verdict_pass);
+    }
+    #[test]
+    fn bad_verdict_keyword_rejected() {
+        let t = PASS.replacen("VERDICT: pass", "VERDICT: PASS", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn abbreviated_head_sha_rejected() {
+        let t = PASS.replacen("9f3c1a7e5b2d8c4f0a1b6e7d9c2f5a8b3e4d6c1a", "9f3c1a7", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn abbreviated_base_sha_rejected() {
+        let t = PASS.replacen("2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210", "2a7d4e1", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn malformed_base_line_rejected() {
+        let t = PASS.replacen("BASE: ", "BSE: ", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn pass_with_a_blocking_item_rejected() {
+        let t = PASS.replacen("None.", "- src/x.rs:1 — sneaky", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn fail_without_items_rejected() {
+        let t = FAIL_DOC.replacen("- src/foo.rs:42 — wrong and why", "None.", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn fail_with_none_and_item_rejected() {
+        // A 'fail' that also carries the 'None.' sentinel is contradictory -> reject (CONCERN #2).
+        let t = FAIL_DOC.replacen(
+            "- src/foo.rs:42 — wrong and why",
+            "None.\n- src/foo.rs:42 — wrong and why",
+            1,
+        );
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn two_blocking_headings_rejected() {
+        let t = PASS.replacen("## Criteria checked", "## Blocking findings\nNone.\n\n## Criteria checked", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn zero_blocking_headings_rejected() {
+        let t = PASS.replacen("## Blocking findings\nNone.\n\n", "", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn missing_standards_dimension_rejected() {
+        let t = PASS.replacen("### Standards\n- adr rule — met\n", "", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn empty_specplan_dimension_rejected() {
+        let t = PASS.replacen("### Spec/plan\n- crit one — met\n", "### Spec/plan\n", 1);
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn comment_in_blocking_section_rejected() {
+        // Inject a comment into an otherwise-valid FAIL doc, so ONLY the comment rule can reject it.
+        assert!(parse_review(FAIL_DOC).is_ok());
+        let t = FAIL_DOC.replacen(
+            "- src/foo.rs:42 — wrong and why",
+            "- src/foo.rs:42 — wrong and why\n<!-- hide a finding -->",
+            1,
+        );
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn unclosed_comment_in_blocking_section_rejected() {
+        // strip_comments() is fail-OPEN on an unclosed comment; this parser must be fail-CLOSED.
+        let t = FAIL_DOC.replacen(
+            "- src/foo.rs:42 — wrong and why",
+            "- src/foo.rs:42 — wrong and why\n<!-- unclosed",
+            1,
+        );
+        assert!(parse_review(&t).is_err());
+    }
+    #[test]
+    fn bom_and_crlf_header_handled() {
+        let t = format!("\u{feff}{}", PASS.replace('\n', "\r\n"));
+        assert!(parse_review(&t).unwrap().verdict_pass);
+    }
+    #[test]
+    fn honest_quoting_of_verdict_does_not_false_fail() {
+        let t = PASS.replacen("# Review\n", "# Review\n\nthe critic wrote VERDICT: pass in prose\n", 1);
+        assert!(parse_review(&t).unwrap().verdict_pass);
+    }
+    #[test]
+    fn spec_pass_sample_parses() {
+        assert!(parse_review(SPEC_PASS_SAMPLE).unwrap().verdict_pass);
+    }
+    #[test]
+    fn spec_fail_sample_parses() {
+        assert!(!parse_review(SPEC_FAIL_SAMPLE).unwrap().verdict_pass);
     }
 }
