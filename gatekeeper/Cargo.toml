@@ -1,0 +1,14 @@
+[package]
+name = "gatekeeper"
+version = "0.1.0"
+edition = "2021"
+description = "Topology gate-enforcement engine: routes skills and checks methodology gates."
+
+[[bin]]
+name = "gatekeeper"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
