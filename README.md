@@ -8,7 +8,7 @@ Topology is a starter you own. It ships a thin, opinionated methodology enforced
 
 - **[METHODOLOGY.md](METHODOLOGY.md)** — the operator methodology: the four operator types (instincts, skills, gates, scans), the six pillars, the gate sequence, and how it all maps to Anthropic's agent-building guidance.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the layered design, control flow, and cross-harness fan-out (diagrams), plus the `gatekeeper` contract.
-- **[docs/ROADMAP.md](docs/ROADMAP.md)** — the phased path from today's gates to the full system (security scanning is next).
+- **[docs/ROADMAP.md](docs/ROADMAP.md)** — the phased path from today's gates to the full system (the code-review gate landed early; security scanning is next).
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** — how a human or agent adds a skill, instinct, gate, or scan rule.
 - **[docs/adr/](docs/adr/)** — the architecture decision records.
 - **[docs/research/](docs/research/)** — research-first artifacts (e.g. [build-resources](docs/research/2026-06-04-build-resources.md): comparable frameworks, harness configs, security tooling, the Rust stack).
@@ -28,6 +28,7 @@ topology/
 │   ├── tdd-loop/
 │   ├── systematic-debug/
 │   ├── verify-before-done/
+│   ├── code-review/
 │   └── finish-branch/
 ├── gatekeeper/                # Rust CLI that enforces the gates
 │   ├── Cargo.toml
@@ -50,6 +51,7 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 | `plan`    | a placeholder-free plan exists at `docs/plans/<date>-<feature>.md` |
 | `tdd`     | the working tree has a committed failing-test-first history (heuristic) |
 | `verify`  | a verification note exists for the feature |
+| `review`  | a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to merge-base, both dimensions, no blockers) |
 | `finish`  | the full test suite passes (`gatekeeper check finish -- <cmd>`) |
 
 ## Quick start

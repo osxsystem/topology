@@ -16,8 +16,8 @@ Process skills are **gates, not suggestions**. If you are about to skip a gate, 
 ## The gate sequence
 
 ```
-brainstorm-design  ──►  write-plan  ──►  tdd-loop  ──►  verify-before-done  ──►  finish-branch
-   (design gate)        (plan gate)     (tdd gate)        (verify gate)          (finish gate)
+brainstorm-design  ──►  write-plan  ──►  tdd-loop  ──►  verify-before-done  ──►  code-review  ──►  finish-branch
+   (design gate)        (plan gate)     (tdd gate)        (verify gate)         (review gate)       (finish gate)
                                             ▲
                                   systematic-debug (invoked on failure)
 ```
@@ -31,6 +31,8 @@ You may not write production code until the **design** and **plan** gates pass:
 - **TDD gate** — every unit of behavior had a test you watched fail *before* the code existed. Code written before its test gets deleted.
 - **Verify gate** — the original symptom is reproduced-then-resolved with evidence, recorded at `docs/verify/<date>-<feature>.md`.
   Check: `gatekeeper check verify --feature <feature>`
+- **Review gate** — a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to the merge-base, both rubric dimensions present, no blocking findings), recorded at `docs/reviews/<date>-<feature>.md`.
+  Check: `gatekeeper check review --feature <feature> [--base <ref>]`
 - **Finish gate** — the full test suite passes.
   Check: `gatekeeper check finish -- <your test command>`
 

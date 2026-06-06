@@ -11,3 +11,4 @@ a real trade-off**.
 | [0003](0003-one-markdown-source-per-harness-adapters.md) | One Markdown source; generate per-harness configs | Accepted |
 | [0004](0004-instincts-vs-gates.md) | Instincts are a distinct operator class from gates | Accepted |
 | [0005](0005-continuous-learning-capture-gotcha.md) | Continuous learning via capture-gotcha + approved promotion | Accepted |
+| [0006](0006-code-review-gate.md) | The code-review gate is a commit-bound, fail-closed critic artifact | Accepted |

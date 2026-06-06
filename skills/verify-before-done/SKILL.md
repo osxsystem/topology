@@ -20,7 +20,7 @@ description: Prove a task is actually complete with evidence before claiming don
 gatekeeper check verify --feature <feature-slug>
 ```
 
-Passes when the verification note exists. Then transition to `finish-branch`.
+Passes when the verification note exists. Then transition to `code-review`.
 
 ## The bar
 

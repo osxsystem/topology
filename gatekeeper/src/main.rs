@@ -6,6 +6,7 @@
 //!   gatekeeper check design  --feature S    Design gate: a spec doc exists.
 //!   gatekeeper check plan    --feature S    Plan gate: a placeholder-free plan exists.
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
+//!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
 //!
 //! Dependency-free (std only) so it builds offline and ships as one static binary.
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 mod json;
+mod review;
 
 const PLACEHOLDERS: &[&str] = &[
     "tbd",
@@ -55,6 +57,7 @@ fn print_help() {
          gatekeeper check design --feature <slug>\n  \
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
+         gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n"
     );
 }
@@ -188,6 +191,11 @@ fn cmd_check(args: &[String]) -> i32 {
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
+        "review" => review::gate_review(
+            &framework_root(),
+            &feature_arg(args),
+            base_arg(args).as_deref(),
+        ),
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
@@ -203,6 +211,16 @@ fn feature_arg(args: &[String]) -> String {
         }
     }
     String::new()
+}
+
+fn base_arg(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--base" {
+            return it.next().cloned();
+        }
+    }
+    None
 }
 
 /// Find a markdown doc under docs/<sub>/ whose filename contains the feature slug.
@@ -299,7 +317,10 @@ fn gate_finish(args: &[String]) -> i32 {
             0
         }
         Ok(s) => {
-            println!("FAIL finish gate: test command exited {}", s.code().unwrap_or(-1));
+            println!(
+                "FAIL finish gate: test command exited {}",
+                s.code().unwrap_or(-1)
+            );
             1
         }
         Err(e) => {
@@ -316,7 +337,10 @@ mod tests {
     #[test]
     fn detects_placeholders() {
         assert_eq!(find_placeholder("step 1: TBD"), Some("tbd".into()));
-        assert_eq!(find_placeholder("similar to Task 2"), Some("similar to task".into()));
+        assert_eq!(
+            find_placeholder("similar to Task 2"),
+            Some("similar to task".into())
+        );
         assert_eq!(find_placeholder("a complete, concrete plan"), None);
     }
 
@@ -341,7 +365,11 @@ mod tests {
         let dir = env::temp_dir().join("topology_test_skill");
         let _ = fs::create_dir_all(&dir);
         let md = dir.join("SKILL.md");
-        fs::write(&md, "---\nname: x\ndescription: Do a thing. Use when needed.\n---\nbody").unwrap();
+        fs::write(
+            &md,
+            "---\nname: x\ndescription: Do a thing. Use when needed.\n---\nbody",
+        )
+        .unwrap();
         assert_eq!(
             read_description(&md).as_deref(),
             Some("Do a thing. Use when needed.")
