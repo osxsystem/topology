@@ -690,7 +690,7 @@ fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> String {
 }
 
 /// Read at most cap+1 bytes of a file. None if it is unreadable OR over the cap — the caller then
-/// falls back to scanning the added text (the full-file secret is still caught at pre-commit).
+/// fails closed (asks); the full-file secret is also caught at pre-commit.
 fn read_file_capped(path: &str, cap: usize) -> Option<String> {
     let mut buf = Vec::new();
     fs::File::open(path)
@@ -747,6 +747,12 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
             return 2; // wrapper fails closed (covers deep nesting -> serde_json recursion limit)
         }
     };
+    // A missing/empty tool_name is a malformed event (a real PreToolUse always names its tool): we
+    // cannot tell whether it is one we gate, so fail closed rather than fall through to silent allow.
+    if event.tool_name.is_empty() {
+        eprintln!("gatekeeper scan --hook: event missing 'tool_name'");
+        return 2;
+    }
     // A RECOGNIZED tool whose operative field is missing is a malformed event on a tool we DO
     // gate: fail closed (exit 2 -> the wrapper denies), never silently allow.
     match event.tool_name.as_str() {
@@ -799,6 +805,18 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
             };
             if hook_path_protected(&rules.protected, &fp, root) {
                 return emit_ask(&fp);
+            }
+            // A recognized Edit/MultiEdit with no edit operation is malformed: reconstruct would
+            // return the file unchanged and we'd "verify" content we never actually edited. Fail closed.
+            let has_payload = event
+                .tool_input
+                .edits
+                .as_ref()
+                .is_some_and(|e| !e.is_empty())
+                || (event.tool_input.old_string.is_some() && event.tool_input.new_string.is_some());
+            if !has_payload {
+                eprintln!("gatekeeper scan --hook: Edit event missing edit payload");
+                return 2;
             }
             let Some(text) = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP) else {
                 // Cannot read or oversize: we can't prove the post-edit file is secret-free, so

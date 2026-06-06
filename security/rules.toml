@@ -59,6 +59,20 @@ description = "recursive force-delete of the filesystem root (f before r)"
 pattern = '\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]*\s+)*/(\s|$)'
 
 [[rule]]
+id = "rm-rf-root-split-rf"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of root with separated/long flags (recursive then force)"
+pattern = '\brm\s+((-|--)[a-zA-Z]+\s+)*(--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*(--force|-[a-zA-Z]*f[a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*/(\s|$)'
+
+[[rule]]
+id = "rm-rf-root-split-fr"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of root with separated/long flags (force then recursive)"
+pattern = '\brm\s+((-|--)[a-zA-Z]+\s+)*(--force|-[a-zA-Z]*f[a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*(--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*/(\s|$)'
+
+[[rule]]
 id = "curl-pipe-shell"
 kind = "command"
 severity = "block"
