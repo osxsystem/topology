@@ -105,3 +105,102 @@ fn check_path_flags_protected_only() {
     assert_eq!(run(&root, &["scan", "--check-path"], b"").0, 2); // missing arg
     let _ = fs::remove_dir_all(&root);
 }
+
+fn git(root: &Path, args: &[&str]) {
+    let ok = Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+    assert!(ok, "git {args:?} failed");
+}
+
+/// scratch_root() + git init + an initial commit, so staging operations have a HEAD.
+fn git_root(tag: &str) -> PathBuf {
+    let root = scratch_root(tag);
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.email", "t@t.t"]);
+    git(&root, &["config", "user.name", "t"]);
+    fs::create_dir_all(root.join("hooks")).unwrap();
+    fs::write(root.join("hooks").join("pre-commit.sh"), "#!/usr/bin/env bash\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    root
+}
+
+#[test]
+fn staged_blocks_planted_secret() {
+    let root = git_root("staged_secret");
+    fs::write(root.join("config.env"), format!("AWS={}\n", planted_key())).unwrap();
+    git(&root, &["add", "config.env"]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 1);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_clean_passes() {
+    let root = git_root("staged_clean");
+    fs::write(root.join("notes.txt"), "just notes\n").unwrap();
+    git(&root, &["add", "notes.txt"]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 0);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_integrity_blocks_delete_of_protected() {
+    // The ACMR scan filter skips deletions; the ACDMRT integrity pass must still catch it.
+    let root = git_root("staged_delete");
+    git(&root, &["rm", "-q", "hooks/pre-commit.sh"]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 1);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_integrity_blocks_rename_away_of_protected() {
+    let root = git_root("staged_rename");
+    git(&root, &["mv", "hooks/pre-commit.sh", "hooks/disabled.sh"]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 1);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_binary_blob_blocks_unless_allowlisted() {
+    let root = git_root("staged_binary");
+    fs::write(root.join("blob.bin"), [0u8, 1, 2, 0, 3, 4]).unwrap(); // NUL -> "binary"
+    git(&root, &["add", "blob.bin"]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 1, "binary blob blocks by default");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_symlink_scans_target_string_not_pointee() {
+    // The pointee holds a secret; the symlink's stored blob is ONLY the target path string.
+    // Scanning must read that string and never follow the link to the secret.
+    let root = git_root("staged_symlink");
+    fs::write(root.join("secret.txt"), format!("AWS={}\n", planted_key())).unwrap(); // not staged
+    std::os::unix::fs::symlink("secret.txt", root.join("link")).unwrap();
+    git(&root, &["add", "link"]); // stage only the symlink
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 0, "scans target string, not pointee");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_submodule_gitlink_not_recursed() {
+    // A staged gitlink (mode 160000) is a commit pointer, not content — skip it, do not error.
+    // Fake one with update-index so no real submodule checkout is needed.
+    let root = git_root("staged_submodule");
+    let sha = "0000000000000000000000000000000000000001";
+    git(&root, &["update-index", "--add", "--cacheinfo", &format!("160000,{sha},sub")]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 0, "gitlink skipped, not blocked");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_many_blobs_all_scanned() {
+    // Exercises the per-blob loop: 30 clean blobs + 1 secret must still block (proves every staged
+    // blob is scanned, not just the first). Linearity EVIDENCE lives in scan::perf_report.
+    let root = git_root("staged_many");
+    for i in 0..30 {
+        fs::write(root.join(format!("f{i}.txt")), format!("clean line {i}\n")).unwrap();
+    }
+    fs::write(root.join("f30.txt"), format!("AWS={}\n", planted_key())).unwrap();
+    git(&root, &["add", "."]);
+    assert_eq!(run(&root, &["scan", "--staged"], b"").0, 1, "a secret among many blobs is still caught");
+    let _ = fs::remove_dir_all(&root);
+}

@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 
 use regex::bytes::{Regex, RegexSet};
 use serde::Deserialize;
@@ -16,6 +17,8 @@ use serde::Deserialize;
 const SCHEMA_VERSION: u32 = 1;
 /// PreToolUse inputs are latency-sensitive; cap at 5 MiB.
 const HOOK_INPUT_CAP: usize = 5 * 1024 * 1024;
+/// Pre-commit blobs can be large; cap generously at 50 MiB, over-cap blocks unless allowlisted.
+const STAGED_BLOB_CAP: usize = 50 * 1024 * 1024;
 
 // ---------- raw (deserialized) model ----------
 
@@ -323,6 +326,7 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
     match args.first().map(String::as_str) {
         Some("--cmd") => scan_cmd_cmd(&rules),
         Some("--check-path") => scan_check_path(&rules, args.get(1).map(String::as_str)),
+        Some("--staged") => scan_staged(&rules, root, STAGED_BLOB_CAP),
         Some("--content") => scan_content_cmd(&rules),
         _ => {
             eprintln!(
@@ -375,6 +379,255 @@ fn scan_check_path(rules: &Rules, path: Option<&str>) -> i32 {
             eprintln!("gatekeeper scan --check-path <path>  (path required)");
             2
         }
+    }
+}
+
+fn git_raw(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {args:?} failed to start: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git {args:?} exited {}", out.status.code().unwrap_or(-1)));
+    }
+    Ok(out.stdout)
+}
+
+/// Split NUL-delimited git output into non-empty path strings.
+fn git_paths_z(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
+    Ok(git_raw(root, args)?
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect())
+}
+
+/// Parse `--name-status -z`: a status token, then 1 path (2 for renames/copies R*/C*).
+fn git_name_status_z(root: &Path, args: &[&str]) -> Result<Vec<(String, Vec<String>)>, String> {
+    let out = git_raw(root, args)?;
+    let toks: Vec<&[u8]> = out.split(|&b| b == 0).filter(|s| !s.is_empty()).collect();
+    let mut entries = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        let status = String::from_utf8_lossy(toks[i]).into_owned();
+        i += 1;
+        let n = if status.starts_with('R') || status.starts_with('C') { 2 } else { 1 };
+        let mut paths = Vec::new();
+        for _ in 0..n {
+            if i < toks.len() {
+                paths.push(String::from_utf8_lossy(toks[i]).into_owned());
+                i += 1;
+            }
+        }
+        entries.push((status, paths));
+    }
+    Ok(entries)
+}
+
+fn git_blob_oid(root: &Path, path: &str) -> Result<String, String> {
+    Ok(String::from_utf8_lossy(&git_raw(root, &["rev-parse", &format!(":{path}")])?)
+        .trim()
+        .to_string())
+}
+
+/// Cheap header read — the staged blob's byte size WITHOUT streaming its content into us.
+fn git_blob_size(root: &Path, path: &str) -> Result<usize, String> {
+    String::from_utf8_lossy(&git_raw(root, &["cat-file", "-s", &format!(":{path}")])?)
+        .trim()
+        .parse::<usize>()
+        .map_err(|e| format!("git cat-file -s :{path}: unparsable size: {e}"))
+}
+
+/// True iff (path, git object id) is pinned in [[allow_blob]]. The OID is content-free, so this
+/// works for an oversize blob we have deliberately NOT read.
+fn is_blob_allowlisted(root: &Path, path: &str, allow_blobs: &[AllowBlob]) -> bool {
+    match git_blob_oid(root, path) {
+        Ok(oid) => allow_blobs
+            .iter()
+            .any(|a| normalize_path(&a.path) == normalize_path(path) && a.blob_oid == oid),
+        Err(_) => false,
+    }
+}
+
+/// Index mode for a staged path (e.g. "100644", "120000" symlink, "160000" gitlink). Reads the
+/// INDEX, so it works even when a submodule's commit object is absent from this repo.
+/// (Interim: the queued Q2 `--raw` redesign folds this into the single enumeration.)
+fn git_index_mode(root: &Path, path: &str) -> Option<String> {
+    let out = git_raw(root, &["ls-files", "-s", "-z", "--", path]).ok()?;
+    // "<mode> <oid> <stage>\t<path>\0"
+    String::from_utf8_lossy(&out).split_whitespace().next().map(str::to_string)
+}
+
+fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
+    let mut blocked = false;
+
+    // (1) Scan enumeration: ACMR — content of each added/copied/modified/renamed staged blob.
+    match git_paths_z(
+        root,
+        &["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+    ) {
+        Ok(paths) => {
+            for path in paths {
+                // Submodule gitlinks (mode 160000) are commit pointers, not content — skip (not
+                // recursed); the pointed-to commit may not even be in this repo's object store.
+                if git_index_mode(root, &path).as_deref() == Some("160000") {
+                    continue;
+                }
+                // Size FIRST (a cheap header read), so an oversize blob never streams into memory.
+                let size = match git_blob_size(root, &path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("BLOCK staged-size: {e}");
+                        blocked = true;
+                        continue;
+                    }
+                };
+                if size > cap {
+                    // Oversize: never read content; the OID allowlist check is content-free too.
+                    if !is_blob_allowlisted(root, &path, &rules.allow_blobs) {
+                        eprintln!("BLOCK unscannable-blob: {path} (over {cap}-byte cap); allowlist via [[allow_blob]] path + blob_oid");
+                        blocked = true;
+                    }
+                    continue;
+                }
+                // Size is within the cap, so reading the content is now bounded.
+                match git_raw(root, &["show", &format!(":{path}")]) {
+                    Ok(blob) => {
+                        if blob.iter().take(8192).any(|&b| b == 0) {
+                            // Binary/undecodable: block unless allowlisted by path + OID.
+                            if !is_blob_allowlisted(root, &path, &rules.allow_blobs) {
+                                eprintln!("BLOCK unscannable-blob: {path} (binary/undecodable); allowlist via [[allow_blob]] path + blob_oid");
+                                blocked = true;
+                            }
+                            continue;
+                        }
+                        let f = scan_with(&rules.content_set, &rules.content, &blob, &rules.allows, Some(&path));
+                        if report(&f) == 1 {
+                            blocked = true;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("BLOCK staged-read: cannot read staged blob {path}: {e}");
+                        blocked = true;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("gatekeeper scan --staged: {e}");
+            return 2;
+        }
+    }
+
+    // (2) Integrity enumeration: ACDMRT — broader; both rename sides vs protected_paths.
+    match git_name_status_z(
+        root,
+        &["diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=ACDMRT"],
+    ) {
+        Ok(entries) => {
+            for (status, paths) in entries {
+                for p in &paths {
+                    if is_protected(&rules.protected, p) {
+                        eprintln!("BLOCK protected-path: staged change ({status}) to {p}");
+                        blocked = true;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("gatekeeper scan --staged: {e}");
+            return 2;
+        }
+    }
+
+    if blocked {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod staged_unit {
+    use super::*;
+
+    // Over-cap is only testable with a small cap, so this calls scan_staged directly (the CLI
+    // always passes the STAGED_BLOB_CAP const). Covers over-cap-block AND allow_blob-pass.
+    #[test]
+    fn over_cap_blocks_then_allowlisted_passes() {
+        let root = std::env::temp_dir().join(format!("topo_staged_unit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git_raw(&root, &["init", "-q", "-b", "main"]).unwrap();
+        git_raw(&root, &["config", "user.email", "t@t.t"]).unwrap();
+        git_raw(&root, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(root.join("big.txt"), "0123456789ABCDEFGHIJ").unwrap(); // 20 bytes
+        git_raw(&root, &["add", "big.txt"]).unwrap();
+        let rules = parse_rules("schema_version = 1").unwrap();
+        assert_eq!(scan_staged(&rules, &root, 8), 1, "20-byte blob over an 8-byte cap blocks");
+        // Allowlist it by its git object id -> passes (the OID is read content-free).
+        let oid = git_blob_oid(&root, "big.txt").unwrap();
+        let toml = format!(
+            r#"schema_version = 1
+[[allow_blob]]
+path = "big.txt"
+blob_oid = "{oid}"
+"#
+        );
+        assert_eq!(scan_staged(&parse_rules(&toml).unwrap(), &root, 8), 0, "allowlisted by blob_oid passes");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod perf_report {
+    // EVIDENCE, not gates: wall-clock varies by machine, so these are #[ignore]'d and run
+    // explicitly (`cargo test scan::perf_report -- --ignored --nocapture`); their numbers are
+    // recorded in docs/verify/ against the 150/250 ms targets. The default-run gates are the
+    // generous-ceiling smoke tests in match_tests.
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn scan_latency_percentiles() {
+        let r = parse_rules(include_str!("../../security/rules.toml")).unwrap();
+        let input = "export URL=postgres://u:p@h/db\nlet x = 1;\n# comment\n".repeat(64); // ~few KB
+        let mut us: Vec<u128> = (0..500)
+            .map(|_| {
+                let t = Instant::now();
+                let _ = scan_with(&r.content_set, &r.content, input.as_bytes(), &r.allows, None);
+                t.elapsed().as_micros()
+            })
+            .collect();
+        us.sort_unstable();
+        let q = |p: f64| us[((us.len() as f64 - 1.0) * p) as usize];
+        println!("scan latency us: p50={} p95={} p99={}", q(0.50), q(0.95), q(0.99));
+    }
+
+    #[test]
+    #[ignore]
+    fn staged_scales_linearly() {
+        for n in [1usize, 10, 100] {
+            let root = std::env::temp_dir().join(format!("topo_perf_{n}_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            git_raw(&root, &["init", "-q", "-b", "main"]).unwrap();
+            git_raw(&root, &["config", "user.email", "t@t.t"]).unwrap();
+            git_raw(&root, &["config", "user.name", "t"]).unwrap();
+            for i in 0..n {
+                std::fs::write(root.join(format!("f{i}.txt")), "benign content line\n").unwrap();
+            }
+            git_raw(&root, &["add", "."]).unwrap();
+            let r = parse_rules("schema_version = 1").unwrap();
+            let t = Instant::now();
+            let _ = scan_staged(&r, &root, STAGED_BLOB_CAP);
+            println!("staged N={n}: {} ms", t.elapsed().as_millis());
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        // Eyeball linearity; the architecture guarantees it (independent per-blob, no shared state).
     }
 }
 
