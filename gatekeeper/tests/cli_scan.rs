@@ -95,3 +95,13 @@ fn cmd_rules_block_the_dangerous_and_pass_the_safe() {
     assert_eq!(block(&format!("export K={}", planted_key())), 1, "secret in a command string");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn check_path_flags_protected_only() {
+    let root = scratch_root("checkpath");
+    assert_eq!(run(&root, &["scan", "--check-path", "security/rules.toml"], b"").0, 1);
+    assert_eq!(run(&root, &["scan", "--check-path", "./hooks/pre-commit.sh"], b"").0, 1);
+    assert_eq!(run(&root, &["scan", "--check-path", "README.md"], b"").0, 0);
+    assert_eq!(run(&root, &["scan", "--check-path"], b"").0, 2); // missing arg
+    let _ = fs::remove_dir_all(&root);
+}

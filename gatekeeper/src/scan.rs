@@ -322,6 +322,7 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
     };
     match args.first().map(String::as_str) {
         Some("--cmd") => scan_cmd_cmd(&rules),
+        Some("--check-path") => scan_check_path(&rules, args.get(1).map(String::as_str)),
         Some("--content") => scan_content_cmd(&rules),
         _ => {
             eprintln!(
@@ -354,6 +355,27 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
     let mut findings = scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None);
     findings.extend(scan_with(&rules.command_set, &rules.command, &data, &rules.allows, None));
     report(&findings)
+}
+
+/// Compare repo-relative paths with forward slashes, ignoring a leading "./".
+fn normalize_path(p: &str) -> String {
+    p.trim_start_matches("./").replace('\\', "/")
+}
+
+fn is_protected(protected: &[String], path: &str) -> bool {
+    let norm = normalize_path(path);
+    protected.iter().any(|p| normalize_path(p) == norm)
+}
+
+fn scan_check_path(rules: &Rules, path: Option<&str>) -> i32 {
+    match path {
+        Some(p) if is_protected(&rules.protected, p) => 1,
+        Some(_) => 0,
+        None => {
+            eprintln!("gatekeeper scan --check-path <path>  (path required)");
+            2
+        }
+    }
 }
 
 #[cfg(test)]
