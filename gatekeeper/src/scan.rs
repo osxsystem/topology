@@ -324,6 +324,7 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
         }
     };
     match args.first().map(String::as_str) {
+        Some("--hook") => scan_hook(&rules, root),
         Some("--cmd") => scan_cmd_cmd(&rules),
         Some("--check-path") => scan_check_path(&rules, args.get(1).map(String::as_str)),
         Some("--staged") => scan_staged(&rules, root, STAGED_BLOB_CAP),
@@ -546,6 +547,170 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
         1
     } else {
         0
+    }
+}
+
+#[derive(Deserialize)]
+struct HookEvent {
+    #[serde(default)]
+    tool_name: String,
+    #[serde(default)]
+    tool_input: ToolInput,
+}
+
+#[derive(Default, Deserialize)]
+struct ToolInput {
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    file_path: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    old_string: Option<String>,
+    #[serde(default)]
+    new_string: Option<String>,
+    #[serde(default)]
+    replace_all: Option<bool>,
+    #[serde(default)]
+    edits: Option<Vec<EditOp>>,
+}
+
+#[derive(Deserialize)]
+struct EditOp {
+    #[serde(default)]
+    old_string: String,
+    #[serde(default)]
+    new_string: String,
+    #[serde(default)]
+    replace_all: Option<bool>,
+}
+
+fn decision_json(decision: &str, reason: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+    })
+    .to_string()
+}
+
+/// Emit a deny decision (exit 0) on the first block; silent allow (exit 0) otherwise. Warns are
+/// dropped on the hook path to keep stdout the sole channel.
+fn emit_decision(findings: &[Finding]) -> i32 {
+    if let Some(b) = findings.iter().find(|f| f.severity == Severity::Block) {
+        let reason = format!(
+            "Topology security veto: {} [{}] (redacted: {})",
+            b.rule_id, b.location, b.redacted
+        );
+        println!("{}", decision_json("deny", &reason));
+    }
+    0
+}
+
+fn emit_ask(path: &str) -> i32 {
+    let reason =
+        format!("Topology: '{path}' is a protected safety file — human approval required to modify it.");
+    println!("{}", decision_json("ask", &reason));
+    0
+}
+
+fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> String {
+    if old.is_empty() {
+        return text.to_string();
+    }
+    if replace_all {
+        text.replace(old, new)
+    } else {
+        text.replacen(old, new, 1)
+    }
+}
+
+/// Read at most cap+1 bytes of a file. None if it is unreadable OR over the cap — the caller then
+/// falls back to scanning the added text (the full-file secret is still caught at pre-commit).
+fn read_file_capped(path: &str, cap: usize) -> Option<String> {
+    let mut buf = Vec::new();
+    fs::File::open(path).ok()?.take(cap as u64 + 1).read_to_end(&mut buf).ok()?;
+    if buf.len() > cap {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Reconstruct the full post-edit file (bounded read). If the file is unreadable or over the cap,
+/// fall back to the added text so a secret in new content is still caught.
+fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> String {
+    match read_file_capped(file_path, cap) {
+        Some(mut text) => {
+            if let Some(edits) = &ti.edits {
+                for e in edits {
+                    text = apply_edit(&text, &e.old_string, &e.new_string, e.replace_all.unwrap_or(false));
+                }
+            } else if let (Some(old), Some(new)) = (&ti.old_string, &ti.new_string) {
+                text = apply_edit(&text, old, new, ti.replace_all.unwrap_or(false));
+            }
+            text
+        }
+        None => match &ti.edits {
+            Some(edits) => edits.iter().map(|e| e.new_string.clone()).collect::<Vec<_>>().join("\n"),
+            None => ti.new_string.clone().unwrap_or_default(),
+        },
+    }
+}
+
+fn hook_path_protected(protected: &[String], file_path: &str, root: &Path) -> bool {
+    let rel = Path::new(file_path)
+        .strip_prefix(root)
+        .map(|r| r.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| file_path.to_string());
+    is_protected(protected, &rel)
+}
+
+fn scan_hook(rules: &Rules, root: &Path) -> i32 {
+    let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("gatekeeper scan --hook: {e}");
+            return 2; // wrapper fails closed
+        }
+    };
+    let event: HookEvent = match serde_json::from_slice(&data) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("gatekeeper scan --hook: malformed event JSON: {e}");
+            return 2; // wrapper fails closed (covers deep nesting -> serde_json recursion limit)
+        }
+    };
+    match event.tool_name.as_str() {
+        "Bash" => {
+            let cmd = event.tool_input.command.unwrap_or_default();
+            let bytes = cmd.as_bytes();
+            let mut f = scan_with(&rules.content_set, &rules.content, bytes, &rules.allows, None);
+            f.extend(scan_with(&rules.command_set, &rules.command, bytes, &rules.allows, None));
+            emit_decision(&f)
+        }
+        "Write" => {
+            if let Some(fp) = &event.tool_input.file_path {
+                if hook_path_protected(&rules.protected, fp, root) {
+                    return emit_ask(fp);
+                }
+            }
+            let content = event.tool_input.content.unwrap_or_default();
+            emit_decision(&scan_with(&rules.content_set, &rules.content, content.as_bytes(), &rules.allows, None))
+        }
+        "Edit" | "MultiEdit" => {
+            let Some(fp) = event.tool_input.file_path.clone() else {
+                return 0; // no file_path -> nothing to scan
+            };
+            if hook_path_protected(&rules.protected, &fp, root) {
+                return emit_ask(&fp);
+            }
+            let text = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP);
+            emit_decision(&scan_with(&rules.content_set, &rules.content, text.as_bytes(), &rules.allows, None))
+        }
+        _ => 0, // out of scope (MCP / other tools): silent allow
     }
 }
 
