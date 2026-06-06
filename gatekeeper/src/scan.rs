@@ -68,7 +68,9 @@ struct RawAllow {
     value: Option<String>,
     #[serde(default)]
     pattern: Option<String>,
+    // Human documentation only: accepted + validated by `deny_unknown_fields`, never read by logic.
     #[serde(default)]
+    #[allow(dead_code)]
     reason: Option<String>,
 }
 
@@ -77,7 +79,9 @@ struct RawAllow {
 struct AllowBlob {
     path: String,
     blob_oid: String,
+    // Human documentation only: accepted + validated by `deny_unknown_fields`, never read by logic.
     #[serde(default)]
+    #[allow(dead_code)]
     reason: Option<String>,
 }
 
@@ -346,7 +350,13 @@ fn scan_content_cmd(rules: &Rules) -> i32 {
             return 1; // fail closed
         }
     };
-    report(&scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None))
+    report(&scan_with(
+        &rules.content_set,
+        &rules.content,
+        &data,
+        &rules.allows,
+        None,
+    ))
 }
 
 fn scan_cmd_cmd(rules: &Rules) -> i32 {
@@ -357,8 +367,20 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
             return 1;
         }
     };
-    let mut findings = scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None);
-    findings.extend(scan_with(&rules.command_set, &rules.command, &data, &rules.allows, None));
+    let mut findings = scan_with(
+        &rules.content_set,
+        &rules.content,
+        &data,
+        &rules.allows,
+        None,
+    );
+    findings.extend(scan_with(
+        &rules.command_set,
+        &rules.command,
+        &data,
+        &rules.allows,
+        None,
+    ));
     report(&findings)
 }
 
@@ -391,7 +413,10 @@ fn git_raw(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
         .output()
         .map_err(|e| format!("git {args:?} failed to start: {e}"))?;
     if !out.status.success() {
-        return Err(format!("git {args:?} exited {}", out.status.code().unwrap_or(-1)));
+        return Err(format!(
+            "git {args:?} exited {}",
+            out.status.code().unwrap_or(-1)
+        ));
     }
     Ok(out.stdout)
 }
@@ -414,7 +439,11 @@ fn git_name_status_z(root: &Path, args: &[&str]) -> Result<Vec<(String, Vec<Stri
     while i < toks.len() {
         let status = String::from_utf8_lossy(toks[i]).into_owned();
         i += 1;
-        let n = if status.starts_with('R') || status.starts_with('C') { 2 } else { 1 };
+        let n = if status.starts_with('R') || status.starts_with('C') {
+            2
+        } else {
+            1
+        };
         let mut paths = Vec::new();
         for _ in 0..n {
             if i < toks.len() {
@@ -428,9 +457,11 @@ fn git_name_status_z(root: &Path, args: &[&str]) -> Result<Vec<(String, Vec<Stri
 }
 
 fn git_blob_oid(root: &Path, path: &str) -> Result<String, String> {
-    Ok(String::from_utf8_lossy(&git_raw(root, &["rev-parse", &format!(":{path}")])?)
-        .trim()
-        .to_string())
+    Ok(
+        String::from_utf8_lossy(&git_raw(root, &["rev-parse", &format!(":{path}")])?)
+            .trim()
+            .to_string(),
+    )
 }
 
 /// Cheap header read — the staged blob's byte size WITHOUT streaming its content into us.
@@ -458,7 +489,10 @@ fn is_blob_allowlisted(root: &Path, path: &str, allow_blobs: &[AllowBlob]) -> bo
 fn git_index_mode(root: &Path, path: &str) -> Option<String> {
     let out = git_raw(root, &["ls-files", "-s", "-z", "--", path]).ok()?;
     // "<mode> <oid> <stage>\t<path>\0"
-    String::from_utf8_lossy(&out).split_whitespace().next().map(str::to_string)
+    String::from_utf8_lossy(&out)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
@@ -467,7 +501,13 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
     // (1) Scan enumeration: ACMR — content of each added/copied/modified/renamed staged blob.
     match git_paths_z(
         root,
-        &["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+        &[
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMR",
+        ],
     ) {
         Ok(paths) => {
             for path in paths {
@@ -504,7 +544,13 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
                             }
                             continue;
                         }
-                        let f = scan_with(&rules.content_set, &rules.content, &blob, &rules.allows, Some(&path));
+                        let f = scan_with(
+                            &rules.content_set,
+                            &rules.content,
+                            &blob,
+                            &rules.allows,
+                            Some(&path),
+                        );
                         if report(&f) == 1 {
                             blocked = true;
                         }
@@ -525,7 +571,14 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
     // (2) Integrity enumeration: ACDMRT — broader; both rename sides vs protected_paths.
     match git_name_status_z(
         root,
-        &["diff", "--cached", "--name-status", "-z", "-M", "--diff-filter=ACDMRT"],
+        &[
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "-M",
+            "--diff-filter=ACDMRT",
+        ],
     ) {
         Ok(entries) => {
             for (status, paths) in entries {
@@ -611,8 +664,9 @@ fn emit_decision(findings: &[Finding]) -> i32 {
 }
 
 fn emit_ask(path: &str) -> i32 {
-    let reason =
-        format!("Topology: '{path}' is a protected safety file — human approval required to modify it.");
+    let reason = format!(
+        "Topology: '{path}' is a protected safety file — human approval required to modify it."
+    );
     println!("{}", decision_json("ask", &reason));
     0
 }
@@ -632,7 +686,11 @@ fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> String {
 /// falls back to scanning the added text (the full-file secret is still caught at pre-commit).
 fn read_file_capped(path: &str, cap: usize) -> Option<String> {
     let mut buf = Vec::new();
-    fs::File::open(path).ok()?.take(cap as u64 + 1).read_to_end(&mut buf).ok()?;
+    fs::File::open(path)
+        .ok()?
+        .take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
     if buf.len() > cap {
         return None;
     }
@@ -646,7 +704,12 @@ fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> String {
         Some(mut text) => {
             if let Some(edits) = &ti.edits {
                 for e in edits {
-                    text = apply_edit(&text, &e.old_string, &e.new_string, e.replace_all.unwrap_or(false));
+                    text = apply_edit(
+                        &text,
+                        &e.old_string,
+                        &e.new_string,
+                        e.replace_all.unwrap_or(false),
+                    );
                 }
             } else if let (Some(old), Some(new)) = (&ti.old_string, &ti.new_string) {
                 text = apply_edit(&text, old, new, ti.replace_all.unwrap_or(false));
@@ -654,7 +717,11 @@ fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> String {
             text
         }
         None => match &ti.edits {
-            Some(edits) => edits.iter().map(|e| e.new_string.clone()).collect::<Vec<_>>().join("\n"),
+            Some(edits) => edits
+                .iter()
+                .map(|e| e.new_string.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
             None => ti.new_string.clone().unwrap_or_default(),
         },
     }
@@ -687,8 +754,20 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
         "Bash" => {
             let cmd = event.tool_input.command.unwrap_or_default();
             let bytes = cmd.as_bytes();
-            let mut f = scan_with(&rules.content_set, &rules.content, bytes, &rules.allows, None);
-            f.extend(scan_with(&rules.command_set, &rules.command, bytes, &rules.allows, None));
+            let mut f = scan_with(
+                &rules.content_set,
+                &rules.content,
+                bytes,
+                &rules.allows,
+                None,
+            );
+            f.extend(scan_with(
+                &rules.command_set,
+                &rules.command,
+                bytes,
+                &rules.allows,
+                None,
+            ));
             emit_decision(&f)
         }
         "Write" => {
@@ -698,7 +777,13 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 }
             }
             let content = event.tool_input.content.unwrap_or_default();
-            emit_decision(&scan_with(&rules.content_set, &rules.content, content.as_bytes(), &rules.allows, None))
+            emit_decision(&scan_with(
+                &rules.content_set,
+                &rules.content,
+                content.as_bytes(),
+                &rules.allows,
+                None,
+            ))
         }
         "Edit" | "MultiEdit" => {
             let Some(fp) = event.tool_input.file_path.clone() else {
@@ -708,7 +793,13 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 return emit_ask(&fp);
             }
             let text = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP);
-            emit_decision(&scan_with(&rules.content_set, &rules.content, text.as_bytes(), &rules.allows, None))
+            emit_decision(&scan_with(
+                &rules.content_set,
+                &rules.content,
+                text.as_bytes(),
+                &rules.allows,
+                None,
+            ))
         }
         _ => 0, // out of scope (MCP / other tools): silent allow
     }
@@ -731,7 +822,11 @@ mod staged_unit {
         std::fs::write(root.join("big.txt"), "0123456789ABCDEFGHIJ").unwrap(); // 20 bytes
         git_raw(&root, &["add", "big.txt"]).unwrap();
         let rules = parse_rules("schema_version = 1").unwrap();
-        assert_eq!(scan_staged(&rules, &root, 8), 1, "20-byte blob over an 8-byte cap blocks");
+        assert_eq!(
+            scan_staged(&rules, &root, 8),
+            1,
+            "20-byte blob over an 8-byte cap blocks"
+        );
         // Allowlist it by its git object id -> passes (the OID is read content-free).
         let oid = git_blob_oid(&root, "big.txt").unwrap();
         let toml = format!(
@@ -741,7 +836,11 @@ path = "big.txt"
 blob_oid = "{oid}"
 "#
         );
-        assert_eq!(scan_staged(&parse_rules(&toml).unwrap(), &root, 8), 0, "allowlisted by blob_oid passes");
+        assert_eq!(
+            scan_staged(&parse_rules(&toml).unwrap(), &root, 8),
+            0,
+            "allowlisted by blob_oid passes"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -763,13 +862,24 @@ mod perf_report {
         let mut us: Vec<u128> = (0..500)
             .map(|_| {
                 let t = Instant::now();
-                let _ = scan_with(&r.content_set, &r.content, input.as_bytes(), &r.allows, None);
+                let _ = scan_with(
+                    &r.content_set,
+                    &r.content,
+                    input.as_bytes(),
+                    &r.allows,
+                    None,
+                );
                 t.elapsed().as_micros()
             })
             .collect();
         us.sort_unstable();
         let q = |p: f64| us[((us.len() as f64 - 1.0) * p) as usize];
-        println!("scan latency us: p50={} p95={} p99={}", q(0.50), q(0.95), q(0.99));
+        println!(
+            "scan latency us: p50={} p95={} p99={}",
+            q(0.50),
+            q(0.95),
+            q(0.99)
+        );
     }
 
     #[test]
