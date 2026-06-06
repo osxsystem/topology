@@ -14,6 +14,8 @@ use regex::bytes::{Regex, RegexSet};
 use serde::Deserialize;
 
 const SCHEMA_VERSION: u32 = 1;
+/// PreToolUse inputs are latency-sensitive; cap at 5 MiB.
+const HOOK_INPUT_CAP: usize = 5 * 1024 * 1024;
 
 // ---------- raw (deserialized) model ----------
 
@@ -304,6 +306,40 @@ fn read_stdin_bytes(cap: usize) -> Result<Vec<u8>, String> {
         return Err(format!("input exceeds {cap}-byte cap"));
     }
     Ok(buf)
+}
+
+/// Entry point for `gatekeeper scan ...`. `root` is the framework root. Returns the process exit
+/// code (0 clean / 1 veto / 2 usage or load error). Rules load first so a broken rules file
+/// fails closed (exit 2) on every subcommand.
+pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
+    let rules_path = root.join("security").join("rules.toml");
+    let rules = match load_rules(&rules_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("gatekeeper scan: cannot load {}: {e}", rules_path.display());
+            return 2;
+        }
+    };
+    match args.first().map(String::as_str) {
+        Some("--content") => scan_content_cmd(&rules),
+        _ => {
+            eprintln!(
+                "gatekeeper scan: expected --hook | --cmd | --content | --staged | --check-path <path>"
+            );
+            2
+        }
+    }
+}
+
+fn scan_content_cmd(rules: &Rules) -> i32 {
+    let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("BLOCK oversize-input: {e}");
+            return 1; // fail closed
+        }
+    };
+    report(&scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None))
 }
 
 #[cfg(test)]

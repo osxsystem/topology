@@ -8,8 +8,13 @@
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
 //!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
+//!   gatekeeper scan --hook                  Security-scan a PreToolUse event (stdin); emit the decision.
+//!   gatekeeper scan --cmd | --content       Security-scan a command / file image on stdin.
+//!   gatekeeper scan --staged                Pre-commit: scan staged blobs + enforce integrity.
+//!   gatekeeper scan --check-path <path>     Exit 1 iff <path> is a protected safety file.
 //!
-//! Dependency-free (std only) so it builds offline and ships as one static binary.
+//! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
+//! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
 
 use std::env;
 use std::fs;
@@ -36,6 +41,7 @@ fn main() {
         Some("list") => cmd_list(),
         Some("activate") => cmd_activate(),
         Some("check") => cmd_check(&args[1..]),
+        Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -59,7 +65,9 @@ fn print_help() {
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
-         gatekeeper check finish -- <command...>\n"
+         gatekeeper check finish -- <command...>\n  \
+         gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
+         gatekeeper scan --staged | --check-path <path>\n"
     );
 }
 
