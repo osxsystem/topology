@@ -441,6 +441,48 @@ fn check_path_resolves_dotdot_alias() {
 }
 
 #[test]
+fn check_path_resolves_parent_and_return_alias() {
+    // An alias that climbs ABOVE the repo and re-enters it must still resolve to the protected file.
+    let root = scratch_root("checkpath_parent");
+    let dir = root.file_name().unwrap().to_string_lossy().into_owned();
+    let alias = format!("../{dir}/security/rules.toml");
+    assert_eq!(
+        run(&root, &["scan", "--check-path", &alias], b"").0,
+        1,
+        "parent-and-return alias of a protected file is still protected"
+    );
+    // The same alias as a hook Write must ask, not silently allow. (Relative so it resolves against
+    // the one internal root — an absolute spelling would differ only by the temp-dir symlink.)
+    let ev = event(
+        "Write",
+        &format!(r#"{{"file_path":"{alias}","content":"x"}}"#),
+    );
+    let (_, out) = run(&root, &["scan", "--hook"], ev.as_bytes());
+    assert!(
+        out.contains(r#""permissionDecision":"ask""#),
+        "parent-and-return alias Write must ask, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn hook_edit_empty_old_string_scans_inserted_secret() {
+    // An Edit with empty old_string (insert) must still scan new_string for secrets, not ignore it.
+    let root = scratch_root("hook_empty_old");
+    let target = root.join("f.txt");
+    fs::write(&target, "clean\n").unwrap();
+    let fp = target.to_string_lossy().replace('\\', "/");
+    let secret = format!("AKIA{}", "1234567890ABCDEF");
+    let input = format!(r#"{{"file_path":"{fp}","old_string":"","new_string":"K={secret}"}}"#);
+    let (_, out) = run(&root, &["scan", "--hook"], event("Edit", &input).as_bytes());
+    assert!(
+        out.contains(r#""permissionDecision":"deny""#),
+        "secret in inserted text must deny, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn hook_edit_expansion_bomb_fails_closed() {
     // A small file + a replace_all that explodes the post-edit image past the cap must fail closed
     // (ask), never allocate unboundedly then "verify" the result.

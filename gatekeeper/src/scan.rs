@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use regex::bytes::{Regex, RegexSet};
@@ -330,7 +330,7 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
     match args.first().map(String::as_str) {
         Some("--hook") => scan_hook(&rules, root),
         Some("--cmd") => scan_cmd_cmd(&rules),
-        Some("--check-path") => scan_check_path(&rules, args.get(1).map(String::as_str)),
+        Some("--check-path") => scan_check_path(&rules, root, args.get(1).map(String::as_str)),
         Some("--staged") => scan_staged(&rules, root, STAGED_BLOB_CAP),
         Some("--content") => scan_content_cmd(&rules),
         _ => {
@@ -384,9 +384,8 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
     report(&findings)
 }
 
-/// Normalize a path for protected-path comparison: forward slashes, with `.`/`..`/empty segments
-/// resolved lexically so aliases like `security/../security/rules.toml` collapse to the real path
-/// (and cannot dodge the protected-file `ask`/veto).
+/// Lexically normalize a relative path for comparison: forward slashes, `.`/`..`/empty resolved.
+/// Used for repo-relative comparisons (e.g. the blob allowlist) where both sides come from git.
 fn normalize_path(p: &str) -> String {
     let unified = p.replace('\\', "/");
     let mut out: Vec<&str> = Vec::new();
@@ -402,14 +401,41 @@ fn normalize_path(p: &str) -> String {
     out.join("/")
 }
 
-fn is_protected(protected: &[String], path: &str) -> bool {
-    let norm = normalize_path(path);
-    protected.iter().any(|p| normalize_path(p) == norm)
+/// Resolve a path to an absolute, lexically-normalized form against `root` (no filesystem access,
+/// no symlink following). Relative inputs are joined onto root; `.`/`..` are resolved on the FULL
+/// absolute path, so a parent-and-return alias (`<root>/../<root-dir>/security/rules.toml`) and an
+/// internal alias (`security/../security/rules.toml`) BOTH collapse to the real protected path and
+/// cannot dodge the `ask`/veto.
+fn resolve_against_root(root: &Path, p: &str) -> PathBuf {
+    let unified = p.replace('\\', "/");
+    let joined = if Path::new(&unified).is_absolute() {
+        PathBuf::from(unified)
+    } else {
+        root.join(unified)
+    };
+    let mut pb = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::ParentDir => {
+                pb.pop();
+            }
+            Component::CurDir => {}
+            other => pb.push(other.as_os_str()),
+        }
+    }
+    pb
 }
 
-fn scan_check_path(rules: &Rules, path: Option<&str>) -> i32 {
+fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
+    let target = resolve_against_root(root, path);
+    protected
+        .iter()
+        .any(|p| resolve_against_root(root, p) == target)
+}
+
+fn scan_check_path(rules: &Rules, root: &Path, path: Option<&str>) -> i32 {
     match path {
-        Some(p) if is_protected(&rules.protected, p) => 1,
+        Some(p) if is_protected(root, &rules.protected, p) => 1,
         Some(_) => 0,
         None => {
             eprintln!("gatekeeper scan --check-path <path>  (path required)");
@@ -600,7 +626,7 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
         Ok(entries) => {
             for (status, paths) in entries {
                 for p in &paths {
-                    if is_protected(&rules.protected, p) {
+                    if is_protected(root, &rules.protected, p) {
                         eprintln!("BLOCK protected-path: staged change ({status}) to {p}");
                         blocked = true;
                     }
@@ -704,7 +730,16 @@ fn apply_edit_capped(
     cap: usize,
 ) -> Option<String> {
     if old.is_empty() {
-        return Some(text.to_string());
+        // Ambiguous insert (empty old_string): don't silently drop new_string — append it so a
+        // secret in the inserted content is still scanned. Bounded by the cap.
+        if new.is_empty() {
+            return Some(text.to_string());
+        }
+        let projected = text.len() as i128 + 1 + new.len() as i128;
+        if projected > cap as i128 {
+            return None;
+        }
+        return Some(format!("{text}\n{new}"));
     }
     let count = if replace_all {
         text.matches(old).count()
@@ -765,11 +800,9 @@ fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> Option<String> {
 }
 
 fn hook_path_protected(protected: &[String], file_path: &str, root: &Path) -> bool {
-    let rel = Path::new(file_path)
-        .strip_prefix(root)
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| file_path.to_string());
-    is_protected(protected, &rel)
+    // resolve_against_root handles both absolute hook paths and `..` aliases that climb out of and
+    // back into the repo, so a parent-and-return spelling cannot dodge the protected-file gate.
+    is_protected(root, protected, file_path)
 }
 
 fn scan_hook(rules: &Rules, root: &Path) -> i32 {
