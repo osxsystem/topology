@@ -538,7 +538,9 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
                 // Size is within the cap, so reading the content is now bounded.
                 match git_raw(root, &["show", &format!(":{path}")]) {
                     Ok(blob) => {
-                        if blob.iter().take(8192).any(|&b| b == 0) {
+                        // Whole-blob NUL sniff (not just a prefix window): a binary whose first NUL
+                        // lands late must still be treated as unscannable and block by default.
+                        if blob.contains(&0) {
                             // Binary/undecodable: block unless allowlisted by path + OID.
                             if !is_blob_allowlisted(root, &path, &rules.allow_blobs) {
                                 eprintln!("BLOCK unscannable-blob: {path} (binary/undecodable); allowlist via [[allow_blob]] path + blob_oid");

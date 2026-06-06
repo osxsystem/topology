@@ -49,28 +49,28 @@ id = "rm-rf-root"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root"
-pattern = '\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(-[a-zA-Z]*\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
 
 [[rule]]
 id = "rm-rf-root-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root (f before r)"
-pattern = '\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]*\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
 
 [[rule]]
 id = "rm-rf-root-split-rf"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (recursive then force)"
-pattern = '\brm\s+((-|--)[a-zA-Z]+\s+)*(--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*(--force|-[a-zA-Z]*f[a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
 
 [[rule]]
 id = "rm-rf-root-split-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (force then recursive)"
-pattern = '\brm\s+((-|--)[a-zA-Z]+\s+)*(--force|-[a-zA-Z]*f[a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*(--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\s+((-|--)[a-zA-Z]+\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
 
 [[rule]]
 id = "curl-pipe-shell"
@@ -111,8 +111,8 @@ pattern = '\bgit\b.*\bpush\b.*(--force($|\s)|\s-f($|\s))'
 id = "git-commit-no-verify"
 kind = "command"
 severity = "block"
-description = "bypassing the pre-commit safety floor"
-pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-n($|\s))'
+description = "bypassing the pre-commit safety floor (incl. bundled short flags like -nm)"
+pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|$))'
 
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]

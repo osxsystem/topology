@@ -360,6 +360,63 @@ fn hook_edit_without_edit_payload_fails_closed() {
 }
 
 #[test]
+fn real_ruleset_blocks_rm_rf_root_with_terminator_and_long_opts() {
+    // `--` option terminator and hyphenated long options (e.g. --no-preserve-root) sit between the
+    // flags and `/`; the veto must see through them.
+    let root = scratch_root("real_rm2");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("rm -rf -- /"), 1, "option terminator before /");
+    assert_eq!(block("rm -rf --no-preserve-root /"), 1, "long opt before /");
+    assert_eq!(
+        block("rm -r -f --no-preserve-root /"),
+        1,
+        "separated flags + long opt"
+    );
+    assert_eq!(
+        block("rm -rf -- /tmp/x"),
+        0,
+        "terminator but non-root path is safe"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_ruleset_blocks_bundled_no_verify_short_option() {
+    // `git commit -nm msg` bundles -n (no-verify) with -m; the bypass must still be caught.
+    let root = scratch_root("real_nv");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("git commit -nm msg"), 1, "bundled -nm");
+    assert_eq!(block("git commit -n -m msg"), 1, "separate -n");
+    assert_eq!(block("git commit --no-verify -m msg"), 1, "long form");
+    assert_eq!(block("git commit -am msg"), 0, "no -n is safe");
+    assert_eq!(
+        block("git commit -m snapshot"),
+        0,
+        "n inside the message is safe"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_binary_with_late_nul_blocks() {
+    // A binary whose first NUL falls past the 8192-byte sniff window must still block by default.
+    let root = git_root("staged_latenul");
+    let mut data = vec![b'A'; 9000];
+    data.push(0); // NUL at offset 9000, beyond the old window
+    data.extend_from_slice(&[1u8, 2, 3]);
+    fs::write(root.join("late.bin"), &data).unwrap();
+    git(&root, &["add", "late.bin"]);
+    assert_eq!(
+        run(&root, &["scan", "--staged"], b"").0,
+        1,
+        "late-NUL binary blocks unless allowlisted"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn staged_type_change_symlink_to_file_is_scanned() {
     // A symlink (mode 120000) replaced by a regular file (100644) carrying a secret is a type
     // change (T). It must be content-scanned, or the "every staged blob is scanned" guarantee leaks.
