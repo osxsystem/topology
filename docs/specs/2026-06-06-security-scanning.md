@@ -35,7 +35,7 @@ over-broad guarantee is a lie:
   every added/modified file and **blocks the commit** on a secret/dangerous match — **regardless of
   how the content got there** (a `Write`, an `Edit`, or a shell command like `cp ~/.ssh/id_rsa .`).
   A blob we **cannot** scan (over the size cap, or binary/undecodable) **blocks by default** unless
-  it is allowlisted by path **and** content hash. This is the floor's backbone.
+  it is allowlisted by path **and** git object id (no hashing dep). This is the floor's backbone.
 - **Working tree (a partial, pre-execution veto).** The **`PreToolUse`** hook blocks, *before the act*:
   (a) dangerous **commands** by pattern, and (b) secrets visible in a **command string** or in a
   **tool-driven file write** (`Write`/`Edit`/`MultiEdit`, scanning the **full reconstructed
@@ -164,10 +164,10 @@ rule = "aws-access-key-id"            # specific id, or "*" — but "*" still RE
 value = "AKIAIOSFODNN7EXAMPLE"        # exact span exempted
 reason = "AWS documentation example key"
 
-# Large/binary blobs we cannot scan are blocked unless path + hash allowlisted:
+# Large/binary blobs we cannot scan are blocked unless path + OID allowlisted:
 [[allow_blob]]
 path = "assets/model.bin"
-sha256 = "…"
+blob_oid = "…"   # git object id — `git hash-object <file>` / `git rev-parse :<path>` (no hashing dep)
 reason = "known-safe large binary asset"
 
 [integrity]
@@ -203,7 +203,7 @@ reliably regex-expressible — future work, not faked.)*
 ### Diagnostics & redaction
 
 Per finding: `BLOCK <rule-id>: <description> [<file>:<line> | offset <n>] (redacted: AKIA…<len=20>)`
-— rule, location, and a non-reversible hint (prefix+length or truncated SHA-256), **never the value**.
+— rule, location, and a non-reversible hint (prefix + length), **never the value**.
 Clean runs are silent. Same redaction governs the deny reason.
 
 ### `PreToolUse` hook — concrete contract (verified against official docs)
@@ -243,7 +243,7 @@ is blocked from `--no-verify` by a command rule). Documented as the deliberate, 
 
 - **Size/binary policy:** the per-blob cap is generous for pre-commit (latency doesn't matter at
   commit; byte-regex over tens of MiB is cheap). A blob over the cap or binary/undecodable is
-  **blocked by default** unless `[[allow_blob]]` lists its path + sha256.
+  **blocked by default** unless `[[allow_blob]]` lists its path + `blob_oid` (git object id).
 - **Symlinks:** not followed (scan the link target *path string*, not the pointee). **Submodules:**
   scan the gitlink entry as a pointer; do not recurse.
 
@@ -282,6 +282,10 @@ hand-rolled parser (a vetted JSON parser belongs on the adversarial hook boundar
 
 - PreToolUse per-input cap **5 MiB** (latency-sensitive); pre-commit per-blob cap generous (e.g.
   **50 MiB**), over-cap → block-unless-allowlisted.
+- **Caps are enforced by bounded reads, not post-hoc length checks:** stdin and the `Edit` post-image
+  read at most `cap+1` bytes (`Read::take`), and `--staged` consults `git cat-file -s` *before*
+  `git show` — so an oversized input is rejected without ever being fully allocated (no
+  memory-exhaustion / OOM vector).
 - `RegexSet` compiled **once** per process; rule count in the low hundreds is fine.
 - Targets **and tested**: a typical diff/command **p95 < 150 ms, p99 < 250 ms**; a 5 MiB input
   within budget; a run over a repo with N staged blobs scales linearly. Hook `timeout: 30s` is the
@@ -336,7 +340,7 @@ hand-rolled parser (a vetted JSON parser belongs on the adversarial hook boundar
 - [ ] **`json.rs` retired:** the file is deleted; `skill-rules.json` now parses via `serde_json` and
       the existing routing tests still pass.
 - [ ] **Unscannable blob blocks:** a >cap or binary staged blob → **block**, unless `[[allow_blob]]`
-      lists path + sha256 (then `0`).
+      lists path + `blob_oid` (then `0`).
 - [ ] **Allowlist span-scoped:** `AKIAIOSFODNN7EXAMPLE` alone → `0`; a real key on the **same line**
       → `1`. **`allow rule="*"` without a value/pattern → exit `2`** (validation).
 - [ ] **Integrity — protected edit human-gated, not env-bypassed:** an `Edit`/`Write` to a protected
