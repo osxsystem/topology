@@ -400,6 +400,68 @@ fn real_ruleset_blocks_bundled_no_verify_short_option() {
 }
 
 #[test]
+fn real_ruleset_blocks_bundled_force_push() {
+    // `git push -uf origin main` bundles -u with -f (force); the bypass must still be caught, while
+    // --force-with-lease stays safe.
+    let root = scratch_root("real_push");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("git push -uf origin main"), 1, "bundled -uf");
+    assert_eq!(block("git push -f origin main"), 1, "standalone -f");
+    assert_eq!(block("git push --force origin main"), 1, "--force");
+    assert_eq!(
+        block("git push --force-with-lease origin main"),
+        0,
+        "lease push stays safe"
+    );
+    assert_eq!(block("git push -u origin main"), 0, "set-upstream is safe");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_path_resolves_dotdot_alias() {
+    // A `..` alias of a protected path must still be recognized as protected (no normalization dodge).
+    let root = scratch_root("checkpath_dotdot");
+    assert_eq!(
+        run(
+            &root,
+            &["scan", "--check-path", "security/../security/rules.toml"],
+            b""
+        )
+        .0,
+        1,
+        ".. alias of a protected file is still protected"
+    );
+    assert_eq!(
+        run(&root, &["scan", "--check-path", "src/../README.md"], b"").0,
+        0,
+        ".. alias of an unprotected file is still unprotected"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn hook_edit_expansion_bomb_fails_closed() {
+    // A small file + a replace_all that explodes the post-edit image past the cap must fail closed
+    // (ask), never allocate unboundedly then "verify" the result.
+    let root = scratch_root("hook_bomb");
+    let target = root.join("big.txt");
+    fs::write(&target, "a".repeat(200_000)).unwrap(); // 200k occurrences of "a"
+    let fp = target.to_string_lossy().replace('\\', "/");
+    let new = "X".repeat(64); // 200k * 64 = ~12.8 MB > 5 MiB hook cap
+    let input = format!(
+        r#"{{"file_path":"{fp}","old_string":"a","new_string":"{new}","replace_all":true}}"#
+    );
+    let (code, out) = run(&root, &["scan", "--hook"], event("Edit", &input).as_bytes());
+    assert_eq!(code, 0, "hook exits 0; decision in JSON");
+    assert!(
+        out.contains(r#""permissionDecision":"ask""#),
+        "expansion bomb must ask, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn staged_binary_with_late_nul_blocks() {
     // A binary whose first NUL falls past the 8192-byte sniff window must still block by default.
     let root = git_root("staged_latenul");

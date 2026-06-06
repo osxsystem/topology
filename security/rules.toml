@@ -77,7 +77,7 @@ id = "curl-pipe-shell"
 kind = "command"
 severity = "block"
 description = "piping a network download straight into a shell"
-pattern = '\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh)\b'
+pattern = '\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(\S*/)?(sh|bash|zsh)\b'
 
 [[rule]]
 id = "git-reset-hard"
@@ -104,8 +104,8 @@ pattern = '\bgit\b.*\bfilter-branch\b'
 id = "git-push-force"
 kind = "command"
 severity = "block"
-description = "force push (use --force-with-lease instead)"
-pattern = '\bgit\b.*\bpush\b.*(--force($|\s)|\s-f($|\s))'
+description = "force push (use --force-with-lease instead); incl. bundled short flags like -uf"
+pattern = '\bgit\b.*\bpush\b.*(--force($|\s)|\s-[A-Za-z]*f[A-Za-z]*(\s|$))'
 
 [[rule]]
 id = "git-commit-no-verify"

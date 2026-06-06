@@ -384,9 +384,22 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
     report(&findings)
 }
 
-/// Compare repo-relative paths with forward slashes, ignoring a leading "./".
+/// Normalize a path for protected-path comparison: forward slashes, with `.`/`..`/empty segments
+/// resolved lexically so aliases like `security/../security/rules.toml` collapse to the real path
+/// (and cannot dodge the protected-file `ask`/veto).
 fn normalize_path(p: &str) -> String {
-    p.trim_start_matches("./").replace('\\', "/")
+    let unified = p.replace('\\', "/");
+    let mut out: Vec<&str> = Vec::new();
+    for seg in unified.split('/') {
+        match seg {
+            "" | "." => {} // leading ./, doubled //, trailing /
+            ".." => {
+                out.pop(); // climb out of the previous segment
+            }
+            s => out.push(s),
+        }
+    }
+    out.join("/")
 }
 
 fn is_protected(protected: &[String], path: &str) -> bool {
@@ -680,15 +693,38 @@ fn emit_ask_reason(reason: &str) -> i32 {
     0
 }
 
-fn apply_edit(text: &str, old: &str, new: &str, replace_all: bool) -> String {
+/// Apply one edit, but REFUSE to build a post-edit image larger than `cap`: a `replace_all` whose
+/// replacement expands the file (e.g. one byte -> many, times many occurrences) could otherwise
+/// blow up memory before any decision. Returns None on overflow so the caller fails closed (asks).
+fn apply_edit_capped(
+    text: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+    cap: usize,
+) -> Option<String> {
     if old.is_empty() {
-        return text.to_string();
+        return Some(text.to_string());
     }
-    if replace_all {
+    let count = if replace_all {
+        text.matches(old).count()
+    } else {
+        usize::from(text.contains(old))
+    };
+    if count == 0 {
+        return Some(text.to_string());
+    }
+    // Project the size before allocating the result (no huge intermediate string).
+    let delta = new.len() as i128 - old.len() as i128;
+    let projected = text.len() as i128 + delta * count as i128;
+    if projected > cap as i128 {
+        return None;
+    }
+    Some(if replace_all {
         text.replace(old, new)
     } else {
         text.replacen(old, new, 1)
-    }
+    })
 }
 
 /// Read at most cap+1 bytes of a file. None if it is unreadable OR over the cap — the caller then
@@ -706,22 +742,24 @@ fn read_file_capped(path: &str, cap: usize) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Reconstruct the full post-edit file (bounded read). Returns `None` when the target is unreadable
-/// or over the hook cap — the caller then FAILS CLOSED (asks) rather than scanning only the added
-/// text, because a secret could be completed across the unchanged text we cannot see.
+/// Reconstruct the full post-edit file (bounded read). Returns `None` when the target is unreadable,
+/// over the hook cap, OR the post-edit image would exceed the cap (an expanding `replace_all`) — the
+/// caller then FAILS CLOSED (asks) rather than scanning only the added text or allocating unboundedly,
+/// because a secret could be completed across the unchanged text we cannot see.
 fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> Option<String> {
     let mut text = read_file_capped(file_path, cap)?;
     if let Some(edits) = &ti.edits {
         for e in edits {
-            text = apply_edit(
+            text = apply_edit_capped(
                 &text,
                 &e.old_string,
                 &e.new_string,
                 e.replace_all.unwrap_or(false),
-            );
+                cap,
+            )?;
         }
     } else if let (Some(old), Some(new)) = (&ti.old_string, &ti.new_string) {
-        text = apply_edit(&text, old, new, ti.replace_all.unwrap_or(false));
+        text = apply_edit_capped(&text, old, new, ti.replace_all.unwrap_or(false), cap)?;
     }
     Some(text)
 }
