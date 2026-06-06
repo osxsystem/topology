@@ -321,6 +321,7 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
         }
     };
     match args.first().map(String::as_str) {
+        Some("--cmd") => scan_cmd_cmd(&rules),
         Some("--content") => scan_content_cmd(&rules),
         _ => {
             eprintln!(
@@ -340,6 +341,19 @@ fn scan_content_cmd(rules: &Rules) -> i32 {
         }
     };
     report(&scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None))
+}
+
+fn scan_cmd_cmd(rules: &Rules) -> i32 {
+    let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("BLOCK oversize-input: {e}");
+            return 1;
+        }
+    };
+    let mut findings = scan_with(&rules.content_set, &rules.content, &data, &rules.allows, None);
+    findings.extend(scan_with(&rules.command_set, &rules.command, &data, &rules.allows, None));
+    report(&findings)
 }
 
 #[cfg(test)]
