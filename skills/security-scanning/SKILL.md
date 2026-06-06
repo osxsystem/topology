@@ -1,6 +1,6 @@
 ---
 name: security-scanning
-description: The deterministic safety floor — a gatekeeper scan that vetoes secrets and dangerous commands before they run or get committed. Use when wiring secret/command scanning, when a PreToolUse or pre-commit veto fires, or when asked about the security rules, allowlist, or protected files.
+description: Veto secrets and dangerous commands deterministically via gatekeeper scan, before they run or get committed — the safety floor. Use when wiring secret/command scanning, when a PreToolUse or pre-commit veto fires, or when asked about the security rules, allowlist, or protected files.
 ---
 
 # Security scanning (the safety floor)

@@ -498,7 +498,9 @@ fn git_index_mode(root: &Path, path: &str) -> Option<String> {
 fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
     let mut blocked = false;
 
-    // (1) Scan enumeration: ACMR — content of each added/copied/modified/renamed staged blob.
+    // (1) Scan enumeration: ACMRT — content of each added/copied/modified/renamed/type-changed
+    // staged blob. T matters: a symlink→regular-file (or gitlink→file) type change introduces a
+    // new content blob that would otherwise escape the "every staged blob is scanned" guarantee.
     match git_paths_z(
         root,
         &[
@@ -506,7 +508,7 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
             "--cached",
             "--name-only",
             "-z",
-            "--diff-filter=ACMR",
+            "--diff-filter=ACMRT",
         ],
     ) {
         Ok(paths) => {
@@ -664,10 +666,15 @@ fn emit_decision(findings: &[Finding]) -> i32 {
 }
 
 fn emit_ask(path: &str) -> i32 {
-    let reason = format!(
+    emit_ask_reason(&format!(
         "Topology: '{path}' is a protected safety file — human approval required to modify it."
-    );
-    println!("{}", decision_json("ask", &reason));
+    ))
+}
+
+/// Emit an `ask` decision with an explicit reason (exit 0). Used both for protected paths and for
+/// the fail-closed case where we cannot verify an edit (target unreadable / over the hook cap).
+fn emit_ask_reason(reason: &str) -> i32 {
+    println!("{}", decision_json("ask", reason));
     0
 }
 
@@ -697,34 +704,24 @@ fn read_file_capped(path: &str, cap: usize) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Reconstruct the full post-edit file (bounded read). If the file is unreadable or over the cap,
-/// fall back to the added text so a secret in new content is still caught.
-fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> String {
-    match read_file_capped(file_path, cap) {
-        Some(mut text) => {
-            if let Some(edits) = &ti.edits {
-                for e in edits {
-                    text = apply_edit(
-                        &text,
-                        &e.old_string,
-                        &e.new_string,
-                        e.replace_all.unwrap_or(false),
-                    );
-                }
-            } else if let (Some(old), Some(new)) = (&ti.old_string, &ti.new_string) {
-                text = apply_edit(&text, old, new, ti.replace_all.unwrap_or(false));
-            }
-            text
+/// Reconstruct the full post-edit file (bounded read). Returns `None` when the target is unreadable
+/// or over the hook cap — the caller then FAILS CLOSED (asks) rather than scanning only the added
+/// text, because a secret could be completed across the unchanged text we cannot see.
+fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> Option<String> {
+    let mut text = read_file_capped(file_path, cap)?;
+    if let Some(edits) = &ti.edits {
+        for e in edits {
+            text = apply_edit(
+                &text,
+                &e.old_string,
+                &e.new_string,
+                e.replace_all.unwrap_or(false),
+            );
         }
-        None => match &ti.edits {
-            Some(edits) => edits
-                .iter()
-                .map(|e| e.new_string.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            None => ti.new_string.clone().unwrap_or_default(),
-        },
+    } else if let (Some(old), Some(new)) = (&ti.old_string, &ti.new_string) {
+        text = apply_edit(&text, old, new, ti.replace_all.unwrap_or(false));
     }
+    Some(text)
 }
 
 fn hook_path_protected(protected: &[String], file_path: &str, root: &Path) -> bool {
@@ -750,9 +747,14 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
             return 2; // wrapper fails closed (covers deep nesting -> serde_json recursion limit)
         }
     };
+    // A RECOGNIZED tool whose operative field is missing is a malformed event on a tool we DO
+    // gate: fail closed (exit 2 -> the wrapper denies), never silently allow.
     match event.tool_name.as_str() {
         "Bash" => {
-            let cmd = event.tool_input.command.unwrap_or_default();
+            let Some(cmd) = event.tool_input.command else {
+                eprintln!("gatekeeper scan --hook: Bash event missing 'command'");
+                return 2;
+            };
             let bytes = cmd.as_bytes();
             let mut f = scan_with(
                 &rules.content_set,
@@ -771,12 +773,17 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
             emit_decision(&f)
         }
         "Write" => {
-            if let Some(fp) = &event.tool_input.file_path {
-                if hook_path_protected(&rules.protected, fp, root) {
-                    return emit_ask(fp);
-                }
+            let Some(fp) = event.tool_input.file_path.clone() else {
+                eprintln!("gatekeeper scan --hook: Write event missing 'file_path'");
+                return 2;
+            };
+            if hook_path_protected(&rules.protected, &fp, root) {
+                return emit_ask(&fp);
             }
-            let content = event.tool_input.content.unwrap_or_default();
+            let Some(content) = event.tool_input.content else {
+                eprintln!("gatekeeper scan --hook: Write event missing 'content'");
+                return 2;
+            };
             emit_decision(&scan_with(
                 &rules.content_set,
                 &rules.content,
@@ -787,12 +794,20 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
         }
         "Edit" | "MultiEdit" => {
             let Some(fp) = event.tool_input.file_path.clone() else {
-                return 0; // no file_path -> nothing to scan
+                eprintln!("gatekeeper scan --hook: Edit event missing 'file_path'");
+                return 2;
             };
             if hook_path_protected(&rules.protected, &fp, root) {
                 return emit_ask(&fp);
             }
-            let text = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP);
+            let Some(text) = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP) else {
+                // Cannot read or oversize: we can't prove the post-edit file is secret-free, so
+                // fail closed (ask) rather than scan only the added text.
+                return emit_ask_reason(&format!(
+                    "Topology: cannot read or oversize edit target '{fp}' — unable to verify it is \
+                     secret-free; human approval required."
+                ));
+            };
             emit_decision(&scan_with(
                 &rules.content_set,
                 &rules.content,
@@ -801,7 +816,7 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 None,
             ))
         }
-        _ => 0, // out of scope (MCP / other tools): silent allow
+        _ => 0, // out of scope (MCP / other tools we do not gate): silent allow
     }
 }
 

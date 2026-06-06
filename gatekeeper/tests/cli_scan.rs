@@ -269,6 +269,92 @@ fn event(tool: &str, input_json: &str) -> String {
     format!(r#"{{"tool_name":"{tool}","tool_input":{input_json}}}"#)
 }
 
+/// Path to the repo's SHIPPED rules file (../security/rules.toml relative to the gatekeeper crate),
+/// distinct from the synthetic ruleset scratch_root() builds.
+fn real_rules_toml() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("security")
+        .join("rules.toml")
+}
+
+#[test]
+fn real_ruleset_blocks_dangerous_git_in_any_flag_order() {
+    // Drives the SHIPPED security/rules.toml (not the synthetic test ruleset) so the real seed
+    // command rules are exercised. -fdx and -dfx are equally destructive and must both block.
+    let root = scratch_root("real_rules");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("git clean -fdx"), 1, "git clean -fdx");
+    assert_eq!(block("git clean -dfx"), 1, "git clean -dfx (d before f)");
+    assert_eq!(block("git clean -df"), 1, "git clean -df");
+    assert_eq!(block("git clean --force -d"), 1, "git clean --force");
+    assert_eq!(block("git reset --hard HEAD~1"), 1, "git reset --hard");
+    assert_eq!(block("git filter-branch --all"), 1, "git filter-branch");
+    assert_eq!(block("git clean -n"), 0, "dry-run clean is safe");
+    assert_eq!(block("ls -la"), 0, "ordinary command is safe");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_type_change_symlink_to_file_is_scanned() {
+    // A symlink (mode 120000) replaced by a regular file (100644) carrying a secret is a type
+    // change (T). It must be content-scanned, or the "every staged blob is scanned" guarantee leaks.
+    let root = git_root("staged_typechange");
+    std::os::unix::fs::symlink("elsewhere", root.join("cfg")).unwrap();
+    git(&root, &["add", "cfg"]);
+    git(&root, &["commit", "-q", "-m", "add symlink"]);
+    fs::remove_file(root.join("cfg")).unwrap();
+    fs::write(root.join("cfg"), format!("AWS={}\n", planted_key())).unwrap();
+    git(&root, &["add", "cfg"]);
+    assert_eq!(
+        run(&root, &["scan", "--staged"], b"").0,
+        1,
+        "type-change blob must be content-scanned"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn hook_edit_unreadable_target_fails_closed_asks() {
+    // We cannot read the target (it does not exist), so we cannot reconstruct the post-edit file.
+    // Failing closed = ask (human decides), NOT a silent allow that scanned only the added text.
+    let root = scratch_root("hook_edit_unreadable");
+    let input =
+        r#"{"file_path":"/nonexistent/topo/does-not-exist.txt","old_string":"a","new_string":"b"}"#;
+    let (code, out) = run(&root, &["scan", "--hook"], event("Edit", input).as_bytes());
+    assert_eq!(code, 0, "hook exits 0; the JSON carries the decision");
+    assert!(
+        out.contains(r#""permissionDecision":"ask""#),
+        "unverifiable edit target must ask, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn hook_recognized_tool_missing_field_fails_closed() {
+    // A gated tool whose operative field is absent is malformed -> exit 2 (the wrapper denies),
+    // never a silent allow.
+    let root = scratch_root("hook_missing");
+    let (code, out) = run(&root, &["scan", "--hook"], event("Bash", "{}").as_bytes());
+    assert_eq!(code, 2, "Bash missing 'command' -> fail closed");
+    assert!(out.is_empty(), "no decision JSON on fail-closed");
+    let (code, _) = run(
+        &root,
+        &["scan", "--hook"],
+        event("Edit", r#"{"old_string":"a","new_string":"b"}"#).as_bytes(),
+    );
+    assert_eq!(code, 2, "Edit missing 'file_path' -> fail closed");
+    let (code, _) = run(
+        &root,
+        &["scan", "--hook"],
+        event("Write", r#"{"file_path":"notes.txt"}"#).as_bytes(),
+    );
+    assert_eq!(code, 2, "Write missing 'content' -> fail closed");
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn hook_bash_curl_pipe_sh_denies() {
     let root = scratch_root("hook_bash");

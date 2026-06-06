@@ -76,8 +76,8 @@ pattern = '\bgit\b.*\breset\b.*--hard\b'
 id = "git-clean-fdx"
 kind = "command"
 severity = "block"
-description = "git clean wiping untracked + ignored files"
-pattern = '\bgit\b.*\bclean\b.*-[a-zA-Z]*f[a-zA-Z]*d'
+description = "git clean force-wiping untracked files (any flag order: -fd, -df, -dfx, --force)"
+pattern = '\bgit\b.*\bclean\b.*(-[a-zA-Z]*f|--force)'
 
 [[rule]]
 id = "git-filter-branch"
