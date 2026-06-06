@@ -19,6 +19,7 @@ use std::process::{exit, Command};
 
 mod json;
 mod review;
+mod scan;
 
 const PLACEHOLDERS: &[&str] = &[
     "tbd",
