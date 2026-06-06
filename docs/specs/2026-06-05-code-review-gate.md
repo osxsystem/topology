@@ -194,8 +194,8 @@ BASE: 2a7d4e1c9b6f3a8d5e2c1b0a9f8e7d6c5b4a3210
 - Exactly one `## Criteria checked` heading containing **both** `### Spec/plan` and `### Standards`
   subheadings, each with ≥1 non-empty content line. Missing either → FAIL-CLOSED. *(Gate-enforces
   that both dimensions were actually reviewed.)*
-- An HTML comment (`<!--`, even unclosed) anywhere in the header or the `## Blocking findings`
-  section → FAIL-CLOSED. (`strip_comments` is **not** used.)
+- An HTML comment (`<!--`, even unclosed) anywhere in the header, the `## Blocking findings`
+  section, or the `## Criteria checked` section → FAIL-CLOSED. (`strip_comments` is **not** used.)
 - **Section boundary:** a section runs from its heading to the next line that — after
   normalization — begins exactly with `## ` (an H2), or to EOF. `### ` (H3) subheadings do **not**
   end a `## ` section, so `### Spec/plan` stays inside `## Criteria checked`. The machine-parsed

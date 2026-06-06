@@ -164,6 +164,11 @@ pub fn parse_review(raw: &str) -> Result<ParsedReview, String> {
         ));
     }
     let criteria = section_lines(&lines, crit[0]);
+    // The criteria block is machine-parsed (two-dimension enforcement), so a comment must
+    // not be able to stand in for visible rubric evidence.
+    if contains_comment(&criteria) {
+        return Err("HTML comment in a machine-parsed region (fail-closed)".into());
+    }
     check_subsection(&criteria, "### Spec/plan")?;
     check_subsection(&criteria, "### Standards")?;
 
@@ -249,6 +254,13 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
     }
 
     let branch = base_ref.unwrap_or("main");
+    // Reject option-shaped refs: a value like "--independent" or "--fork-point" would be
+    // parsed by `git merge-base` as a mode flag (and could print HEAD itself), turning a
+    // wrong-based artifact into a pass. A valid git ref never begins with '-'.
+    if branch.starts_with('-') {
+        eprintln!("gatekeeper: --base must be a ref name, not an option ('{branch}')");
+        return 2;
+    }
     let base = match git(root, &["merge-base", branch, "HEAD"]) {
         Some(b) => b,
         None => {
@@ -468,6 +480,12 @@ mod tests {
     fn spec_fail_sample_parses() {
         assert!(!parse_review(SPEC_FAIL_SAMPLE).unwrap().verdict_pass);
     }
+    #[test]
+    fn comment_in_criteria_section_rejected() {
+        // The criteria block is machine-parsed; a comment must not stand in for evidence.
+        let t = PASS.replacen("- crit one — met", "<!-- vacuous -->", 1);
+        assert!(parse_review(&t).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -677,6 +695,18 @@ mod gate_tests {
         // Unstaged modification -> porcelain " M adocs/reviews/x.rs" (sorts before docs/).
         fs::write(sneaky.join("x.rs"), "two\n").unwrap();
         assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn option_shaped_base_rejected() {
+        // An option-shaped --base (e.g. "--independent") must not reach `git merge-base`,
+        // where it would be parsed as a mode flag and could print HEAD.
+        let (root, head) = repo("optbase");
+        write_artifact(&root, &head, &head, true);
+        assert_eq!(
+            gate_review(&root, "code-review-gate", Some("--independent")),
+            2
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
