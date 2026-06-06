@@ -158,7 +158,7 @@ release ships a static binary.
 | Phase | Capability | Status |
 |---|---|---|
 | 0 | Blueprint (docs + diagrams + roadmap) | ✅ delivered |
-| 1 | Security scanning | ⏳ planned (next) |
+| 1 | Security scanning | ✅ delivered |
 | 1.5 | Code-review gate (pulled forward) | ✅ delivered |
 | 2 | Instincts engine | ⏳ planned |
 | 3 | Continuous learning | ⏳ planned |

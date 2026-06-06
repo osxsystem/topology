@@ -53,6 +53,7 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 | `verify`  | a verification note exists for the feature |
 | `review`  | a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to merge-base, both dimensions, no blockers) |
 | `finish`  | the full test suite passes (`gatekeeper check finish -- <cmd>`) |
+| `scan`    | a deterministic veto on secrets + dangerous commands, before they run (`PreToolUse`) or commit (`pre-commit`); history is the strong net, the working-tree veto is partial |
 
 ## Quick start
 

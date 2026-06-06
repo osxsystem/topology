@@ -35,6 +35,7 @@ You may not write production code until the **design** and **plan** gates pass:
   Check: `gatekeeper check review --feature <feature> [--base <ref>]`
 - **Finish gate** — the full test suite passes.
   Check: `gatekeeper check finish -- <your test command>`
+- **Security scan** — the deterministic safety floor: a `PreToolUse` and pre-commit veto (`gatekeeper scan`) on secrets and dangerous commands. It is not bypassable by the agent; editing its rules, hooks, or binary is gated behind human approval.
 
 ## Rules vs. gates
 
