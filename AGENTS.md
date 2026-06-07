@@ -35,6 +35,7 @@ You may not write production code until the **design** and **plan** gates pass:
   Check: `gatekeeper check review --feature <feature> [--base <ref>]`
 - **Finish gate** — the full test suite passes.
   Check: `gatekeeper check finish -- <your test command>`
+- **Security scan** — the deterministic safety floor: a `PreToolUse` and pre-commit veto (`gatekeeper scan`) on secrets and dangerous commands. Tool-writes (`Write`/`Edit`) to its rules, hooks, scanner, or settings wiring are gated behind human approval (`ask`), and Bash commands that mutate that wiring are denied. The veto raises the bar but is not absolute: an agent with arbitrary shell can still disable the floor the same way a human can (`git commit --no-verify`, removing the hook) — that residual path is the documented threat boundary (mistakes, not a determined evader), not a defect.
 
 ## Rules vs. gates
 

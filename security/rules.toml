@@ -1,0 +1,150 @@
+schema_version = 1
+
+# ---------- content rules (scanned on every input: files, command strings, blobs) ----------
+[[rule]]
+id = "aws-access-key-id"
+kind = "content"
+severity = "block"
+description = "AWS access key id"
+pattern = '\b(AKIA|ASIA)[0-9A-Z]{16}\b'
+
+[[rule]]
+id = "private-key-block"
+kind = "content"
+severity = "block"
+description = "PEM private key header"
+pattern = '-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+
+[[rule]]
+id = "gcp-service-account"
+kind = "content"
+severity = "block"
+description = "GCP service-account private-key marker"
+pattern = '"type"\s*:\s*"service_account"'
+
+[[rule]]
+id = "github-token"
+kind = "content"
+severity = "block"
+description = "GitHub token prefix"
+pattern = '\bgh[pousr]_[A-Za-z0-9]{20,}\b'
+
+[[rule]]
+id = "slack-token"
+kind = "content"
+severity = "block"
+description = "Slack token prefix"
+pattern = '\bxox[baprs]-[A-Za-z0-9-]{10,}\b'
+
+[[rule]]
+id = "openai-key"
+kind = "content"
+severity = "block"
+description = "OpenAI-style secret key prefix"
+pattern = '\bsk-[A-Za-z0-9]{20,}\b'
+
+# ---------- command rules (scanned only on shell-command inputs: --cmd, --hook Bash) ----------
+[[rule]]
+id = "rm-rf-root"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of the filesystem root"
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
+
+[[rule]]
+id = "rm-rf-root-fr"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of the filesystem root (f before r)"
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
+
+[[rule]]
+id = "rm-rf-root-split-rf"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of root with separated/long flags (recursive then force)"
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
+
+[[rule]]
+id = "rm-rf-root-split-fr"
+kind = "command"
+severity = "block"
+description = "recursive force-delete of root with separated/long flags (force then recursive)"
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
+
+[[rule]]
+id = "curl-pipe-shell"
+kind = "command"
+severity = "block"
+description = "piping a network download straight into a shell"
+pattern = '\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(\S*/)?(sh|bash|zsh)\b'
+
+[[rule]]
+id = "git-reset-hard"
+kind = "command"
+severity = "block"
+description = "discarding work with git reset --hard"
+pattern = '\bgit\b.*\breset\b.*--hard\b'
+
+[[rule]]
+id = "git-clean-fdx"
+kind = "command"
+severity = "block"
+description = "git clean force-wiping untracked files (any flag order: -fd, -df, -dfx, --force)"
+pattern = '\bgit\b.*\bclean\b.*(-[a-zA-Z]*f|--force)'
+
+[[rule]]
+id = "git-filter-branch"
+kind = "command"
+severity = "block"
+description = "history rewrite via git filter-branch"
+pattern = '\bgit\b.*\bfilter-branch\b'
+
+[[rule]]
+id = "git-push-force"
+kind = "command"
+severity = "block"
+description = "force push (use --force-with-lease instead); incl. bundled short flags like -uf"
+pattern = '\bgit\b.*\bpush\b.*(--force($|\s|[;&|<>)])|\s-[A-Za-z]*f[A-Za-z]*(\s|[;&|<>)]|$))'
+
+[[rule]]
+id = "git-commit-no-verify"
+kind = "command"
+severity = "block"
+description = "bypassing the pre-commit safety floor (incl. bundled short flags like -nm)"
+pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|[;&|<>)]|$))'
+
+[[rule]]
+id = "tamper-security-wiring"
+kind = "command"
+severity = "block"
+description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
+pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
+
+# ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
+[[allow]]
+rule = "aws-access-key-id"
+value = "AKIAIOSFODNN7EXAMPLE"
+reason = "canonical AWS documentation example key"
+
+# ---------- unscannable-blob allowlist (path + git object id; example only) ----------
+# [[allow_blob]]
+# path = "assets/model.bin"
+# blob_oid = "<git hash-object output>"
+# reason = "known-safe large binary asset"
+
+# ---------- self-protection: staged changes to these abort the commit ----------
+[integrity]
+protected_paths = [
+  "security/rules.toml",
+  "hooks/security-scan.sh",
+  "hooks/pre-commit.sh",
+  "gatekeeper/src/scan.rs",
+  "gatekeeper/src/main.rs",
+  "gatekeeper/Cargo.toml",
+  "gatekeeper/Cargo.lock",
+  "scripts/install.sh",
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  ".git/hooks/pre-commit",
+]

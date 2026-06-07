@@ -8,8 +8,13 @@
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
 //!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
+//!   gatekeeper scan --hook                  Security-scan a PreToolUse event (stdin); emit the decision.
+//!   gatekeeper scan --cmd | --content       Security-scan a command / file image on stdin.
+//!   gatekeeper scan --staged                Pre-commit: scan staged blobs + enforce integrity.
+//!   gatekeeper scan --check-path <path>     Exit 1 iff <path> is a protected safety file.
 //!
-//! Dependency-free (std only) so it builds offline and ships as one static binary.
+//! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
+//! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
 
 use std::env;
 use std::fs;
@@ -17,8 +22,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
-mod json;
 mod review;
+mod scan;
 
 const PLACEHOLDERS: &[&str] = &[
     "tbd",
@@ -35,6 +40,7 @@ fn main() {
         Some("list") => cmd_list(),
         Some("activate") => cmd_activate(),
         Some("check") => cmd_check(&args[1..]),
+        Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -58,7 +64,9 @@ fn print_help() {
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
-         gatekeeper check finish -- <command...>\n"
+         gatekeeper check finish -- <command...>\n  \
+         gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
+         gatekeeper scan --staged | --check-path <path>\n"
     );
 }
 
@@ -128,7 +136,7 @@ fn cmd_activate() -> i32 {
 
     let rules_path = framework_root().join("hooks").join("skill-rules.json");
     let matched = match fs::read_to_string(&rules_path) {
-        Ok(raw) => match json::parse(&raw) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(v) => route(&v, &prompt_lc),
             Err(e) => {
                 eprintln!("gatekeeper: skill-rules.json parse error: {e}");
@@ -152,25 +160,25 @@ fn cmd_activate() -> i32 {
 }
 
 /// Given parsed skill-rules JSON and a lowercased prompt, return (skill, enforcement) matches.
-fn route(rules: &json::Json, prompt_lc: &str) -> Vec<(String, String)> {
+fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let Some(skills) = rules.get("skills").and_then(json::Json::as_object) else {
+    let Some(skills) = rules.get("skills").and_then(|v| v.as_object()) else {
         return out;
     };
     for (name, cfg) in skills {
         let enforcement = cfg
             .get("enforcement")
-            .and_then(json::Json::as_str)
+            .and_then(|v| v.as_str())
             .unwrap_or("suggest")
             .to_string();
         let keywords = cfg
             .get("promptTriggers")
             .and_then(|t| t.get("keywords"))
-            .and_then(json::Json::as_array);
+            .and_then(|k| k.as_array());
         if let Some(kws) = keywords {
             let hit = kws
                 .iter()
-                .filter_map(json::Json::as_str)
+                .filter_map(|k| k.as_str())
                 .any(|k| prompt_lc.contains(&k.to_lowercase()));
             if hit {
                 out.push((name.clone(), enforcement));
@@ -354,7 +362,7 @@ mod tests {
     fn routes_on_keyword() {
         let raw = r#"{ "skills": { "write-plan": { "enforcement": "require",
             "promptTriggers": { "keywords": ["plan", "breakdown"] } } } }"#;
-        let v = json::parse(raw).unwrap();
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
         let m = route(&v, "can you plan this feature");
         assert_eq!(m, vec![("write-plan".to_string(), "require".to_string())]);
         assert!(route(&v, "unrelated request").is_empty());

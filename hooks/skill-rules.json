@@ -57,6 +57,14 @@
         "keywords": ["review", "audit", "critique", "before merge", "code review"]
       }
     },
+    "security-scanning": {
+      "type": "process",
+      "enforcement": "require",
+      "priority": "high",
+      "promptTriggers": {
+        "keywords": ["secret", "credential", "api key", "scan", "security", "dangerous command", "pre-commit"]
+      }
+    },
     "finish-branch": {
       "type": "process",
       "enforcement": "suggest",

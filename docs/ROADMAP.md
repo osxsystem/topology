@@ -4,12 +4,13 @@ The path from today's Topology (gates + Claude Code) to the full operator system
 separately-approved unit of work with its own deliverables and a concrete **verify** check — nothing
 is "done" without a check that proves it.
 
-> This is the plan, not a changelog. **Phase 0** is delivered, plus the **code-review gate** pulled forward from Phase 5 (Phase 1.5 below). Phases 1–6 are otherwise designed and
-> ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, and the
+> **code-review gate** pulled forward from Phase 5 (Phase 1.5 below) are delivered. Phases 2–6 are
+> designed and ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
-    P0["Phase 0<br/>Blueprint<br/>✅ this pass"] --> P1["Phase 1<br/>Security<br/>scanning"]
+    P0["Phase 0<br/>Blueprint<br/>✅ this pass"] --> P1["Phase 1<br/>Security<br/>scanning ✅"]
     P1 --> P2["Phase 2<br/>Instincts<br/>engine"]
     P2 --> P3["Phase 3<br/>Continuous<br/>learning"]
     P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters"]
@@ -36,22 +37,23 @@ fallbacks; internal links resolve; Phases 1–6 are framed as *planned*, not don
 
 ---
 
-## Phase 1 — Security scanning *(front-loaded)*
+## Phase 1 — Security scanning ✅ *(front-loaded, delivered 2026-06-06)*
 
 **Goal.** A deterministic safety floor: no secret or dangerous command reaches execution or history.
 
 **Deliverables.**
-- `gatekeeper/src/scan.rs` — diff/command scanner (reuses `json.rs`; std-only regex or a vetted dep).
+- `gatekeeper/src/scan.rs` — content/command scanner over `security/rules.toml` (ReDoS-safe `RegexSet`; `serde`/`toml`/`serde_json` per ADR-0007; `json.rs` retired).
 - `security/rules.toml` — seed rules (cloud keys, private keys, `rm -rf /`, pipe-to-shell, history rewrite).
-- `hooks/security-scan.sh` — `PreToolUse` glue (block on non-zero).
-- `hooks/pre-commit.sh` — pre-commit glue scanning the staged diff.
+- `hooks/security-scan.sh` — `PreToolUse` glue (emits deny/ask JSON; fail-closed).
+- `hooks/pre-commit.sh` — pre-commit glue scanning the staged blobs + protected-path integrity.
 - `skills/security-scanning/SKILL.md` — when/how the agent invokes and responds to a veto.
 
-**New `gatekeeper` surface.** `gatekeeper scan --diff` (stdin) and `gatekeeper scan --cmd "<c>"`,
-exit `0` clean / `1` veto.
+**`gatekeeper` surface.** `gatekeeper scan --hook` (PreToolUse JSON on stdin), `--cmd`/`--content`
+(stdin), `--staged` (git index), `--check-path <p>`; exit `0` clean / `1` veto / `2` fail-closed.
 
 **Verify.** A planted AWS key and a `curl … | sh` are **blocked**; a clean diff/command **passes**;
-`cargo test` covers each rule kind; the `PreToolUse` hook blocks a real tool call end to end.
+`cargo test` covers each rule kind; the `PreToolUse` hook blocks a real tool call end to end. Evidence:
+`docs/verify/2026-06-06-security-scanning.md`.
 
 **Depends on.** Phase 0.
 
@@ -158,7 +160,7 @@ release ships a static binary.
 | Phase | Capability | Status |
 |---|---|---|
 | 0 | Blueprint (docs + diagrams + roadmap) | ✅ delivered |
-| 1 | Security scanning | ⏳ planned (next) |
+| 1 | Security scanning | ✅ delivered |
 | 1.5 | Code-review gate (pulled forward) | ✅ delivered |
 | 2 | Instincts engine | ⏳ planned |
 | 3 | Continuous learning | ⏳ planned |
