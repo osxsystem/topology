@@ -114,6 +114,13 @@ severity = "block"
 description = "bypassing the pre-commit safety floor (incl. bundled short flags like -nm)"
 pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|$))'
 
+[[rule]]
+id = "tamper-security-wiring"
+kind = "command"
+severity = "block"
+description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
+pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
+
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]
 rule = "aws-access-key-id"

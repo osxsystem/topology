@@ -545,6 +545,44 @@ fn staged_binary_with_late_nul_blocks() {
 }
 
 #[test]
+fn real_ruleset_blocks_bash_tampering_with_wiring() {
+    // A Bash command that rewrites/removes the security wiring must be vetoed, not silently run —
+    // .git/hooks mutations are invisible to the pre-commit boundary, so the PreToolUse veto is the
+    // only line of defense for that path.
+    let root = scratch_root("real_tamper");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(
+        block("echo 'exit 0' > .git/hooks/pre-commit"),
+        1,
+        "redirect into the active hook"
+    );
+    assert_eq!(
+        block("rm .git/hooks/pre-commit"),
+        1,
+        "remove the active hook"
+    );
+    assert_eq!(
+        block("cp /dev/null hooks/pre-commit.sh"),
+        1,
+        "overwrite the worktree hook"
+    );
+    assert_eq!(
+        block("chmod -x .git/hooks/pre-commit"),
+        1,
+        "disarm the active hook"
+    );
+    assert_eq!(block(":> security/rules.toml"), 1, "truncate the rules");
+    assert_eq!(
+        block("cat .git/hooks/pre-commit"),
+        0,
+        "reading the hook is fine"
+    );
+    assert_eq!(block("rm -rf node_modules"), 0, "an unrelated rm is fine");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_protects_active_git_hook() {
     // The installed .git/hooks/pre-commit (a stable copy) must be protected, or an agent could
     // rewrite the active hook to `exit 0` before committing a secret.
