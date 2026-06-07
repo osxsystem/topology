@@ -448,6 +448,27 @@ fn real_ruleset_blocks_rm_rf_root_as_any_operand() {
 }
 
 #[test]
+fn real_ruleset_blocks_separator_adjacent_dangerous_commands() {
+    // A shell separator (; && | redirect) immediately after a dangerous token must not let it slip;
+    // the shell runs the command before the separator.
+    let root = scratch_root("real_sep");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("rm -rf /; echo done"), 1, "rm root then ;");
+    assert_eq!(block("rm -rf /&& echo done"), 1, "rm root then &&");
+    assert_eq!(block("rm -rf /|cat"), 1, "rm root then |");
+    assert_eq!(block("git push --force; echo done"), 1, "force push then ;");
+    assert_eq!(block("git push -f|cat"), 1, "force push -f then |");
+    assert_eq!(block("git commit -n; echo done"), 1, "no-verify -n then ;");
+    assert_eq!(
+        block("git push --force-with-lease; echo"),
+        0,
+        "lease push stays safe even before a separator"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_blocks_bundled_force_push() {
     // `git push -uf origin main` bundles -u with -f (force); the bypass must still be caught, while
     // --force-with-lease stays safe.

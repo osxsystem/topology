@@ -49,28 +49,28 @@ id = "rm-rf-root"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
 
 [[rule]]
 id = "rm-rf-root-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root (f before r)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
 
 [[rule]]
 id = "rm-rf-root-split-rf"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (recursive then force)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
 
 [[rule]]
 id = "rm-rf-root-split-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (force then recursive)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+([^\s;|&]+\s+)*/(\*|\s|[;&|<>)]|$)'
 
 [[rule]]
 id = "curl-pipe-shell"
@@ -105,14 +105,14 @@ id = "git-push-force"
 kind = "command"
 severity = "block"
 description = "force push (use --force-with-lease instead); incl. bundled short flags like -uf"
-pattern = '\bgit\b.*\bpush\b.*(--force($|\s)|\s-[A-Za-z]*f[A-Za-z]*(\s|$))'
+pattern = '\bgit\b.*\bpush\b.*(--force($|\s|[;&|<>)])|\s-[A-Za-z]*f[A-Za-z]*(\s|[;&|<>)]|$))'
 
 [[rule]]
 id = "git-commit-no-verify"
 kind = "command"
 severity = "block"
 description = "bypassing the pre-commit safety floor (incl. bundled short flags like -nm)"
-pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|$))'
+pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|[;&|<>)]|$))'
 
 [[rule]]
 id = "tamper-security-wiring"
