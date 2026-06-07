@@ -535,18 +535,21 @@ fn check_path_resolves_parent_and_return_alias() {
 }
 
 #[test]
-fn hook_edit_empty_old_string_scans_inserted_secret() {
-    // An Edit with empty old_string (insert) must still scan new_string for secrets, not ignore it.
+fn hook_edit_empty_old_string_fails_closed() {
+    // An Edit with empty old_string has an ambiguous insertion point, so the post-edit image cannot
+    // be faithfully reconstructed (a secret could complete by abutting existing text at the real
+    // insertion point). Fail closed = ask, never a silent allow or a fabricated post-image.
     let root = scratch_root("hook_empty_old");
     let target = root.join("f.txt");
     fs::write(&target, "clean\n").unwrap();
     let fp = target.to_string_lossy().replace('\\', "/");
     let secret = format!("AKIA{}", "1234567890ABCDEF");
     let input = format!(r#"{{"file_path":"{fp}","old_string":"","new_string":"K={secret}"}}"#);
-    let (_, out) = run(&root, &["scan", "--hook"], event("Edit", &input).as_bytes());
+    let (code, out) = run(&root, &["scan", "--hook"], event("Edit", &input).as_bytes());
+    assert_eq!(code, 0, "hook exits 0; decision in JSON");
     assert!(
-        out.contains(r#""permissionDecision":"deny""#),
-        "secret in inserted text must deny, got: {out}"
+        out.contains(r#""permissionDecision":"ask""#),
+        "empty old_string must fail closed (ask), got: {out}"
     );
     let _ = fs::remove_dir_all(&root);
 }

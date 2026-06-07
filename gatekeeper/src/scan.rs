@@ -784,16 +784,11 @@ fn apply_edit_capped(
     cap: usize,
 ) -> Option<String> {
     if old.is_empty() {
-        // Ambiguous insert (empty old_string): don't silently drop new_string — append it so a
-        // secret in the inserted content is still scanned. Bounded by the cap.
-        if new.is_empty() {
-            return Some(text.to_string());
-        }
-        let projected = text.len() as i128 + 1 + new.len() as i128;
-        if projected > cap as i128 {
-            return None;
-        }
-        return Some(format!("{text}\n{new}"));
+        // Empty old_string: the insertion point is ambiguous, so we cannot faithfully reconstruct
+        // the post-edit image (a secret could complete by abutting existing text at the real
+        // insertion point — appending with a separator would miss it). Fail closed: None makes the
+        // caller `ask`, rather than fabricate an image we can't verify.
+        return None;
     }
     let count = if replace_all {
         text.matches(old).count()
