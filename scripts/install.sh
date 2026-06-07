@@ -25,8 +25,12 @@ echo "    done"
 
 echo "==> Installing the git pre-commit hook"
 if [[ -d "$ROOT/.git" ]]; then
-  ln -sf "$ROOT/hooks/pre-commit.sh" "$ROOT/.git/hooks/pre-commit"
-  echo "    linked .git/hooks/pre-commit -> hooks/pre-commit.sh"
+  # COPY, do not symlink: the active hook must not be the same mutable worktree file it guards, or
+  # a staged edit weakening hooks/pre-commit.sh would change the enforcement code before it runs.
+  # The copy is stable; re-run install.sh to pick up hook updates.
+  cp "$ROOT/hooks/pre-commit.sh" "$ROOT/.git/hooks/pre-commit"
+  chmod +x "$ROOT/.git/hooks/pre-commit"
+  echo "    copied hooks/pre-commit.sh -> .git/hooks/pre-commit (stable copy; re-run install to update)"
 else
   echo "    (no .git dir here; wire hooks/pre-commit.sh into your VCS manually)"
 fi

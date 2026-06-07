@@ -49,28 +49,28 @@ id = "rm-rf-root"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*[rR][A-Za-z]*f[A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\*|\s|$)'
 
 [[rule]]
 id = "rm-rf-root-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of the filesystem root (f before r)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*-[A-Za-z]*f[A-Za-z]*[rR][A-Za-z]*\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\*|\s|$)'
 
 [[rule]]
 id = "rm-rf-root-split-rf"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (recursive then force)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\*|\s|$)'
 
 [[rule]]
 id = "rm-rf-root-split-fr"
 kind = "command"
 severity = "block"
 description = "recursive force-delete of root with separated/long flags (force then recursive)"
-pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\s|$)'
+pattern = '\brm\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--force|-[A-Za-z]*f[A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*(--recursive|-[A-Za-z]*[rR][A-Za-z]*)\s+((-{1,2}[A-Za-z0-9][\w-]*|--)\s+)*/(\*|\s|$)'
 
 [[rule]]
 id = "curl-pipe-shell"

@@ -378,6 +378,30 @@ fn real_ruleset_blocks_rm_rf_root_with_terminator_and_long_opts() {
         0,
         "terminator but non-root path is safe"
     );
+    assert_eq!(block("rm -rf /*"), 1, "root glob delete");
+    assert_eq!(block("rm -rf -- /*"), 1, "root glob delete with terminator");
+    assert_eq!(block("rm -rf /tmp/*"), 0, "scoped glob is safe");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn staged_integrity_uses_committed_protected_paths() {
+    // A commit that edits rules.toml to drop itself from protected_paths must STILL be blocked: the
+    // integrity pass honors the COMMITTED (HEAD) protected set, so self-protection cannot be
+    // disarmed in the same commit.
+    let root = git_root("staged_selfprotect");
+    // A valid rules file that drops protected_paths. The pattern is a regex that does NOT match its
+    // own literal text (so the content scan of this blob stays clean and we isolate the integrity path).
+    let weakened = "schema_version = 1\n\
+[[rule]]\nid = \"aws\"\nkind = \"content\"\nseverity = \"block\"\ndescription = \"x\"\npattern = '\\b(AKIA|ASIA)[0-9A-Z]{16}\\b'\n\
+[integrity]\nprotected_paths = []\n";
+    fs::write(root.join("security").join("rules.toml"), weakened).unwrap();
+    git(&root, &["add", "security/rules.toml"]);
+    assert_eq!(
+        run(&root, &["scan", "--staged"], b"").0,
+        1,
+        "weakening rules.toml is blocked via the committed protected set"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

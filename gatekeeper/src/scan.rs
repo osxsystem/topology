@@ -559,6 +559,20 @@ fn git_index_mode(root: &Path, path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// protected_paths from the COMMITTED rules.toml (HEAD), so the commit-time integrity guard cannot
+/// be disarmed by a staged edit to rules.toml in the same commit. Empty if HEAD lacks the file or
+/// it does not parse (the working-tree set still applies; this only ever ADDS protection).
+fn head_protected_paths(root: &Path) -> Vec<String> {
+    match git_raw(root, &["show", "HEAD:security/rules.toml"]) {
+        Ok(bytes) => std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|s| parse_rules(s).ok())
+            .map(|r| r.protected)
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
     let mut blocked = false;
 
@@ -636,7 +650,15 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
         }
     }
 
-    // (2) Integrity enumeration: ACDMRT — broader; both rename sides vs protected_paths.
+    // (2) Integrity enumeration: ACDMRT — broader; both rename sides vs protected_paths. Honor the
+    // working-tree AND the committed (HEAD) protected set, so a commit cannot remove a path from
+    // protected_paths to slip its own weakening of rules.toml past this guard.
+    let mut protected_union: Vec<String> = rules.protected.clone();
+    for p in head_protected_paths(root) {
+        if !protected_union.contains(&p) {
+            protected_union.push(p);
+        }
+    }
     match git_name_status_z(
         root,
         &[
@@ -651,7 +673,7 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
         Ok(entries) => {
             for (status, paths) in entries {
                 for p in &paths {
-                    if is_protected(root, &rules.protected, p) {
+                    if is_protected(root, &protected_union, p) {
                         eprintln!("BLOCK protected-path: staged change ({status}) to {p}");
                         blocked = true;
                     }
