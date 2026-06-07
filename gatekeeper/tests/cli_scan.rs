@@ -424,6 +424,30 @@ fn real_ruleset_blocks_bundled_no_verify_short_option() {
 }
 
 #[test]
+fn real_ruleset_blocks_rm_rf_root_as_any_operand() {
+    // `rm -rf /tmp /` deletes root even though `/` is not the first operand — must block. A `/`
+    // that belongs to a SEPARATE command after `;` must not (it is not an rm operand).
+    let root = scratch_root("real_rm3");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(block("rm -rf /tmp /"), 1, "root as a later operand");
+    assert_eq!(block("rm -r -f /tmp /"), 1, "separated flags, root later");
+    assert_eq!(
+        block("rm --recursive --force /tmp /"),
+        1,
+        "long flags, root later"
+    );
+    assert_eq!(block("rm -rf /var/log /home"), 0, "no root operand is safe");
+    assert_eq!(
+        block("rm -rf foo ; ls /"),
+        0,
+        "a separate command after ; is not a root delete"
+    );
+    assert_eq!(block("rm -rf a b c"), 0, "plain operands are safe");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_blocks_bundled_force_push() {
     // `git push -uf origin main` bundles -u with -f (force); the bypass must still be caught, while
     // --force-with-lease stays safe.

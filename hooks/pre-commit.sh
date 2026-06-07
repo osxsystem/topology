@@ -6,12 +6,14 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 
-if command -v gatekeeper >/dev/null 2>&1; then
-  GK="$(command -v gatekeeper)"
-elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
+# Prefer the repo-built binary (the trusted, feature-current scanner) over whatever `gatekeeper`
+# happens to be on PATH — a stale or unrelated PATH binary must not stand in for the real veto.
+if [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/release/gatekeeper"
 elif [[ -x "$ROOT/gatekeeper/target/debug/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/debug/gatekeeper"
+elif command -v gatekeeper >/dev/null 2>&1; then
+  GK="$(command -v gatekeeper)"
 else
   echo "Topology pre-commit: security scanner unavailable - run ./scripts/install.sh" >&2
   exit 1
