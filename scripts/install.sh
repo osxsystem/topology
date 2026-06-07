@@ -40,7 +40,9 @@ echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"
 
 cat <<EOF
 
-==> Hook config (Claude Code: ~/.claude/settings.json or .claude/settings.json)
+==> Hook config — paste into the PROJECT-LOCAL .claude/settings.json (NOT ~/.claude/settings.json).
+    Project-local lives in the repo, so it is covered by protected_paths and the security floor
+    guards its own registration; a home-dir settings file is outside the repo and cannot be protected.
 {
   "hooks": {
     "UserPromptSubmit": "$ROOT/hooks/skill-activation.sh",

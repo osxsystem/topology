@@ -139,4 +139,5 @@ protected_paths = [
   "scripts/install.sh",
   ".claude/settings.json",
   ".claude/settings.local.json",
+  ".git/hooks/pre-commit",
 ]

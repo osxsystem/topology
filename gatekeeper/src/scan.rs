@@ -240,7 +240,11 @@ fn is_allowed(allows: &[CompiledAllow], rule_id: &str, span: &[u8]) -> bool {
         }
         match &a.matcher {
             AllowMatch::Exact(v) => v.as_slice() == span,
-            AllowMatch::Pattern(re) => re.is_match(span),
+            // Must match the WHOLE finding span, not a substring of it — an unanchored allow
+            // pattern must not exempt a larger secret that merely contains the allowed text.
+            AllowMatch::Pattern(re) => re
+                .find(span)
+                .is_some_and(|m| m.start() == 0 && m.end() == span.len()),
         }
     })
 }
@@ -1127,6 +1131,22 @@ mod match_tests {
         let line = format!("AKIAIOSFODNN7EXAMPLE and {key}\n");
         let f2 = scan_with(&r.content_set, &r.content, line.as_bytes(), &r.allows, None);
         assert_eq!(f2.len(), 1);
+    }
+    #[test]
+    fn allow_pattern_requires_full_span() {
+        // A pattern allow must exempt only a span it matches in FULL, not one it merely appears in.
+        let allows = vec![CompiledAllow {
+            rule: "*".to_string(),
+            matcher: AllowMatch::Pattern(Regex::new("ABC").unwrap()),
+        }];
+        assert!(
+            !is_allowed(&allows, "r", b"ABCDEFGHIJ"),
+            "a substring pattern must not exempt a larger span"
+        );
+        assert!(
+            is_allowed(&allows, "r", b"ABC"),
+            "a full-span pattern match is exempted"
+        );
     }
     #[test]
     fn matches_non_utf8_bytes() {

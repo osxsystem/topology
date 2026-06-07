@@ -545,6 +545,34 @@ fn staged_binary_with_late_nul_blocks() {
 }
 
 #[test]
+fn real_ruleset_protects_active_git_hook() {
+    // The installed .git/hooks/pre-commit (a stable copy) must be protected, or an agent could
+    // rewrite the active hook to `exit 0` before committing a secret.
+    let root = scratch_root("real_githook");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    assert_eq!(
+        run(
+            &root,
+            &["scan", "--check-path", ".git/hooks/pre-commit"],
+            b""
+        )
+        .0,
+        1,
+        "the active git hook is a protected path"
+    );
+    let ev = event(
+        "Write",
+        r#"{"file_path":".git/hooks/pre-commit","content":"exit 0"}"#,
+    );
+    let (_, out) = run(&root, &["scan", "--hook"], ev.as_bytes());
+    assert!(
+        out.contains(r#""permissionDecision":"ask""#),
+        "rewriting the active hook must ask, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_blocks_each_content_seed() {
     // Drives the SHIPPED rules with one planted sample per content seed rule, so every secret kind
     // has cargo coverage. Samples are concatenated at runtime — this source holds no whole key.
