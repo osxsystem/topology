@@ -712,6 +712,29 @@ fn hook_multiedit_empty_op_fails_closed() {
 }
 
 #[test]
+fn cmd_and_hook_content_rules_join_line_continuations() {
+    // A secret split by a shell line-continuation in a COMMAND string is one key to the shell, so
+    // content rules (not just command rules) must scan the joined form on --cmd and the Bash hook.
+    let root = scratch_root("real_cmdcont");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let bs = char::from(92u8); // backslash; key halves are concatenated so no whole key in source
+    let cmd = format!("export K=AKIA12345{bs}\n67890ABCDEF");
+    assert_eq!(
+        run(&root, &["scan", "--cmd"], cmd.as_bytes()).0,
+        1,
+        "a line-continuation-split key in a command string blocks"
+    );
+    // Bash hook: JSON-encode the backslash as \\ and the newline as \n.
+    let json = format!(r#"{{"command":"export K=AKIA12345{bs}{bs}{bs}n67890ABCDEF"}}"#);
+    let (_, out) = run(&root, &["scan", "--hook"], event("Bash", &json).as_bytes());
+    assert!(
+        out.contains(r#""permissionDecision":"deny""#),
+        "split key in a Bash hook command denies, got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_sees_through_shell_line_continuations() {
     // A backslash-newline continuation must not let a dangerous command slip the command floor;
     // the scanner joins continuations the way the shell does before matching command rules.

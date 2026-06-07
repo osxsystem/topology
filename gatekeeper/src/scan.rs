@@ -395,14 +395,17 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
             return 1;
         }
     };
+    // This is a COMMAND string: the shell joins line-continuations before executing, so both
+    // content and command rules must see the joined form (a secret split across `\<newline>` is one
+    // key to the shell). (File/blob content, by contrast, is scanned raw — there is no shell there.)
+    let cmd = strip_line_continuations(&data);
     let mut findings = scan_with(
         &rules.content_set,
         &rules.content,
-        &data,
+        &cmd,
         &rules.allows,
         None,
     );
-    let cmd = strip_line_continuations(&data);
     findings.extend(scan_with(
         &rules.command_set,
         &rules.command,
@@ -885,15 +888,16 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 eprintln!("gatekeeper scan --hook: Bash event missing 'command'");
                 return 2;
             };
-            let bytes = cmd.as_bytes();
+            // COMMAND string: join line-continuations for BOTH content and command rules (the shell
+            // joins them before executing, so a secret split across `\<newline>` is one key).
+            let joined = strip_line_continuations(cmd.as_bytes());
             let mut f = scan_with(
                 &rules.content_set,
                 &rules.content,
-                bytes,
+                &joined,
                 &rules.allows,
                 None,
             );
-            let joined = strip_line_continuations(bytes);
             f.extend(scan_with(
                 &rules.command_set,
                 &rules.command,
