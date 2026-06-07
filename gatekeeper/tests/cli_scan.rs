@@ -521,6 +521,62 @@ fn staged_binary_with_late_nul_blocks() {
 }
 
 #[test]
+fn real_ruleset_blocks_each_content_seed() {
+    // Drives the SHIPPED rules with one planted sample per content seed rule, so every secret kind
+    // has cargo coverage. Samples are concatenated at runtime — this source holds no whole key.
+    let root = scratch_root("real_content");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: String| run(&root, &["scan", "--content"], s.as_bytes()).0;
+    assert_eq!(
+        block(format!("k=AKIA{}", "1234567890ABCDEF")),
+        1,
+        "aws-access-key-id"
+    );
+    assert_eq!(
+        block(format!("-----BEGIN {}PRIVATE KEY-----", "RSA ")),
+        1,
+        "private-key-block"
+    );
+    assert_eq!(
+        block(format!(r#"{{"type": "{}"}}"#, "service_account")),
+        1,
+        "gcp-service-account"
+    );
+    assert_eq!(
+        block(format!("token=ghp_{}", "A".repeat(20))),
+        1,
+        "github-token"
+    );
+    assert_eq!(
+        block(format!("token=xoxb-{}", "0123456789")),
+        1,
+        "slack-token"
+    );
+    assert_eq!(block(format!("key=sk-{}", "A".repeat(20))), 1, "openai-key");
+    assert_eq!(block("just clean text\n".to_string()), 0, "clean passes");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn hook_multiedit_empty_op_fails_closed() {
+    // `edits:[{}]` — an op with empty old AND new — is malformed: it would reconstruct the file
+    // unchanged and silently allow. Must fail closed.
+    let root = scratch_root("hook_empty_op");
+    let target = root.join("f.txt");
+    fs::write(&target, "clean\n").unwrap();
+    let fp = target.to_string_lossy().replace('\\', "/");
+    let input = format!(r#"{{"file_path":"{fp}","edits":[{{}}]}}"#);
+    let (code, out) = run(
+        &root,
+        &["scan", "--hook"],
+        event("MultiEdit", &input).as_bytes(),
+    );
+    assert_eq!(code, 2, "empty edit op -> fail closed");
+    assert!(out.is_empty(), "no decision JSON on fail-closed");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_sees_through_shell_line_continuations() {
     // A backslash-newline continuation must not let a dangerous command slip the command floor;
     // the scanner joins continuations the way the shell does before matching command rules.

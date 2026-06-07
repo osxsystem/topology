@@ -905,16 +905,25 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
             if hook_path_protected(&rules.protected, &fp, root) {
                 return emit_ask(&fp);
             }
-            // A recognized Edit/MultiEdit with no edit operation is malformed: reconstruct would
-            // return the file unchanged and we'd "verify" content we never actually edited. Fail closed.
-            let has_payload = event
-                .tool_input
-                .edits
-                .as_ref()
-                .is_some_and(|e| !e.is_empty())
-                || (event.tool_input.old_string.is_some() && event.tool_input.new_string.is_some());
-            if !has_payload {
-                eprintln!("gatekeeper scan --hook: Edit event missing edit payload");
+            // A recognized Edit/MultiEdit with no MEANINGFUL edit operation is malformed:
+            // reconstruct would return the file unchanged and we'd "verify" content we never
+            // edited. Require every op to carry a non-empty old or new string (an `edits:[{}]`
+            // entry is a no-op) — otherwise fail closed.
+            let ti = &event.tool_input;
+            let payload_ok = match &ti.edits {
+                Some(edits) => {
+                    !edits.is_empty()
+                        && edits
+                            .iter()
+                            .all(|e| !e.old_string.is_empty() || !e.new_string.is_empty())
+                }
+                None => match (&ti.old_string, &ti.new_string) {
+                    (Some(o), Some(n)) => !o.is_empty() || !n.is_empty(),
+                    _ => false,
+                },
+            };
+            if !payload_ok {
+                eprintln!("gatekeeper scan --hook: Edit event missing/empty edit payload");
                 return 2;
             }
             let Some(text) = reconstruct(&fp, &event.tool_input, HOOK_INPUT_CAP) else {
