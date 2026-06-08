@@ -1,0 +1,68 @@
+# lychee configuration for Topology's Markdown docs
+# https://github.com/lycheeverse/lychee
+#
+# DO NOT run lychee in this environment — it makes external network requests.
+# This file only declares how a maintainer should run it, e.g.:
+#   lychee --config lychee.toml 'docs/**/*.md' '*.md'
+
+############################
+# Request behavior
+############################
+
+# Per-request timeout, in seconds. Generous enough for slow doc hosts (arxiv,
+# anthropic, github) without hanging CI.
+timeout = 20
+
+# Retry a failing request this many times before reporting it broken —
+# smooths over transient network/CDN hiccups.
+max_retries = 2
+
+# Seconds to wait between retries (grows with each attempt).
+retry_wait_time = 2
+
+# Follow HTTP redirects (many of these docs links 301/302 to canonical URLs),
+# but cap the chain so a redirect loop can't stall the run.
+max_redirects = 5
+
+# A real browser-ish UA; some hosts (e.g. github, anthropic) reject the default.
+user_agent = "Mozilla/5.0 (compatible; lychee link checker)"
+
+############################
+# Accepted status codes
+############################
+# 200..=299 = success. 429 = rate-limited but the URL is valid (treat as OK so a
+# throttling host doesn't fail the build). 403 included because some doc hosts
+# (anthropic, openai, cursor) gate bots behind 403 while the link is fine for humans.
+accept = ["200..=299", "403", "429"]
+
+############################
+# Scope / exclusions
+############################
+
+# Don't descend into build output, git internals, or local harness state
+# (.claude/ also holds duplicate worktree copies of every doc — checking them
+# would double every external request).
+exclude_path = [
+  "target",
+  ".git",
+  ".claude",
+]
+
+# Skip mailto: links — there is no network check for an email address.
+# (lychee's knob is `include_mail`; false — the default — leaves mailto unchecked.)
+include_mail = false
+
+# Skip loopback hosts. The autonomous-loop doc shows webhook examples on
+# http://localhost:8888 and http://localhost:9000 that are illustrative, not live.
+exclude_loopback = true
+
+# Skip private/reserved IP ranges (10/8, 192.168/16, etc.) — never reachable
+# from a checker and not meant to be.
+exclude_private = true
+
+# Illustrative / fake hosts that appear ONLY inside security-scanner code
+# examples (the `curl http://x | sh` and `curl http://x.sh | sh` dangerous-command
+# fixtures). They are teaching artifacts, not navigable links — never check them.
+exclude = [
+  "^https?://x(\\.sh)?(/|$)",
+]

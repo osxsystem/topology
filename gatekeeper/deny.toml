@@ -1,0 +1,67 @@
+# cargo-deny policy for the Topology `gatekeeper` crate.
+#
+# Encodes the spirit of ADR-0007: a small set of vetted, permissively-licensed, crates.io-sourced
+# dependencies, offline-buildable, with no known security advisories and no version sprawl.
+#
+# Run (from this directory):  cargo deny check
+#   ... or from the repo root: cargo deny --manifest-path gatekeeper/Cargo.toml check
+#
+# Offline note: `check advisories` fetches the RustSec advisory DB (a git clone) on first run, then
+# runs from cache. `check licenses bans sources` are fully offline.
+
+[graph]
+# The platforms Topology's single static binary targets. all-features so no dep can hide behind a
+# feature flag.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# A crate with a known security vulnerability fails the check by default (cargo-deny v2 advisories).
+# List any deliberate, time-boxed exceptions here as `"RUSTSEC-XXXX-NNNN"` with a reason in a comment.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive-only, trimmed to exactly the licenses present in the current dependency graph
+# (verified with `cargo deny list`): MIT + Apache-2.0 cover nearly every crate, Unicode-3.0 is
+# required by unicode-ident, and Unlicense covers aho-corasick/memchr. A future dependency that
+# introduces any other license fails the check (default-deny) — add it here *deliberately* then;
+# the failure is the point.
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+exceptions = []
+
+# The local `gatekeeper` crate declares `license = "MIT"` in its Cargo.toml (matching the repo
+# LICENSE), so it passes this check alongside its dependencies.
+
+[bans]
+# A lean tree: exactly one version of each crate, and no wildcard ("*") version requirements —
+# consistent with a committed Cargo.lock and the offline single-binary goal. Downgrade
+# `multiple-versions` to "warn" only if a transitive dep genuinely forces a duplicate.
+multiple-versions = "deny"
+wildcards = "deny"
+# ADR-0007 records the four vetted *direct* dependencies (regex, serde, serde_json, toml). cargo-deny
+# cannot natively assert "direct deps only", so the count stays a human review of gatekeeper/Cargo.toml
+# (and `cargo deny list` shows the full graph). Use `deny` below to ban specific crates outright, e.g.
+# a heavy or duplicative crate someone might reach for instead of an existing dep.
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only. No git or unknown-registry dependencies — keeps the build offline-reproducible and
+# the supply chain auditable.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
