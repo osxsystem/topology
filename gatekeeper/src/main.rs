@@ -14,6 +14,9 @@
 //!   gatekeeper scan --check-path <path>     Exit 1 iff <path> is a protected safety file.
 //!   gatekeeper instinct list                List always-on instincts (id + priority).
 //!   gatekeeper instinct render [--harness H] [--budget N]   Render the always-on preamble subset.
+//!   gatekeeper learn capture --summary <s>  Append a structured gotcha to docs/learn/ledger.md.
+//!   gatekeeper learn list                   List ledger entries (id + occurrences + proposed kind).
+//!   gatekeeper learn promote --id <id>      Scaffold an operator from a gotcha; diff + confirm to write.
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
 //! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
@@ -25,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 mod instinct;
+mod learn;
 mod review;
 mod scan;
 
@@ -45,6 +49,7 @@ fn main() {
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
+        Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -72,7 +77,10 @@ fn print_help() {
          gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
          gatekeeper scan --staged | --check-path <path>\n  \
          gatekeeper instinct list\n  \
-         gatekeeper instinct render [--harness <h>] [--budget <n>]\n"
+         gatekeeper instinct render [--harness <h>] [--budget <n>]\n  \
+         gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
+         gatekeeper learn list\n  \
+         gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n"
     );
 }
 
