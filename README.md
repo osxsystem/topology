@@ -4,8 +4,13 @@ A **harness-native operator system** for building software with AI coding agents
 
 Topology is a starter you own. It ships a thin, opinionated methodology enforced by **gates** (objective, checkable conditions) rather than **rules** (soft suggestions agents quietly skip). Fork it, swap the gates for your own taste, and grow the skill library reactively.
 
+Topology are structured frameworks that guide teams through building software from start to finish. They provide a step-by-step software development process for planning work, organizing teams, and delivering quality products.
+
+A methodology serves as a structured framework that defines roles, responsibilities, timelines, and collaboration processes for your team. Without a clear methodology in place, teams frequently encounter challenges such as missed deadlines, ambiguous priorities, and compromised quality standards.
+
 ## Documentation
 
+- **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)** — a visual, end-user walkthrough: install once, then every task walks the gates (diagrams + ASCII fallbacks). Start here.
 - **[METHODOLOGY.md](METHODOLOGY.md)** — the operator methodology: the four operator types (instincts, skills, gates, scans), the six pillars, the gate sequence, and how it all maps to Anthropic's agent-building guidance.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the layered design, control flow, and cross-harness fan-out (diagrams), plus the `gatekeeper` contract.
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — the phased path from today's gates to the full system (the code-review gate landed early; security scanning is next).

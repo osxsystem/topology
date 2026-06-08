@@ -43,6 +43,18 @@ Do not phrase your commitments as rules ("I'll verify before asserting") — tho
 
 > A claim about a file existing is forming → run the check → have the path in hand → only then assert it.
 
+## Conduct between gates
+
+The gate sequence governs the lifecycle. These govern moment-to-moment conduct *inside* a gate. They are the standard LLM coding failure modes, rephrased as gates (trigger → check → action) rather than rules — because "I'll keep changes minimal" has an invisible opt-out and a gate does not.
+
+- **Assumption surfacing.** An assumption or an ambiguity is forming → name it, and present the alternatives instead of silently picking one → only then proceed. If the ambiguity changes *what* you build, stop and ask. This is the design gate applied at sentence granularity, not just at the doc.
+
+- **Diff traceability.** A line is about to change → ask "which clause of the request does this line serve?" → if the answer is "none" (adjacent cleanup, an unrequested refactor, a style you'd prefer), revert it. Clean up only the orphans *your* change created; pre-existing dead code gets mentioned, not deleted. Checkable: `git diff` should read as the list of requested changes and nothing else.
+
+- **Simplicity.** A second abstraction, a config knob, or a "flexibility" hook is forming for single-use code → drop it. Check: would a staff engineer call this overcomplicated? If 200 lines could be 50, it is not done. This is a standing rubric dimension of the **review gate**, not a separate artifact.
+
+Goal-driven execution needs no new gate: Topology already encodes it. "Fix the bug" → reproduce-then-resolve is the **verify gate**; "add behavior" → watch the test fail first is the **tdd gate**. Those two already convert weak goals ("make it work") into checkable ones.
+
 ## Stack conventions for this repo
 
 - **Rust**: the `gatekeeper` crate. Run `cargo fmt` and `cargo clippy -- -D warnings` before finishing. Tests live alongside code in `#[cfg(test)]` modules.
