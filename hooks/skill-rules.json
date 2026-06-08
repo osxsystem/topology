@@ -72,6 +72,14 @@
       "promptTriggers": {
         "keywords": ["merge", "pr", "pull request", "wrap up", "ship", "cleanup", "close out"]
       }
+    },
+    "capture-gotcha": {
+      "type": "process",
+      "enforcement": "suggest",
+      "priority": "medium",
+      "promptTriggers": {
+        "keywords": ["gotcha", "recurring", "keeps happening", "keeps failing", "happened again", "same mistake", "remember this", "don't let this happen", "learn from", "promote"]
+      }
     }
   }
 }

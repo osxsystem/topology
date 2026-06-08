@@ -80,7 +80,8 @@ fn unquote(v: &str) -> &str {
 }
 
 /// kebab-case, 1..=64 chars, no leading/trailing/double hyphen, no reserved word.
-fn validate_id(id: &str) -> Result<(), String> {
+/// `pub` so Phase-3 `learn` validates ledger ids against the same rule an instinct id obeys.
+pub fn validate_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 {
         return Err(format!("id '{id}': must be 1..=64 chars"));
     }
@@ -164,6 +165,12 @@ fn parse_instinct(raw: &str) -> Result<Instinct, String> {
         source,
         body,
     })
+}
+
+/// Validate that `raw` is a well-formed instinct file (the same contract `parse_instinct` enforces).
+/// `pub` so Phase-3 `learn promote` proves a scaffolded instinct is valid before writing it.
+pub fn validate_instinct_str(raw: &str) -> Result<(), String> {
+    parse_instinct(raw).map(|_| ())
 }
 
 /// Load every `*.md` instinct under `dir`, sorted by (priority high→low, then id).
