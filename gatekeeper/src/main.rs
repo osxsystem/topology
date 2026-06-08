@@ -12,6 +12,8 @@
 //!   gatekeeper scan --cmd | --content       Security-scan a command / file image on stdin.
 //!   gatekeeper scan --staged                Pre-commit: scan staged blobs + enforce integrity.
 //!   gatekeeper scan --check-path <path>     Exit 1 iff <path> is a protected safety file.
+//!   gatekeeper instinct list                List always-on instincts (id + priority).
+//!   gatekeeper instinct render [--harness H] [--budget N]   Render the always-on preamble subset.
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
 //! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
@@ -22,6 +24,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+mod instinct;
 mod review;
 mod scan;
 
@@ -41,6 +44,7 @@ fn main() {
         Some("activate") => cmd_activate(),
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
+        Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -66,7 +70,9 @@ fn print_help() {
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n  \
          gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
-         gatekeeper scan --staged | --check-path <path>\n"
+         gatekeeper scan --staged | --check-path <path>\n  \
+         gatekeeper instinct list\n  \
+         gatekeeper instinct render [--harness <h>] [--budget <n>]\n"
     );
 }
 
@@ -155,6 +161,7 @@ fn cmd_activate() -> i32 {
             println!("  - {name} [{enforcement}]");
         }
     }
+    print!("{}", instinct::activate_section(&framework_root()));
     println!("You may not write production code before the design and plan gates pass.");
     0
 }
