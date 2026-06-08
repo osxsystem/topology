@@ -152,3 +152,18 @@ fn design_gate_fails_without_spec_even_with_research() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn design_gate_missing_feature_exits_2() {
+    // A missing --feature is a usage error (exit 2, like the research gate), NOT a
+    // research-first failure (exit 1): the empty slug must not fall into the lock branch.
+    let root = scratch_root("des_nofeat");
+    fs::create_dir_all(root.join("docs").join("research")).unwrap();
+
+    let (code, _) = run(&root, &["check", "design"]);
+    assert_eq!(
+        code, 2,
+        "missing --feature on the design gate should exit 2"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

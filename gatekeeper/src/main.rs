@@ -227,6 +227,13 @@ fn cmd_check(args: &[String]) -> i32 {
         "research" => gate_doc_exists("research", &feature_arg(args)),
         "design" => {
             let f = feature_arg(args);
+            if f.is_empty() {
+                // A missing --feature is a usage error (exit 2), like every other gate via
+                // gate_doc_exists — not a research-first failure. Guard before find_doc, whose
+                // empty-slug None would otherwise misroute this into the lock branch (exit 1).
+                eprintln!("gatekeeper: --feature <slug> is required");
+                return 2;
+            }
             match find_doc("research", &f) {
                 None => {
                     println!("FAIL design gate: research-first — no docs/research/*{f}*.md");
