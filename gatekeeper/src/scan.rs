@@ -133,6 +133,12 @@ pub fn load_rules(path: &Path) -> Result<Rules, String> {
     parse_rules(&raw)
 }
 
+/// Public re-export of `parse_rules` for in-module tests in sibling modules.
+#[cfg(test)]
+pub fn parse_rules_pub(raw: &str) -> Result<Rules, String> {
+    parse_rules(raw)
+}
+
 /// Validate + compile from TOML text. Any defect is an Err (the caller maps it to exit 2).
 fn parse_rules(raw: &str) -> Result<Rules, String> {
     let parsed: RulesFile =
@@ -368,6 +374,31 @@ fn strip_line_continuations(data: &[u8]) -> Vec<u8> {
         i += 1;
     }
     out
+}
+
+/// Returns `Ok(())` if no block-severity content rule fires; `Err(redacted_hint)` on the FIRST
+/// block match (hint only — the matched value is never returned). Runs on raw bytes so
+/// NUL / non-UTF-8 input is handled identically to `scan_content_cmd`.
+pub fn scan_bytes_for_secrets(rules: &Rules, bytes: &[u8]) -> Result<(), String> {
+    for idx in rules.content_set.matches(bytes).iter() {
+        let rule = &rules.content[idx];
+        if rule.severity != Severity::Block {
+            continue;
+        }
+        for m in rule.re.find_iter(bytes) {
+            let span = &bytes[m.start()..m.end()];
+            if is_allowed(&rules.allows, &rule.id, span) {
+                continue;
+            }
+            return Err(format!(
+                "{}: {} (redacted: {})",
+                rule.id,
+                rule.description,
+                redact(span)
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn scan_content_cmd(rules: &Rules) -> i32 {

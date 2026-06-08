@@ -19,6 +19,9 @@
 //!   gatekeeper learn capture --summary <s>  Append a structured gotcha to docs/learn/ledger.md.
 //!   gatekeeper learn list                   List ledger entries (id + occurrences + proposed kind).
 //!   gatekeeper learn promote --id <id>      Scaffold an operator from a gotcha; diff + confirm to write.
+//!   gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>   Write a handoff artifact (body on stdin).
+//!   gatekeeper memory read  --feature <slug>                       Print a handoff artifact to stdout.
+//!   gatekeeper memory list                                         List all handoff artifacts (slug · created · status).
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
 //! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
@@ -32,6 +35,7 @@ use std::process::{exit, Command};
 mod adapt;
 mod instinct;
 mod learn;
+mod memory;
 mod review;
 mod scan;
 
@@ -54,6 +58,7 @@ fn main() {
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
+        Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -86,7 +91,10 @@ fn print_help() {
          gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]\n  \
          gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
          gatekeeper learn list\n  \
-         gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n"
+         gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n  \
+         gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
+         gatekeeper memory read  --feature <slug>\n  \
+         gatekeeper memory list\n"
     );
 }
 
@@ -242,7 +250,7 @@ fn cmd_check(args: &[String]) -> i32 {
     }
 }
 
-fn feature_arg(args: &[String]) -> String {
+pub(crate) fn feature_arg(args: &[String]) -> String {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--feature" {
@@ -263,7 +271,7 @@ fn base_arg(args: &[String]) -> Option<String> {
 }
 
 /// Find a markdown doc under docs/<sub>/ whose filename contains the feature slug.
-fn find_doc(sub: &str, feature: &str) -> Option<PathBuf> {
+pub(crate) fn find_doc(sub: &str, feature: &str) -> Option<PathBuf> {
     if feature.is_empty() {
         return None;
     }
