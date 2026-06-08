@@ -121,6 +121,17 @@ severity = "block"
 description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
 pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
 
+# Heuristic: flags a shell redirect into memory/artifacts/ (e.g. `> memory/artifacts/x.md` or
+# `>> .../memory/artifacts/...`). This RAISES — does not close — the Bash tamper residual: the
+# tool hook does not parse shell, so a sufficiently obfuscated redirect can still slip past.
+# Treat findings as a prompt for human review, not an airtight block.
+[[rule]]
+id = "tamper-memory-artifacts-redirect"
+kind = "command"
+severity = "block"
+description = "heuristic: shell redirect into memory/artifacts/ — raises, does not close, the Bash tamper residual; obfuscated redirects may evade this pattern"
+pattern = '>>?[^\n]*memory/artifacts/'
+
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]
 rule = "aws-access-key-id"
@@ -147,4 +158,7 @@ protected_paths = [
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".git/hooks/pre-commit",
+  # Directory-prefix entry: protects memory/artifacts/ and every file beneath it.
+  # is_protected uses Path::starts_with (component-wise), so memory/artifacts-evil/ is NOT matched.
+  "memory/artifacts",
 ]

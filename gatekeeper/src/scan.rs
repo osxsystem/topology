@@ -491,9 +491,13 @@ fn resolve_against_root(root: &Path, p: &str) -> PathBuf {
 
 fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
     let target = resolve_against_root(root, path);
-    protected
-        .iter()
-        .any(|p| resolve_against_root(root, p) == target)
+    protected.iter().any(|p| {
+        let pr = resolve_against_root(root, p);
+        // Exact match OR target is strictly beneath the protected directory.
+        // Path::starts_with is component-wise: `memory/artifacts` matches
+        // `memory/artifacts/x.md` but NOT `memory/artifacts-evil/x.md`.
+        target == pr || target.starts_with(&pr)
+    })
 }
 
 fn scan_check_path(rules: &Rules, root: &Path, path: Option<&str>) -> i32 {
@@ -1301,5 +1305,92 @@ mod load_tests {
     fn allow_with_value_ok() {
         let ok = format!("{VALID}\n[[allow]]\nrule = \"k\"\nvalue = \"AKIAIOSFODNN7EXAMPLE\"\n");
         assert!(parse_rules(&ok).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod is_protected_tests {
+    use super::*;
+
+    fn root() -> std::path::PathBuf {
+        // Use a stable fake root (no filesystem access needed — all lexical).
+        std::path::PathBuf::from("/repo/root")
+    }
+
+    fn protected() -> Vec<String> {
+        vec![
+            // Exact-match entries (existing behaviour must be preserved).
+            "security/rules.toml".to_string(),
+            "gatekeeper/src/scan.rs".to_string(),
+            // Directory-prefix entry under test.
+            "memory/artifacts".to_string(),
+        ]
+    }
+
+    // ---- PROTECTED (must return true) ----
+
+    #[test]
+    fn file_inside_artifacts_dir_is_protected() {
+        assert!(
+            is_protected(&root(), &protected(), "memory/artifacts/x.md"),
+            "a file inside memory/artifacts/ must be protected"
+        );
+    }
+
+    #[test]
+    fn absolute_in_repo_path_to_artifacts_file_is_protected() {
+        let abs = format!("{}/memory/artifacts/some.handoff.md", root().display());
+        assert!(
+            is_protected(&root(), &protected(), &abs),
+            "an absolute in-repo path into memory/artifacts/ must be protected"
+        );
+    }
+
+    #[test]
+    fn dotdot_alias_into_artifacts_is_protected() {
+        // memory/artifacts/../artifacts/x.md resolves to memory/artifacts/x.md.
+        assert!(
+            is_protected(&root(), &protected(), "memory/artifacts/../artifacts/x.md"),
+            "a .. alias that resolves into memory/artifacts/ must be protected"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_form_is_protected() {
+        // memory/artifacts/ resolves to memory/artifacts (Path strips trailing slash).
+        assert!(
+            is_protected(&root(), &protected(), "memory/artifacts/"),
+            "memory/artifacts/ (trailing slash) must be protected"
+        );
+    }
+
+    #[test]
+    fn exact_match_entry_still_protected() {
+        // Regression: exact-match entries must keep working after the prefix change.
+        assert!(
+            is_protected(&root(), &protected(), "security/rules.toml"),
+            "existing exact-match protected paths must still be protected"
+        );
+    }
+
+    // ---- NOT PROTECTED (must return false) ----
+
+    #[test]
+    fn template_file_in_memory_root_not_protected() {
+        // memory/TEMPLATE.handoff.md is a sibling seed, NOT inside memory/artifacts/.
+        assert!(
+            !is_protected(&root(), &protected(), "memory/TEMPLATE.handoff.md"),
+            "memory/TEMPLATE.handoff.md must NOT be protected (it is not inside memory/artifacts/)"
+        );
+    }
+
+    #[test]
+    fn artifacts_evil_sibling_not_protected() {
+        // THE KEY COLLISION CASE: memory/artifacts-evil/ shares a string prefix with
+        // memory/artifacts but Path::starts_with is component-wise and must reject it.
+        assert!(
+            !is_protected(&root(), &protected(), "memory/artifacts-evil/x.md"),
+            "memory/artifacts-evil/x.md must NOT be protected — Path::starts_with is component-wise"
+        );
     }
 }
