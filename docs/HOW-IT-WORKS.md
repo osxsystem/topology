@@ -28,17 +28,18 @@ flowchart TD
     ACT --> ROUTE["Matches keywords in skill-rules.json<br/>and routes the relevant skills<br/>(require or suggest)"]
     ROUTE --> WALK["The agent loads those skills<br/>and walks the gates — in order"]
 
-    WALK --> DESIGN
+    WALK --> RESEARCH
     subgraph SEQ["③ The gate sequence"]
         direction TB
+        RESEARCH["research<br/>explore the problem space, produce a research note"]
         DESIGN["design<br/>write an approved spec"]
         PLAN["plan<br/>a concrete, placeholder-free plan"]
-        GUARD["── design + plan passed:<br/>production code may now be written ──"]
+        GUARD["── research + design + plan passed:<br/>production code may now be written ──"]
         TDD["tdd-loop<br/>watch a test fail, then make it pass"]
         VERIFY["verify<br/>reproduce, then resolve, with evidence"]
         REVIEW["review<br/>a fresh-context critic signs off"]
         FINISH["finish<br/>the whole test suite is green"]
-        DESIGN --> PLAN --> GUARD --> TDD --> VERIFY --> REVIEW --> FINISH
+        RESEARCH --> DESIGN --> PLAN --> GUARD --> TDD --> VERIFY --> REVIEW --> FINISH
         TDD -. "a test won't pass" .-> DEBUG["systematic-debug"]
         DEBUG -. "add a regression test" .-> TDD
     end
@@ -60,7 +61,7 @@ ASCII fallback:
                               ▼
 ③  THE GATE SEQUENCE   (the agent walks these in order)
 
-      design ──► plan ──►[ code may now be written ]──► tdd-loop ──► verify ──► review ──► finish
+      research ──► design ──► plan ──►[ code may now be written ]──► tdd-loop ──► verify ──► review ──► finish
                                                            ▲  │
                                           regression test  │  ▼  test won't pass
                                                       systematic-debug
@@ -71,7 +72,7 @@ ASCII fallback:
 **Read it as a story.** You install Topology once (①). After that, every request you type (②) is
 read by a hook that routes in the right skills, and the agent must then pass each gate in sequence
 (③) before it can ship (④). The bar after **plan** is the rule that gives Topology its teeth: *no
-production code is written until the design and plan gates pass.*
+production code is written until the research, design, and plan gates pass.*
 
 ---
 
@@ -82,6 +83,7 @@ gate — not a promise, a command with a pass/fail answer.
 
 | Gate | What gets produced | How it's checked | Passes when |
 |------|--------------------|------------------|-------------|
+| **research** | a research note in `docs/research/` | `gatekeeper check research --feature <slug>` | the research note exists (required before the design gate can pass) |
 | **design** | an approved spec in `docs/specs/` | `gatekeeper check design --feature <slug>` | the spec file exists |
 | **plan** | a step-by-step plan in `docs/plans/` | `gatekeeper check plan --feature <slug>` | the plan exists **and** has no placeholder words (`TBD`, "implement later", …) |
 | **tdd-loop** | tests written *before* the code | discipline gate — no check command | every unit of behavior had a test you watched fail first |

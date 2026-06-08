@@ -113,13 +113,13 @@ Every Topology agent, on every coding task, in any harness:
 ```
 research ─► brainstorm-design ─► write-plan ─► tdd-loop ─► verify-before-done ─► code-review ─► finish-branch
 (research)    (design gate)      (plan gate)   (tdd gate)     (verify gate)      (review gate)   (finish gate)
-[planned]                                          ▲
+                                                   ▲
                                          systematic-debug (invoked on failure)
 ```
 
 | Gate | Passes when | Check |
 |---|---|---|
-| **research** `[planned]` | a research note exists at `docs/research/<date>-<feature>.md` | `gatekeeper check research --feature <slug>` |
+| **research** `[built]` | a research note exists at `docs/research/<date>-<feature>.md` | `gatekeeper check research --feature <slug>` |
 | **design** `[built]` | an approved design doc exists at `docs/specs/<date>-<feature>.md` | `gatekeeper check design --feature <slug>` |
 | **plan** `[built]` | a placeholder-free plan exists at `docs/plans/<date>-<feature>.md` | `gatekeeper check plan --feature <slug>` |
 | **tdd** `[built]` | every behavior had a test you watched fail *before* the code existed | discipline; enforced by review |
@@ -127,7 +127,7 @@ research ─► brainstorm-design ─► write-plan ─► tdd-loop ─► verif
 | **review** `[built]` | a fresh-context critic's artifact passes — bound to the current clean `HEAD` and merge-base, both rubric dimensions present, no blocking findings | `gatekeeper check review --feature <slug> [--base <ref>]` |
 | **finish** `[built]` | the full test suite passes | `gatekeeper check finish -- <cmd>` |
 
-You may not write production code until **design** and **plan** pass (and, once shipped, **research**).
+You may not write production code until **research**, **design**, and **plan** pass. The `design`→`research` sequence-lock binds features from Phase 5 onward (ADR-0009); pre-Phase-5 features that shipped without a research note are accepted as a known, intentional consequence — not backfilled.
 
 ---
 
@@ -139,9 +139,10 @@ it embodies.
 ### Pillar 1 — Skills `[built, extending]`
 Progressive-disclosure units of methodology and expertise. A skill is a directory with a `SKILL.md`
 whose YAML frontmatter (`name`, `description`) is always loaded; the body loads on trigger; bundled
-`references/` load on demand. Three kinds: **process** (the gated spine), **domain** (stack-specific
-expertise), **meta** (the framework maintaining itself). Today: 8 process skills (including the `code-review` critic). Planned: domain
-skills, plus meta skills `capture-gotcha` and `new-skill`.
+`references/` load on demand. Three kinds: **process** (the workflow lifecycle — the gated spine, plus
+session-lifecycle skills like `resume` that frame it without being gates themselves), **domain**
+(stack-specific expertise), **meta** (the framework maintaining itself). Today: 10 process skills
+(including the `code-review` critic, plus `research-first` and `resume` added in Phase 5). Planned: domain skills, plus meta skills `capture-gotcha` and `new-skill`.
 → *Anthropic, [Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills): progressive disclosure as the core scaling principle.*
 
 ### Pillar 2 — Instincts `[planned]`
@@ -174,7 +175,7 @@ a `PreToolUse` hook (block before execution) and a pre-commit hook (block before
 final; it is not advice.
 → *Anthropic, Best practices: the bundled security-reviewer subagent and "hooks are deterministic" — security belongs on the deterministic side.*
 
-### Pillar 6 — Research-first development `[partial → gate]`
+### Pillar 6 — Research-first development `[built]`
 Exploration is a first-class, gated stage, not a preamble. A `research-first` skill drives the
 explore phase (what exists, what's actually asked, which approaches and trade-offs), producing a
 `docs/research/<date>-<feature>.md` artifact that the new `research` gate checks **before** design.
@@ -225,7 +226,8 @@ its `docs/{research,specs,plans,verify}` trail.
 - **Operator** — any installed, enforced unit of agent behavior: an instinct, skill, gate, or scan.
 - **Gate** — a hard block with an objective check the agent or CI can run.
 - **Instinct** — a soft, always-on, reasoning-based nudge.
-- **Skill** — a progressively-disclosed `SKILL.md` unit (process / domain / meta).
+- **Skill** — a progressively-disclosed `SKILL.md` unit (process = workflow lifecycle, gated spine +
+  session lifecycle / domain / meta).
 - **Scan** — a deterministic veto on a tool call (security).
 - **Harness** — an agent runtime: Claude Code, Codex, Cursor, OpenCode.
 - **Gotcha** — a captured failure or correction, eligible for promotion into an operator.

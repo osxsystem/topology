@@ -16,13 +16,13 @@ Process skills are **gates, not suggestions**. If you are about to skip a gate, 
 ## The gate sequence
 
 ```
-brainstorm-design  ──►  write-plan  ──►  tdd-loop  ──►  verify-before-done  ──►  code-review  ──►  finish-branch
-   (design gate)        (plan gate)     (tdd gate)        (verify gate)         (review gate)       (finish gate)
-                                            ▲
-                                  systematic-debug (invoked on failure)
+research  ──►  brainstorm-design  ──►  write-plan  ──►  tdd-loop  ──►  verify-before-done  ──►  code-review  ──►  finish-branch
+(research gate)   (design gate)        (plan gate)     (tdd gate)        (verify gate)         (review gate)       (finish gate)
+                                                            ▲
+                                                  systematic-debug (invoked on failure)
 ```
 
-You may not write production code until the **design** and **plan** gates pass:
+You may not write production code until the **research**, **design**, and **plan** gates pass:
 
 - **Design gate** — an approved design doc exists at `docs/specs/<date>-<feature>.md`.
   Check: `gatekeeper check design --feature <feature>`
@@ -68,3 +68,21 @@ Every skill's `description` frontmatter:
 > `<verb phrase: what it does>. Use when <concrete user-facing trigger conditions and keywords>.`
 
 Third person, one line, real user vocabulary, slightly pushy (agents under-trigger). When a skill fails to trigger, widen its trigger language; when it over-triggers, narrow its scope.
+
+## Compact Instructions
+
+When the context window is compacted (auto or manual), the compacted summary **must retain**:
+
+1. **Current slice / task** — which plan task is active (e.g. "Task 6 of memory-research-first").
+2. **Next concrete step** — the exact action queued (command to run, file to edit, test to write).
+3. **Open decisions** — any unresolved trade-offs or questions that would change what is built.
+
+Preserve these by writing a handoff artifact before compaction triggers. The three items go in the
+artifact **body** (the template's *State* / *Next steps* / *Decisions & gotchas* sections), piped on
+stdin; only the frontmatter fields are flags (`--feature`, `--date`, optional `--status`/`--verified-by`):
+
+```
+gatekeeper memory write --feature <slug> --date <YYYY-MM-DD> < handoff-body.md
+```
+
+A fresh or compacted session recovers by running the `resume` skill, which calls `gatekeeper memory read --feature <slug>` to restore the above state. Do not re-derive the current slice from scratch — read it back.
