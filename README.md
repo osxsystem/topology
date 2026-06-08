@@ -17,6 +17,7 @@ A methodology serves as a structured framework that defines roles, responsibilit
 - **[docs/EXTENDING.md](docs/EXTENDING.md)** — how a human or agent adds a skill, instinct, gate, or scan rule.
 - **[docs/adr/](docs/adr/)** — the architecture decision records.
 - **[docs/research/](docs/research/)** — research-first artifacts (e.g. [build-resources](docs/research/2026-06-04-build-resources.md): comparable frameworks, harness configs, security tooling, the Rust stack).
+- **[docs/learn/rtk-proxy.md](docs/learn/rtk-proxy.md)** — RTK, the optional token-killer shell proxy: what it does, how the command-rewrite hook wires it transparently, meta commands, opt-in install, and the name-collision caveat.
 
 ## What's in here
 
