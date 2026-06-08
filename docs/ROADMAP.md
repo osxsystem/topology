@@ -6,7 +6,7 @@ is "done" without a check that proves it.
 
 > This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, the
 > **code-review gate** (Phase 1.5), **Phase 2 (instincts engine)**, **Phase 3 (continuous learning)**, and
-> **Phase 4 (cross-harness adapters)** are delivered. Phases 5–6 are designed and ordered, not built. See
+> **Phase 4 (cross-harness adapters)**, and **Phase 5 (memory + research-first)** are delivered. Phase 6 is designed and ordered, not built. See
 > [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
@@ -15,7 +15,7 @@ flowchart LR
     P1 --> P2["Phase 2<br/>Instincts<br/>engine ✅"]
     P2 --> P3["Phase 3<br/>Continuous<br/>learning ✅"]
     P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters ✅"]
-    P4 --> P5["Phase 5<br/>Memory +<br/>research-first"]
+    P4 --> P5["Phase 5<br/>Memory +<br/>research-first ✅"]
     P5 --> P6["Phase 6<br/>Packaging<br/>+ CI"]
 ```
 
@@ -138,20 +138,21 @@ prerequisite — it only adds more operators to fan out later, so Phase 4 shippe
 
 ---
 
-## Phase 5 — Memory + research-first hardening
+## Phase 5 — Memory + research-first hardening ✅ *(delivered 2026-06-08)*
 
 **Goal.** Make context a managed budget and exploration a gated stage.
 
 **Deliverables.**
-- `memory/` protocol — handoff + compaction artifact format; `gatekeeper` helpers to write/read them.
+- `memory/` protocol — handoff artifact format (one kind; the `compaction` kind was cut — a handoff written before context fills serves the same purpose); `gatekeeper memory write/read/list` helpers, with secret-refusal on the rendered artifact and `memory/artifacts/` write-protection.
 - RTK integration documented and wired as the default shell proxy.
 - `research` gate: `gatekeeper check research` + `skills/research-first/SKILL.md`, prepended to the sequence.
-- Domain skills for the house stack. *(The `code-review` critic skill + `review` gate were pulled forward and delivered 2026-06-05 — see `docs/adr/0006-code-review-gate.md`.)*
+- The `resume` session-lifecycle skill (read handoff → verify state → act). *(Domain skills for the house stack are deferred — not part of the executed plan. The `code-review` critic skill + `review` gate were pulled forward and delivered 2026-06-05 — see `docs/adr/0006-code-review-gate.md`.)*
 
 **New `gatekeeper` surface.** `gatekeeper check research --feature <slug>`; memory read/write helpers.
 
 **Verify.** The `research` gate blocks `design` when no research note exists; a handoff artifact
 round-trips (write → fresh session → resume); the `code-review` subagent returns findings against the plan.
+**Evidence:** [`docs/verify/2026-06-08-memory-research-first.md`](verify/2026-06-08-memory-research-first.md) — all 11 acceptance criteria checked, quality gates green (198 passed / 2 ignored, no dependency change).
 
 **Depends on.** Phase 4 (research-first skill should ship to all harnesses).
 
@@ -185,5 +186,5 @@ release ships a static binary.
 | 2 | Instincts engine | ✅ delivered |
 | 3 | Continuous learning | ✅ delivered |
 | 4 | Cross-harness adapters | ✅ delivered |
-| 5 | Memory + research-first | ⏳ planned |
+| 5 | Memory + research-first | ✅ delivered |
 | 6 | Packaging & CI | ⏳ planned |
