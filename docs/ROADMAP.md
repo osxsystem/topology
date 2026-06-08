@@ -5,15 +5,17 @@ separately-approved unit of work with its own deliverables and a concrete **veri
 is "done" without a check that proves it.
 
 > This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, the
-> **code-review gate** (Phase 1.5), and **Phase 2 (instincts engine)** are delivered. Phases 3–6 are
-> designed and ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **code-review gate** (Phase 1.5), **Phase 2 (instincts engine)**, and **Phase 4 (cross-harness
+> adapters)** are delivered — Phase 4 was pulled ahead of Phase 3 (it depends only on the operators that
+> already exist, not on the learning loop). Phases 3, 5, and 6 are designed and ordered, not built. See
+> [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
     P0["Phase 0<br/>Blueprint<br/>✅ this pass"] --> P1["Phase 1<br/>Security<br/>scanning ✅"]
     P1 --> P2["Phase 2<br/>Instincts<br/>engine ✅"]
     P2 --> P3["Phase 3<br/>Continuous<br/>learning"]
-    P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters"]
+    P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters ✅"]
     P4 --> P5["Phase 5<br/>Memory +<br/>research-first"]
     P5 --> P6["Phase 6<br/>Packaging<br/>+ CI"]
 ```
@@ -21,7 +23,9 @@ flowchart LR
 **Why this order.** Security is the biggest true gap, so it's front-loaded (Phase 1). Instincts
 (Phase 2) must exist before learning (Phase 3), because learning *promotes* gotchas into instincts —
 the target has to be there first. Adapters (Phase 4) come once there's a rich operator set worth
-fanning out. Memory/research hardening (Phase 5) and packaging (Phase 6) finish the system.
+fanning out — shipped right after Phase 2, since the contract + skills + instincts are already worth
+fanning out and Phase 3's learning only adds more later. Memory/research hardening (Phase 5) and
+packaging (Phase 6) finish the system.
 
 ---
 
@@ -99,24 +103,33 @@ file (parses, passes `gatekeeper list`/scan-load); promotion requires explicit h
 
 ---
 
-## Phase 4 — Cross-harness adapters
+## Phase 4 — Cross-harness adapters ✅ *(delivered 2026-06-08, ahead of Phase 3)*
 
 **Goal.** Native Codex, Cursor, and OpenCode support generated from the one Markdown source.
 
 **Deliverables.**
-- `gatekeeper/src/adapt.rs` + `adapters/` templates per harness.
-- Codex: generate `.codex/config.toml` agents + ensure `AGENTS.md` carries the contract.
-- Cursor: generate `.cursor/rules/*.mdc` — per-path scoping derives from the skill router's keyword
-  triggers; always-on **instincts** map to Cursor's **Always** rule mode (they have no scope).
-- OpenCode: generate `opencode.json` + `.opencode/skills/` from `skills/`.
-- Per-harness install paths in `scripts/install.sh`.
+- `gatekeeper/src/adapt.rs` — pure `root -> Vec<GenFile>` builders + `apply_or_check` (a `--check`
+  idempotency mode); `adapters/README.md` documents the per-harness mapping. No new crates.
+- Codex: generate `.codex/config.toml` (project-safe `project_doc_max_bytes`, validated against
+  `codex --strict-config`); the contract rides on the auto-discovered `AGENTS.md`. (Project-local config
+  may not carry `profiles`/provider keys, so there are no "Codex agents/profiles" — see ADR-0008.)
+- Cursor: generate `.cursor/rules/*.mdc` — always-on **instincts** and the `AGENTS.md` contract map to
+  Cursor's **Always** mode; keyword-routed **skills** map to **Agent Requested** (description-based — the
+  closest primitive, since Cursor has no keyword router; see ADR-0008).
+- OpenCode: generate `opencode.json` (`instructions`) + `.opencode/instincts.md` + `.opencode/skills/`
+  copied from `skills/`.
+- Claude: generate `.claude/settings.json` (the hook wiring) — the source-native harness as a uniform
+  generated target. `scripts/install.sh` documents the opt-in `adapt` commands.
 
-**New `gatekeeper` surface.** `gatekeeper adapt --harness {codex|cursor|opencode|claude}`.
+**New `gatekeeper` surface.** `gatekeeper adapt --harness {codex|cursor|opencode|claude} [--check]`.
 
-**Verify.** Each generated config loads in its harness without error; a routing keyword fires the right
-skill in each; regenerating is idempotent (no drift vs. a hand check).
+**Verify.** `gatekeeper adapt --harness <h>` writes each harness's native files; the generated
+`.codex/config.toml` loads under `codex --strict-config`; `opencode.json` / `.claude/settings.json` are
+valid JSON in the documented schema; copied skills are byte-equal; `--check` is idempotent (exit 0) and
+flags drift (exit 1). Evidence: `docs/verify/2026-06-08-cross-harness-adapters.md`.
 
-**Depends on.** Phases 1–3 (there must be operators worth fanning out).
+**Depends on.** Phase 2 (instincts to fan out) + the skill set. Phase 3's learning loop is **not** a
+prerequisite — it only adds more operators to fan out later, so Phase 4 shipped first.
 
 ---
 
@@ -166,6 +179,6 @@ release ships a static binary.
 | 1.5 | Code-review gate (pulled forward) | ✅ delivered |
 | 2 | Instincts engine | ✅ delivered |
 | 3 | Continuous learning | ⏳ planned |
-| 4 | Cross-harness adapters | ⏳ planned |
+| 4 | Cross-harness adapters | ✅ delivered |
 | 5 | Memory + research-first | ⏳ planned |
 | 6 | Packaging & CI | ⏳ planned |
