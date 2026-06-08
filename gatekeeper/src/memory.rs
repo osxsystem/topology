@@ -451,4 +451,25 @@ mod tests {
         let result = scan_bytes_for_secrets(&rules, &payload2);
         assert!(result.is_err(), "must detect key even after NUL bytes");
     }
+
+    /// The seeded template must round-trip through `parse_frontmatter`:
+    /// it is the format contract, so it must be parseable by the real parser.
+    #[test]
+    fn template_parses_through_frontmatter_parser() {
+        let template = include_str!("../../memory/TEMPLATE.handoff.md");
+        let result = parse_frontmatter(template);
+        assert!(
+            result.is_some(),
+            "TEMPLATE.handoff.md must parse through parse_frontmatter"
+        );
+        let (created, status) = result.unwrap();
+        assert!(
+            !created.is_empty(),
+            "TEMPLATE.handoff.md frontmatter must have a non-empty 'created' field"
+        );
+        assert!(
+            !status.is_empty(),
+            "TEMPLATE.handoff.md frontmatter must have a non-empty 'status' field"
+        );
+    }
 }

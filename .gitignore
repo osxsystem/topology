@@ -7,3 +7,6 @@
 # Claude Code ephemeral state
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Memory handoff artifacts — runtime state, not committed source
+/memory/artifacts/
