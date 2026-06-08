@@ -5,14 +5,15 @@ separately-approved unit of work with its own deliverables and a concrete **veri
 is "done" without a check that proves it.
 
 > This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, the
-> **code-review gate** (Phase 1.5), and **Phase 2 (instincts engine)** are delivered. Phases 3–6 are
-> designed and ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
+> **code-review gate** (Phase 1.5), **Phase 2 (instincts engine)**, and **Phase 3 (continuous learning)**
+> are delivered. Phases 4–6 are designed and ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md)
+> and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
     P0["Phase 0<br/>Blueprint<br/>✅ this pass"] --> P1["Phase 1<br/>Security<br/>scanning ✅"]
     P1 --> P2["Phase 2<br/>Instincts<br/>engine ✅"]
-    P2 --> P3["Phase 3<br/>Continuous<br/>learning"]
+    P2 --> P3["Phase 3<br/>Continuous<br/>learning ✅"]
     P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters"]
     P4 --> P5["Phase 5<br/>Memory +<br/>research-first"]
     P5 --> P6["Phase 6<br/>Packaging<br/>+ CI"]
@@ -80,20 +81,28 @@ render --harness claude` reproduces the same bodies. Evidence: `docs/verify/2026
 
 ---
 
-## Phase 3 — Continuous learning
+## Phase 3 — Continuous learning ✅ *(delivered 2026-06-08)*
 
 **Goal.** Failures and corrections become permanent operators — the system tightens where it's burned.
 
 **Deliverables.**
-- `gatekeeper/src/learn.rs` — capture (append a structured gotcha) + promote (scaffold an operator).
-- `docs/learn/` — the gotcha ledger.
-- `skills/capture-gotcha/SKILL.md` — recognize a recurring failure and route it into the ledger.
+- `gatekeeper/src/learn.rs` — capture (append a structured gotcha to the append-only ledger) + promote
+  (scaffold an operator; validate it against that operator's own loader; print a diff; write only on
+  explicit human confirmation).
+- `docs/learn/` — the gotcha ledger (`ledger.md`) + a `README.md` describing the entry format and the loop.
+- `skills/capture-gotcha/SKILL.md` — recognize a recurring failure and route it (wired into
+  `hooks/skill-rules.json`); `hooks/learn-capture.sh` — an opt-in `Stop` hook for automated capture.
 - Promotion path: a ledger entry → a new `instinct`, `skill`, or `security/rules.toml` rule, **human-approved**.
 
-**New `gatekeeper` surface.** `gatekeeper learn capture` (on Stop/gate-failure), `gatekeeper learn promote`.
+**New `gatekeeper` surface.** `gatekeeper learn capture` (on Stop/gate-failure), `gatekeeper learn list`,
+`gatekeeper learn promote`.
 
-**Verify.** A forced gate failure writes a ledger entry; `promote` produces a *valid* instinct/skill/rule
-file (parses, passes `gatekeeper list`/scan-load); promotion requires explicit human confirmation.
+**Verify.** `learn capture` appends a parseable `## <id>` entry to `docs/learn/ledger.md` (and a recurrence
+is the same id captured again — `learn list` shows the occurrence count); `learn promote --kind instinct`
+writes an `instincts/<id>.md` (with `source: ledger:<id>`) that passes `gatekeeper instinct list`,
+`--kind skill` writes a `skills/<id>/SKILL.md` that appears in `gatekeeper list`, and `--kind rule
+--pattern <re>` appends a `[[rule]]` that `gatekeeper scan` loads; a declined promotion (no `y`) writes
+nothing. Evidence: `docs/verify/2026-06-08-continuous-learning.md`.
 
 **Depends on.** Phase 2 (promotes into instincts) and Phase 1 (promotes into scan rules).
 
@@ -165,7 +174,7 @@ release ships a static binary.
 | 1 | Security scanning | ✅ delivered |
 | 1.5 | Code-review gate (pulled forward) | ✅ delivered |
 | 2 | Instincts engine | ✅ delivered |
-| 3 | Continuous learning | ⏳ planned |
+| 3 | Continuous learning | ✅ delivered |
 | 4 | Cross-harness adapters | ⏳ planned |
 | 5 | Memory + research-first | ⏳ planned |
 | 6 | Packaging & CI | ⏳ planned |
