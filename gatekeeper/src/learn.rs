@@ -77,7 +77,9 @@ impl Kind {
             "instinct" => Ok(Kind::Instinct),
             "skill" => Ok(Kind::Skill),
             "rule" => Ok(Kind::Rule),
-            other => Err(format!("invalid kind '{other}' (expected instinct|skill|rule)")),
+            other => Err(format!(
+                "invalid kind '{other}' (expected instinct|skill|rule)"
+            )),
         }
     }
 }
@@ -187,8 +189,8 @@ fn parse_ledger(raw: &str) -> Result<Vec<Entry>, String> {
             match key.trim() {
                 "trigger" => {
                     if let Some(v) = value {
-                        p.trigger =
-                            Trigger::parse(&v).map_err(|e| format!("ledger entry '{}': {e}", p.id))?;
+                        p.trigger = Trigger::parse(&v)
+                            .map_err(|e| format!("ledger entry '{}': {e}", p.id))?;
                     }
                 }
                 "gate" => p.gate = value,
@@ -439,7 +441,8 @@ fn format_entry(
 /// blank line. This is the only writer; it never rewrites existing content.
 fn append_entry(path: &Path, block: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
     let existed = path.exists();
     let mut f = fs::OpenOptions::new()
@@ -619,16 +622,13 @@ fn cmd_promote(args: &[String], root: &Path) -> i32 {
         return 2;
     };
 
-    let plan = match build_promotion(
-        root,
-        &id,
-        entry,
-        kind,
-        &priority,
-        pattern.as_deref(),
-        &rule_kind,
-        &severity,
-    ) {
+    let opts = PromoteOpts {
+        priority,
+        pattern,
+        rule_kind,
+        severity,
+    };
+    let plan = match build_promotion(root, &id, entry, kind, &opts) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("gatekeeper learn promote: {e}");
@@ -649,7 +649,10 @@ fn cmd_promote(args: &[String], root: &Path) -> i32 {
     }
     println!("# promotion preview: {} '{}'", kind.as_str(), id);
     println!("#   from ledger entry '{id}' — {prov}, {occurrences} occurrence(s)");
-    print!("{}", render_add_diff(&plan.diff_from, &plan.rel, &plan.added));
+    print!(
+        "{}",
+        render_add_diff(&plan.diff_from, &plan.rel, &plan.added)
+    );
 
     if !assume_yes && !confirm() {
         println!("promotion aborted: no confirmation, nothing written");
@@ -692,6 +695,15 @@ fn render_add_diff(from: &str, rel: &str, added: &str) -> String {
     s
 }
 
+/// The promotion knobs grouped into one struct, so `build_promotion` stays within clippy's argument
+/// limit and the kind-specific flags travel together.
+struct PromoteOpts {
+    priority: String,
+    pattern: Option<String>,
+    rule_kind: String,
+    severity: String,
+}
+
 /// Build + validate the scaffold for `kind`. Pure: the only side effect is a temp file used to validate
 /// a rule against `scan::load_rules`. Returns the `Plan` the caller commits after confirmation.
 fn build_promotion(
@@ -699,10 +711,7 @@ fn build_promotion(
     id: &str,
     entry: &Entry,
     kind: Kind,
-    priority: &str,
-    pattern: Option<&str>,
-    rule_kind: &str,
-    severity: &str,
+    opts: &PromoteOpts,
 ) -> Result<Plan, String> {
     match kind {
         Kind::Instinct => {
@@ -712,8 +721,8 @@ fn build_promotion(
                 return Err(format!("{rel} already exists; refusing to overwrite"));
             }
             let content = format!(
-                "---\nid: {id}\npriority: {priority}\nsource: ledger:{id}\n---\n{}\n",
-                entry.summary
+                "---\nid: {id}\npriority: {}\nsource: ledger:{id}\n---\n{}\n",
+                opts.priority, entry.summary
             );
             validate_instinct_str(&content)
                 .map_err(|e| format!("scaffolded instinct is invalid: {e}"))?;
@@ -736,7 +745,8 @@ fn build_promotion(
             let content = format!(
                 "---\nname: {id}\ndescription: {summary} Use when this recurring failure is about to repeat.\n---\n\n# {id}\n\n{summary}\n\n> Scaffolded by `gatekeeper learn promote` from ledger entry `{id}`. Replace this note with the\n> procedure: name the trigger, the action to take, and the bar for done.\n"
             );
-            validate_skill_str(&content).map_err(|e| format!("scaffolded skill is invalid: {e}"))?;
+            validate_skill_str(&content)
+                .map_err(|e| format!("scaffolded skill is invalid: {e}"))?;
             Ok(Plan {
                 rel,
                 abs,
@@ -747,12 +757,16 @@ fn build_promotion(
             })
         }
         Kind::Rule => {
-            let Some(pattern) = pattern else {
+            let Some(pattern) = opts.pattern.as_deref() else {
                 return Err("promoting to a rule requires --pattern <regex> (a detection pattern cannot be inferred from prose)".to_string());
             };
+            let rule_kind = opts.rule_kind.as_str();
             if rule_kind != "content" && rule_kind != "command" {
-                return Err(format!("--rule-kind '{rule_kind}' (expected content|command)"));
+                return Err(format!(
+                    "--rule-kind '{rule_kind}' (expected content|command)"
+                ));
             }
+            let severity = opts.severity.as_str();
             if severity != "warn" && severity != "block" {
                 return Err(format!("--severity '{severity}' (expected warn|block)"));
             }
@@ -935,6 +949,14 @@ mod scaffold_tests {
         fs::create_dir_all(&d).unwrap();
         d
     }
+    fn opts(priority: &str, pattern: Option<&str>) -> PromoteOpts {
+        PromoteOpts {
+            priority: priority.to_string(),
+            pattern: pattern.map(str::to_string),
+            rule_kind: "content".to_string(),
+            severity: "warn".to_string(),
+        }
+    }
 
     #[test]
     fn instinct_scaffold_is_valid_and_backlinks() {
@@ -948,10 +970,7 @@ mod scaffold_tests {
             "verify-skipped",
             &e,
             Kind::Instinct,
-            "high",
-            None,
-            "content",
-            "warn",
+            &opts("high", None),
         )
         .unwrap();
         assert_eq!(plan.rel, "instincts/verify-skipped.md");
@@ -971,10 +990,7 @@ mod scaffold_tests {
             "leaky-token",
             &e,
             Kind::Rule,
-            "medium",
-            Some(r"\bFIXME-SECRET\b"),
-            "content",
-            "warn",
+            &opts("medium", Some(r"\bFIXME-SECRET\b")),
         )
         .unwrap();
         assert!(ok.added.contains("id = \"leaky-token\""));
@@ -984,10 +1000,7 @@ mod scaffold_tests {
             "leaky-token",
             &e,
             Kind::Rule,
-            "medium",
-            Some("(unclosed"),
-            "content",
-            "warn",
+            &opts("medium", Some("(unclosed")),
         );
         assert!(
             bad.is_err(),
@@ -1001,9 +1014,7 @@ mod scaffold_tests {
         fs::create_dir_all(root.join("security")).unwrap();
         fs::write(root.join("security/rules.toml"), "schema_version = 1\n").unwrap();
         let e = entry("x", "some lesson");
-        let err =
-            build_promotion(&root, "x", &e, Kind::Rule, "medium", None, "content", "warn")
-                .unwrap_err();
+        let err = build_promotion(&root, "x", &e, Kind::Rule, &opts("medium", None)).unwrap_err();
         assert!(err.contains("requires --pattern"), "{err}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1011,17 +1022,8 @@ mod scaffold_tests {
     fn skill_scaffold_has_name_and_description() {
         let root = scratch("skill");
         let e = entry("flaky-thing", "Some recurring flakiness lesson.");
-        let plan = build_promotion(
-            &root,
-            "flaky-thing",
-            &e,
-            Kind::Skill,
-            "medium",
-            None,
-            "content",
-            "warn",
-        )
-        .unwrap();
+        let plan =
+            build_promotion(&root, "flaky-thing", &e, Kind::Skill, &opts("medium", None)).unwrap();
         assert_eq!(plan.rel, "skills/flaky-thing/SKILL.md");
         assert!(plan.added.contains("name: flaky-thing"));
         validate_skill_str(&plan.full_content).unwrap();

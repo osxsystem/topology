@@ -12,7 +12,11 @@ fn scratch_root(tag: &str) -> PathBuf {
     fs::create_dir_all(root.join("skills")).unwrap();
     fs::create_dir_all(root.join("instincts")).unwrap();
     fs::create_dir_all(root.join("security")).unwrap();
-    fs::write(root.join("security").join("rules.toml"), "schema_version = 1\n").unwrap();
+    fs::write(
+        root.join("security").join("rules.toml"),
+        "schema_version = 1\n",
+    )
+    .unwrap();
     root
 }
 
@@ -39,7 +43,14 @@ fn capture_creates_ledger_file_with_entry() {
     let root = scratch_root("file");
     let (code, out) = run(
         &root,
-        &["learn", "capture", "--summary", "first ever gotcha", "--id", "first-one"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "first ever gotcha",
+            "--id",
+            "first-one",
+        ],
         b"",
     );
     assert_eq!(code, 0);
@@ -56,20 +67,44 @@ fn capture_appends_then_list_counts_recurrence() {
     let root = scratch_root("recur");
     let (c1, _) = run(
         &root,
-        &["learn", "capture", "--summary", "same gotcha", "--id", "again", "--kind", "skill"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "same gotcha",
+            "--id",
+            "again",
+            "--kind",
+            "skill",
+        ],
         b"",
     );
     assert_eq!(c1, 0);
     let (c2, _) = run(
         &root,
-        &["learn", "capture", "--summary", "same gotcha, second time", "--id", "again", "--kind", "skill"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "same gotcha, second time",
+            "--id",
+            "again",
+            "--kind",
+            "skill",
+        ],
         b"",
     );
     assert_eq!(c2, 0);
     let (lc, lout) = run(&root, &["learn", "list"], b"");
     assert_eq!(lc, 0);
-    let row = lout.lines().find(|l| l.starts_with("again\t")).expect("an 'again' row");
-    assert_eq!(row, "again\t2\tskill", "recurrence counts to 2, proposed kind shown");
+    let row = lout
+        .lines()
+        .find(|l| l.starts_with("again\t"))
+        .expect("an 'again' row");
+    assert_eq!(
+        row, "again\t2\tskill",
+        "recurrence counts to 2, proposed kind shown"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -92,7 +127,10 @@ fn list_on_malformed_ledger_exits_2() {
     )
     .unwrap();
     let (code, _) = run(&root, &["learn", "list"], b"");
-    assert_eq!(code, 2, "an unknown field fails loud, mirroring `instinct list`/`scan`");
+    assert_eq!(
+        code, 2,
+        "an unknown field fails loud, mirroring `instinct list`/`scan`"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -102,14 +140,26 @@ fn promote_instinct_passes_instinct_list() {
     run(
         &root,
         &[
-            "learn", "capture",
-            "--summary", "Unit green is not the verify gate; record a re-runnable command",
-            "--id", "verify-not-unit", "--kind", "instinct",
-            "--trigger", "gate-failure", "--gate", "verify",
+            "learn",
+            "capture",
+            "--summary",
+            "Unit green is not the verify gate; record a re-runnable command",
+            "--id",
+            "verify-not-unit",
+            "--kind",
+            "instinct",
+            "--trigger",
+            "gate-failure",
+            "--gate",
+            "verify",
         ],
         b"",
     );
-    let (code, out) = run(&root, &["learn", "promote", "--id", "verify-not-unit", "--yes"], b"");
+    let (code, out) = run(
+        &root,
+        &["learn", "promote", "--id", "verify-not-unit", "--yes"],
+        b"",
+    );
     assert_eq!(code, 0, "promote instinct exits 0; out={out}");
     let made = fs::read_to_string(root.join("instincts/verify-not-unit.md")).unwrap();
     assert!(
@@ -119,7 +169,10 @@ fn promote_instinct_passes_instinct_list() {
     // The promoted instinct must load under the instinct surface — the Phase-3 verify criterion.
     let (lc, lout) = run(&root, &["instinct", "list"], b"");
     assert_eq!(lc, 0);
-    assert!(lout.contains("verify-not-unit"), "promoted instinct appears in `instinct list`: {lout}");
+    assert!(
+        lout.contains("verify-not-unit"),
+        "promoted instinct appears in `instinct list`: {lout}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -128,15 +181,31 @@ fn promote_skill_appears_in_gatekeeper_list() {
     let root = scratch_root("skill");
     run(
         &root,
-        &["learn", "capture", "--summary", "Always re-read a file before editing it", "--id", "read-before-edit", "--kind", "skill"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "Always re-read a file before editing it",
+            "--id",
+            "read-before-edit",
+            "--kind",
+            "skill",
+        ],
         b"",
     );
-    let (code, _) = run(&root, &["learn", "promote", "--id", "read-before-edit", "--yes"], b"");
+    let (code, _) = run(
+        &root,
+        &["learn", "promote", "--id", "read-before-edit", "--yes"],
+        b"",
+    );
     assert_eq!(code, 0);
     assert!(root.join("skills/read-before-edit/SKILL.md").exists());
     let (lc, lout) = run(&root, &["list"], b"");
     assert_eq!(lc, 0);
-    assert!(lout.contains("read-before-edit"), "promoted skill shows in `gatekeeper list`: {lout}");
+    assert!(
+        lout.contains("read-before-edit"),
+        "promoted skill shows in `gatekeeper list`: {lout}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -145,14 +214,30 @@ fn promote_rule_loads_under_scan() {
     let root = scratch_root("rule");
     run(
         &root,
-        &["learn", "capture", "--summary", "FIXME-SECRET markers keep leaking into commits", "--id", "leaky-marker", "--kind", "rule"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "FIXME-SECRET markers keep leaking into commits",
+            "--id",
+            "leaky-marker",
+            "--kind",
+            "rule",
+        ],
         b"",
     );
     let (code, out) = run(
         &root,
         &[
-            "learn", "promote", "--id", "leaky-marker",
-            "--pattern", r"\bFIXME-SECRET\b", "--severity", "block", "--yes",
+            "learn",
+            "promote",
+            "--id",
+            "leaky-marker",
+            "--pattern",
+            r"\bFIXME-SECRET\b",
+            "--severity",
+            "block",
+            "--yes",
         ],
         b"",
     );
@@ -161,7 +246,11 @@ fn promote_rule_loads_under_scan() {
     let (c_clean, _) = run(&root, &["scan", "--content"], b"nothing here\n");
     assert_eq!(c_clean, 0, "rules.toml still loads after the appended rule");
     // ... and the promoted block rule matches + vetoes its pattern.
-    let (c_hit, _) = run(&root, &["scan", "--content"], b"oops FIXME-SECRET in here\n");
+    let (c_hit, _) = run(
+        &root,
+        &["scan", "--content"],
+        b"oops FIXME-SECRET in here\n",
+    );
     assert_eq!(c_hit, 1, "promoted block rule vetoes its pattern");
     let _ = fs::remove_dir_all(&root);
 }
@@ -171,13 +260,25 @@ fn promote_requires_confirmation() {
     let root = scratch_root("confirm");
     run(
         &root,
-        &["learn", "capture", "--summary", "some lesson worth keeping", "--id", "needs-ok", "--kind", "instinct"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "some lesson worth keeping",
+            "--id",
+            "needs-ok",
+            "--kind",
+            "instinct",
+        ],
         b"",
     );
     // No --yes, answer 'n': nothing is written, and a decline is not an error.
     let (code, _) = run(&root, &["learn", "promote", "--id", "needs-ok"], b"n\n");
     assert_eq!(code, 0, "a declined promotion is not an error");
-    assert!(!root.join("instincts/needs-ok.md").exists(), "decline writes nothing");
+    assert!(
+        !root.join("instincts/needs-ok.md").exists(),
+        "decline writes nothing"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -186,10 +287,25 @@ fn promote_unknown_id_exits_2() {
     let root = scratch_root("unknown");
     run(
         &root,
-        &["learn", "capture", "--summary", "something", "--id", "present", "--kind", "instinct"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "something",
+            "--id",
+            "present",
+            "--kind",
+            "instinct",
+        ],
         b"",
     );
-    let (code, _) = run(&root, &["learn", "promote", "--id", "absent", "--kind", "instinct", "--yes"], b"");
+    let (code, _) = run(
+        &root,
+        &[
+            "learn", "promote", "--id", "absent", "--kind", "instinct", "--yes",
+        ],
+        b"",
+    );
     assert_eq!(code, 2, "an unknown ledger id fails loud");
     let _ = fs::remove_dir_all(&root);
 }
@@ -199,10 +315,26 @@ fn promote_rule_without_pattern_exits_2() {
     let root = scratch_root("nopat");
     run(
         &root,
-        &["learn", "capture", "--summary", "needs a pattern", "--id", "ruleish", "--kind", "rule"],
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "needs a pattern",
+            "--id",
+            "ruleish",
+            "--kind",
+            "rule",
+        ],
         b"",
     );
-    let (code, _) = run(&root, &["learn", "promote", "--id", "ruleish", "--yes"], b"");
-    assert_eq!(code, 2, "a rule promotion without --pattern is a usage error");
+    let (code, _) = run(
+        &root,
+        &["learn", "promote", "--id", "ruleish", "--yes"],
+        b"",
+    );
+    assert_eq!(
+        code, 2,
+        "a rule promotion without --pattern is a usage error"
+    );
     let _ = fs::remove_dir_all(&root);
 }
