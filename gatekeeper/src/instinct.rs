@@ -302,6 +302,21 @@ pub fn activate_section(root: &Path) -> String {
     }
 }
 
+/// Adapter accessor (Phase 4): `(id, one-line body)` for every always-on instinct, sorted by
+/// (priority high→low, then id). Strict load — a malformed `instincts/` dir is an `Err` the caller
+/// surfaces (the `adapt` path → exit 2). See `crate::adapt`.
+pub fn instincts_for_adapt(root: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut warnings = Vec::new();
+    let list = load_instincts(&root.join("instincts"), true, &mut warnings)?;
+    Ok(list
+        .into_iter()
+        .map(|i| {
+            let why = i.body_oneline();
+            (i.id, why)
+        })
+        .collect())
+}
+
 /// Entry point for `gatekeeper instinct ...`. Returns the process exit code (0 / 2).
 pub fn cmd_instinct(args: &[String], root: &Path) -> i32 {
     match args.first().map(String::as_str) {
