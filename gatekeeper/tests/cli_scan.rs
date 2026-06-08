@@ -631,6 +631,48 @@ fn real_ruleset_blocks_bash_tampering_with_wiring() {
 }
 
 #[test]
+fn real_ruleset_blocks_bash_writes_into_memory_artifacts() {
+    // memory/artifacts/ holds generated handoffs that must change only via `gatekeeper memory write`.
+    // The PreToolUse guard only `ask`s on Write/Edit/MultiEdit; Bash bypasses that, so the tamper rule
+    // must veto the obvious shell write vectors — not just `>` redirects. Residual (not closed): an
+    // indirectly-built path or an interpreter write still evades the regex.
+    let root = scratch_root("real_tamper_mem");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let block = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+    assert_eq!(
+        block("echo body > memory/artifacts/x.handoff.md"),
+        1,
+        "redirect into artifacts"
+    );
+    assert_eq!(
+        block("cp /tmp/evil memory/artifacts/x.handoff.md"),
+        1,
+        "cp into artifacts (the bypass the redirect-only rule missed)"
+    );
+    assert_eq!(
+        block("tee memory/artifacts/x.handoff.md < /tmp/evil"),
+        1,
+        "tee into artifacts"
+    );
+    assert_eq!(
+        block("mv /tmp/x memory/artifacts/x.handoff.md"),
+        1,
+        "mv into artifacts"
+    );
+    assert_eq!(
+        block("cat memory/artifacts/x.handoff.md"),
+        0,
+        "reading an artifact is fine"
+    );
+    assert_eq!(
+        block("rm -rf node_modules"),
+        0,
+        "an unrelated mutation is fine"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
 fn real_ruleset_protects_active_git_hook() {
     // The installed .git/hooks/pre-commit (a stable copy) must be protected, or an agent could
     // rewrite the active hook to `exit 0` before committing a secret.

@@ -121,16 +121,17 @@ severity = "block"
 description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
 pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
 
-# Heuristic: flags a shell redirect into memory/artifacts/ (e.g. `> memory/artifacts/x.md` or
-# `>> .../memory/artifacts/...`). This RAISES — does not close — the Bash tamper residual: the
-# tool hook does not parse shell, so a sufficiently obfuscated redirect can still slip past.
-# Treat findings as a prompt for human review, not an airtight block.
+# Heuristic: flags a shell command that WRITES into memory/artifacts/ — a redirect (`>`/`>>`) or a
+# mutating verb (tee/cp/mv/ln/chmod/rm/dd/install/truncate/sed -i), mirroring tamper-security-wiring.
+# The tool guard only sees Write/Edit/MultiEdit; this catches the obvious shell vectors that bypass
+# it. It RAISES — does not close — the residual: an indirectly-built path (variable/heredoc) or an
+# interpreter write (`python -c …`) still evades this regex. Treat a finding as a prompt for review.
 [[rule]]
-id = "tamper-memory-artifacts-redirect"
+id = "tamper-memory-artifacts"
 kind = "command"
 severity = "block"
-description = "heuristic: shell redirect into memory/artifacts/ — raises, does not close, the Bash tamper residual; obfuscated redirects may evade this pattern"
-pattern = '>>?[^\n]*memory/artifacts/'
+description = "heuristic: a shell command writing into memory/artifacts/ (redirect/tee/cp/mv/rm/…) — bypasses the tool guard; raises, does not close, the residual (built paths and interpreter writes still evade it)"
+pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*memory/artifacts/'
 
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]
