@@ -3,7 +3,8 @@
 //! Subcommands:
 //!   gatekeeper list                         List skills + descriptions.
 //!   gatekeeper activate                     Read a prompt on stdin, print routed skills.
-//!   gatekeeper check design  --feature S    Design gate: a spec doc exists.
+//!   gatekeeper check research --feature S   Research gate: a research note exists.
+//!   gatekeeper check design  --feature S    Design gate: research note exists, then a spec doc exists.
 //!   gatekeeper check plan    --feature S    Plan gate: a placeholder-free plan exists.
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
 //!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
@@ -72,6 +73,7 @@ fn print_help() {
          USAGE:\n  \
          gatekeeper list\n  \
          gatekeeper activate            (reads prompt on stdin)\n  \
+         gatekeeper check research --feature <slug>\n  \
          gatekeeper check design --feature <slug>\n  \
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
@@ -214,7 +216,17 @@ fn cmd_check(args: &[String]) -> i32 {
         return 2;
     };
     match gate {
-        "design" => gate_doc_exists("specs", &feature_arg(args)),
+        "research" => gate_doc_exists("research", &feature_arg(args)),
+        "design" => {
+            let f = feature_arg(args);
+            match find_doc("research", &f) {
+                None => {
+                    println!("FAIL design gate: research-first — no docs/research/*{f}*.md");
+                    1
+                }
+                Some(_) => gate_doc_exists("specs", &f),
+            }
+        }
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
