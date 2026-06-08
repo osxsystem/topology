@@ -3,6 +3,7 @@ name = "gatekeeper"
 version = "0.1.0"
 edition = "2021"
 description = "Topology gate-enforcement engine: routes skills and checks methodology gates."
+license = "MIT"
 
 [dependencies]
 regex = "1"

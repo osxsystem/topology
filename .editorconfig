@@ -1,0 +1,33 @@
+# EditorConfig — https://editorconfig.org
+# shfmt reads this file for shell formatting; editors read it for whitespace.
+root = true
+
+# Sane, low-opinion defaults for every file. Kept minimal so unrelated file
+# types (Rust, Markdown, JSON, TOML) keep their own/editor-default behaviour.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Bash scripts (hooks/*.sh, scripts/*.sh). Values match the scripts as written
+# so `shfmt -d` reports no diff against the current formatting.
+[*.sh]
+# All scripts indent with 2 spaces, no tabs.
+indent_style = space
+indent_size = 2
+
+# shfmt-specific keys below:
+
+# Indent `case` labels one level under `case` — matches auto-loop.sh, whose
+# `main|master|HEAD)` arm sits 2 spaces in from `case`.
+switch_case_indent = true
+
+# Keep `&&`/`||` at the end of the line, not the start of the next. The scripts
+# break long commands with a trailing `\` (e.g. skill-activation.sh), never by
+# leading a continuation with a binary operator.
+binary_next_line = false
+
+# No space after redirect operators. The hooks and auto-loop write `>"$log"`,
+# `2>&1`, `>&2` with no space, which is shfmt's default; keep it off.
+space_redirects = false

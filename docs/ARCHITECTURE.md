@@ -192,7 +192,8 @@ actionable errors.)
 | `gatekeeper adapt --harness <h>` | — | write native config for harness `<h>` from L0 | 0 / 1 |
 
 New subcommands reuse the existing shape in `gatekeeper/src/main.rs`: the `framework_root()` upward
-walk for locating the repo, and the dependency-free JSON parser in `gatekeeper/src/json.rs`.
+walk for locating the repo. Skill routing parses `skill-rules.json` via `serde_json` (ADR-0007
+retired the hand-rolled `json.rs` parser).
 
 ---
 
@@ -213,17 +214,17 @@ walk for locating the repo, and the dependency-free JSON parser in `gatekeeper/s
 }
 ```
 
-### `instincts/<id>.md` — always-on nudges `[planned]`
-Tiny files; frontmatter says *when it applies*, the body is the *reasoning* (the why, never a bare
-"don't"). `gatekeeper activate` injects matching instincts; `adapt` renders them per harness.
+### `instincts/<id>.md` — always-on nudges `[built]`
+Tiny files; frontmatter carries `id`, `priority`, and optional `source`; the body is the *reasoning*
+(the why, never a bare "don't"). Instincts carry **no scope** — they are always-on and `gatekeeper
+activate` injects the whole set for every session. `adapt` will render them per harness (Phase 4).
 ```markdown
 ---
-id: constructor-injection
-applies: "**/*.{kt,java,ts}"   # glob, language, or "always"
-priority: medium
+id: evidence-over-assertion
+priority: high
+source: doc:ROADMAP
 ---
-Prefer constructor injection. Field injection hides dependencies and breaks testability —
-you can't construct the unit under test without a container.
+"Done" means a re-runnable command and its output, never a feeling.
 ```
 
 ### `security/rules.toml` — scan rules `[planned]`

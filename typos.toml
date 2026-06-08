@@ -1,0 +1,44 @@
+# typos configuration for Topology
+# https://github.com/crate-ci/typos
+#
+# typos flags *known* misspellings, not every unfamiliar word, so most of
+# Topology's domain jargon (gatekeeper, frontmatter, subagent, opencode, kebab,
+# RegexSet, serde, toml, ADR, TDD, MCP, CLI, …) needs NO allowlisting — it is
+# simply absent from the typo dictionary and passes untouched. The entries below
+# are limited to terms that typos genuinely *does* flag in these docs.
+#
+# Run from the repo root:  typos
+
+[files]
+# Generated, vendored, tooling, and lock artifacts — never spell-checked.
+extend-exclude = [
+  "target/",            # Rust build output (gatekeeper/target/)
+  ".git/",              # git internals
+  ".claude/",           # local harness state + duplicate worktree copies of the repo
+  "*.lock",             # Cargo.lock, scheduled_tasks.lock, incremental build .lock files
+  "LICENSE",            # legal text, not prose we author
+]
+
+[default]
+# Secret-detection *example* identifiers appear verbatim in the security docs
+# (e.g. the AWS-published `AKIAIOSFODNN7EXAMPLE`, placeholder keys like
+# `AKIA12345…`). Their all-caps runs can collide with the typo dictionary, and
+# they must stay byte-for-byte exact to remain valid examples. Ignore the whole
+# family of `AKIA…`/`ASIA…` access-key tokens by pattern rather than listing each.
+extend-ignore-identifiers-re = [
+  "A[KS]IA[0-9A-Z]+",   # AWS access-key-id example/placeholder tokens
+  "[0-9a-f]{7,40}",     # git commit hashes (e.g. `1c1ba61`); the embedded "ba" run else trips the dictionary
+]
+
+[default.extend-words]
+# --- Deliberate technical terms typos would "correct" ---
+# "iff" = "if and only if" (logic shorthand), used in gate/exit-code specs.
+# typos maps iff -> if/of; keep it as itself.
+iff = "iff"
+# "mis" = the English prefix in "mis-routed" (METHODOLOGY.md); typos splits on
+# the hyphen and maps the bare prefix to miss/mist. Keep it as itself.
+mis = "mis"
+# "BSE" = a DELIBERATE corruption of "BASE" inside a test fixture that checks the
+# review gate detects a tampered base ref (docs/plans/.../code-review-gate.md and
+# gatekeeper/src/review.rs). It must stay byte-exact, so allow it.
+BSE = "BSE"

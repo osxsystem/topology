@@ -1,0 +1,78 @@
+# Topology — lefthook configuration
+# ---------------------------------------------------------------------------
+# This config AUGMENTS the existing Topology security floor; it never bypasses
+# or replaces it. The first pre-commit step CALLS the existing security hook
+# (hooks/pre-commit.sh) verbatim — that hook runs `gatekeeper scan --staged`
+# and fails closed. All other checks (fmt/clippy/shellcheck/typos) are
+# additive quality gates layered on top. (shfmt is intentionally NOT gated — the
+# scripts use a deliberate hand-aligned style; use `just shfmt` to spot-check.)
+#
+# IMPORTANT — coexistence with scripts/install.sh:
+#   scripts/install.sh installs the security hook by COPYING
+#   hooks/pre-commit.sh -> .git/hooks/pre-commit (a stable copy, NOT a symlink,
+#   and NOT via core.hooksPath). `lefthook install` ALSO manages
+#   .git/hooks/pre-commit, so the two installers write to the SAME file and
+#   would clobber each other.
+#
+#   This is why:
+#     1. The security hook is invoked from INSIDE lefthook (the `01_security`
+#        command below) rather than being left as a standalone .git hook, so
+#        the veto still runs even after lefthook owns the hook file.
+#     2. You must NOT run both installers and expect both to survive. Run
+#        `lefthook install` ONLY after confirming it is acceptable for lefthook
+#        to take over .git/hooks/pre-commit. If you later re-run
+#        scripts/install.sh it will overwrite lefthook's hook with the plain
+#        security copy (safe but drops the quality gates); re-run
+#        `lefthook install` to restore them.
+#
+#   Enable manually when ready (do this yourself; it rewrites .git hooks):
+#     brew install lefthook just   # macOS one-time tooling install
+#     lefthook install             # AFTER confirming the coexistence note above
+#
+# The pre-commit group runs `piped: true` so commands execute in `priority`
+# order and any failure aborts the rest. The security command is priority 1,
+# making it a guaranteed, non-skippable FIRST step; the quality checks follow.
+
+pre-commit:
+  # The security floor must complete first and must not be skippable, so it is
+  # NOT part of the parallel set. lefthook runs `piped` groups in order, and a
+  # failure here aborts the rest fail-closed.
+  piped: true
+  commands:
+    # 1. EXISTING security hook — called verbatim, never reimplemented.
+    #    Runs first; a non-zero exit blocks the commit (fail-closed).
+    01_security:
+      priority: 1
+      run: bash hooks/pre-commit.sh
+      fail_text: "Topology security floor BLOCKED the commit (see BLOCK lines above)."
+
+    # 2. Rust formatting check (no writes; manifest pinned to the crate).
+    02_fmt:
+      priority: 2
+      glob: "*.rs"
+      run: cargo fmt --manifest-path gatekeeper/Cargo.toml --check
+
+    # 3. Clippy with warnings as errors.
+    03_clippy:
+      priority: 3
+      glob: "*.rs"
+      run: cargo clippy --manifest-path gatekeeper/Cargo.toml -- -D warnings
+
+    # 4. ShellCheck across all hook + script sources.
+    04_shellcheck:
+      priority: 4
+      glob: "*.sh"
+      run: shellcheck hooks/*.sh scripts/*.sh
+
+    # 5. Spelling.
+    05_typos:
+      priority: 5
+      run: typos
+
+pre-push:
+  parallel: true
+  commands:
+    # Dependency/license/advisory audit — kept OUT of pre-commit (slow, and the
+    # advisory DB fetch can touch the network). deny.toml lives in gatekeeper/.
+    deny:
+      run: cargo deny --manifest-path gatekeeper/Cargo.toml check

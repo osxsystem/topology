@@ -4,14 +4,14 @@ The path from today's Topology (gates + Claude Code) to the full operator system
 separately-approved unit of work with its own deliverables and a concrete **verify** check — nothing
 is "done" without a check that proves it.
 
-> This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, and the
-> **code-review gate** pulled forward from Phase 5 (Phase 1.5 below) are delivered. Phases 2–6 are
+> This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, the
+> **code-review gate** (Phase 1.5), and **Phase 2 (instincts engine)** are delivered. Phases 3–6 are
 > designed and ordered, not built. See [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
     P0["Phase 0<br/>Blueprint<br/>✅ this pass"] --> P1["Phase 1<br/>Security<br/>scanning ✅"]
-    P1 --> P2["Phase 2<br/>Instincts<br/>engine"]
+    P1 --> P2["Phase 2<br/>Instincts<br/>engine ✅"]
     P2 --> P3["Phase 3<br/>Continuous<br/>learning"]
     P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters"]
     P4 --> P5["Phase 5<br/>Memory +<br/>research-first"]
@@ -59,21 +59,22 @@ fallbacks; internal links resolve; Phases 1–6 are framed as *planned*, not don
 
 ---
 
-## Phase 2 — Instincts engine
+## Phase 2 — Instincts engine ✅ *(delivered 2026-06-08)*
 
 **Goal.** Always-on, reasoning-based guardrails, cheaper than skills, injected every session.
 
 **Deliverables.**
-- `instincts/` directory + the `<id>.md` format (frontmatter `applies` / `priority`, body = the *why*).
-- `gatekeeper/src/instinct.rs` — load + filter by `applies`, render plain or per-harness.
-- `activate` extended to inject matching instincts alongside routed skills.
-- A seed set (≈6–10): constructor injection, no platform types in shared code, evidence-over-assertion, etc.
+- `instincts/` directory + the `<id>.md` format (frontmatter `id` / `priority` / optional `source`; body = the *why*). Instincts carry **no scope** — always-on.
+- `gatekeeper/src/instinct.rs` — hand-rolled frontmatter parser, directory loader (sorted, deduped, fail-mode matrix), preamble renderer with word-budget truncation, `cmd_instinct` (list/render), `activate_section`.
+- `activate` extended to inject the always-on instinct set alongside routed skills.
+- Six seed instincts: `constraints-as-reasoning`, `evidence-over-assertion`, `gates-not-rules` (high); `surgical-changes-only`, `three-language-lanes` (high), `weakest-enforcement-that-works` (medium).
 
-**New `gatekeeper` surface.** `gatekeeper instinct list`, `gatekeeper instinct render --harness <h>`;
+**New `gatekeeper` surface.** `gatekeeper instinct list`, `gatekeeper instinct render --harness <h> [--budget <n>]`;
 `activate` now emits instincts.
 
-**Verify.** Instincts appear in the session preamble for each wired harness; an `applies` glob scopes
-correctly (a Kotlin instinct doesn't fire on a Markdown-only prompt); `cargo test` covers filtering.
+**Verify.** `gatekeeper activate` injects the always-on instincts under the `Always-on instincts —`
+header for any prompt; a missing `instincts/` dir yields no instincts and exit 0; `gatekeeper instinct
+render --harness claude` reproduces the same bodies. Evidence: `docs/verify/2026-06-07-instincts-engine.md`.
 
 **Depends on.** Phase 0. (Independent of Phase 1; orderable either way.)
 
@@ -105,7 +106,8 @@ file (parses, passes `gatekeeper list`/scan-load); promotion requires explicit h
 **Deliverables.**
 - `gatekeeper/src/adapt.rs` + `adapters/` templates per harness.
 - Codex: generate `.codex/config.toml` agents + ensure `AGENTS.md` carries the contract.
-- Cursor: generate `.cursor/rules/*.mdc` (globs from each skill's `applies`).
+- Cursor: generate `.cursor/rules/*.mdc` — per-path scoping derives from the skill router's keyword
+  triggers; always-on **instincts** map to Cursor's **Always** rule mode (they have no scope).
 - OpenCode: generate `opencode.json` + `.opencode/skills/` from `skills/`.
 - Per-harness install paths in `scripts/install.sh`.
 
@@ -162,7 +164,7 @@ release ships a static binary.
 | 0 | Blueprint (docs + diagrams + roadmap) | ✅ delivered |
 | 1 | Security scanning | ✅ delivered |
 | 1.5 | Code-review gate (pulled forward) | ✅ delivered |
-| 2 | Instincts engine | ⏳ planned |
+| 2 | Instincts engine | ✅ delivered |
 | 3 | Continuous learning | ⏳ planned |
 | 4 | Cross-harness adapters | ⏳ planned |
 | 5 | Memory + research-first | ⏳ planned |

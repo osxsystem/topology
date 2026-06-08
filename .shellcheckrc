@@ -1,0 +1,32 @@
+# ShellCheck configuration for Topology's Bash scripts (hooks/*.sh, scripts/*.sh).
+# All scripts use `#!/usr/bin/env bash` and rely on bash-only features
+# ([[ ]], arrays, ${BASH_SOURCE[0]}, =~, ${var//x/y}, $(( ))), so analyse them as bash.
+shell=bash
+
+# These scripts do not `source` any other local file, so off-disk source
+# resolution is unnecessary. Leaving this disabled keeps the run hermetic.
+external-sources=false
+
+# --- Optional checks enabled (each verified to NOT flood these specific scripts) ---
+
+# SC2248: quote variables that could carry spaces/globs. The scripts already
+# quote every expansion; enabling this locks in that convention. Verified clean.
+enable=quote-safe-variables
+
+# SC2230: prefer `command -v` over `which`. Every script already uses
+# `command -v gatekeeper` / `command -v cargo`; this enforces the existing
+# choice and flags nothing today. Verified clean.
+enable=deprecate-which
+
+# SC2233/SC2235-family: require explicit unary tests instead of bare nullary
+# `[ "$x" ]`. auto-loop.sh consistently writes `[ -n "$x" ]` / `[ -z "$x" ]`,
+# so this codifies the existing explicit style. Verified clean.
+enable=avoid-nullary-conditions
+
+# NOT enabled: check-extra-masked-returns (SC2312). auto-loop.sh deliberately
+# uses command substitution inside the log() printf and inside `[ ]` conditions
+# (e.g. "$(date ...)", "$(git rev-parse HEAD)"); enabling it would flood that
+# script with info diagnostics on intentional patterns.
+#
+# NOT enabled: require-variable-braces (SC2250). The scripts deliberately write
+# $ROOT / $GK without braces; enabling it would flag nearly every expansion.
