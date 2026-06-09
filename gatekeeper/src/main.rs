@@ -22,6 +22,8 @@
 //!   gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>   Write a handoff artifact (body on stdin).
 //!   gatekeeper memory read  --feature <slug>                       Print a handoff artifact to stdout.
 //!   gatekeeper memory list                                         List all handoff artifacts (slug · created · status).
+//!   gatekeeper check docs                   Docs-coverage lint: skills frontmatter, ADR index, ROADMAP evidence paths.
+//!   gatekeeper doctor                       Read-only health check + binary-resolution transparency.
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
 //! one single std-only macOS-arm64 executable (dynamically links libSystem).
@@ -34,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 mod adapt;
+mod doctor;
 mod instinct;
 mod learn;
 mod memory;
@@ -61,6 +64,7 @@ fn main() {
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
+        Some("doctor") => doctor::cmd_doctor(&framework_root()),
         Some("--version") | Some("-V") => {
             println!(
                 "gatekeeper {} (rules schema v{})",

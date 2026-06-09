@@ -794,7 +794,7 @@ fn build_promotion(
 
 /// Validate a scaffolded skill by the same two fields `gatekeeper list` reads back: a non-empty `name`
 /// and `description` in the frontmatter.
-fn validate_skill_str(raw: &str) -> Result<(), String> {
+pub(crate) fn validate_skill_str(raw: &str) -> Result<(), String> {
     let mut in_front = false;
     let mut name = false;
     let mut desc = false;
@@ -829,6 +829,14 @@ fn validate_skill_str(raw: &str) -> Result<(), String> {
         return Err("frontmatter missing a non-empty 'description'".to_string());
     }
     Ok(())
+}
+
+/// Read `path` and validate it as a skill file via [`validate_skill_str`].
+/// Called by both `doctor`'s skills probe and `check docs` R1 — the shared path wrapper.
+pub(crate) fn validate_skill_file(path: &std::path::Path) -> Result<(), String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    validate_skill_str(&raw)
 }
 
 /// Distinguishes concurrent rule-validation temp files (cargo runs unit tests on parallel threads).
