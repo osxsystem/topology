@@ -26,7 +26,7 @@ topology/
 ├── AGENTS.md                  # the agent definition + bootstrap (portable across clients)
 ├── CLAUDE.md                  # symlink -> AGENTS.md (so Claude Code reads the same source)
 ├── .claude-plugin/
-│   └── plugin.json            # Claude Code packaging<!-- forward-dep: Task 7 -->
+│   └── plugin.json            # Claude Code packaging
 ├── skills/                    # Markdown skills (the methodology + meta skills)
 │   ├── _getting-started/
 │   ├── brainstorm-design/
@@ -46,6 +46,8 @@ topology/
     ├── install.sh             # build the binary + wire up the symlink/hooks
     └── new-skill.sh           # scaffold a new skill from the template
 ```
+
+<!-- forward-dep: Task 7 creates .claude-plugin/plugin.json; until then the entry above is aspirational. -->
 
 ## The core idea: gates, not rules
 

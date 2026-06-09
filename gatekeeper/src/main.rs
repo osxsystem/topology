@@ -26,7 +26,8 @@
 //!   gatekeeper doctor                       Read-only health check + binary-resolution transparency.
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
-//! one single std-only macOS-arm64 executable (dynamically links libSystem).
+//! a single std-only macOS-arm64 executable (dynamically links libSystem). See
+//! docs/adr/0007-security-scanner-dependencies.md.
 //! See docs/adr/0007-security-scanner-dependencies.md.
 
 use std::env;
