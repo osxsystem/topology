@@ -122,6 +122,28 @@ echo "add a users table" | gatekeeper activate   # shows which skills route in
 `$GATEKEEPER_BIN` → `PATH` → repo-build resolution). The hooks themselves stay silent on success, so
 `doctor` is your window into them.
 
+### Environment variables
+
+Two optional variables control how `gatekeeper` resolves things:
+
+| Variable | Controls | Resolution order |
+|---|---|---|
+| `$GATEKEEPER_BIN` | which binary the hooks run | `$GATEKEEPER_BIN` → `PATH` → repo build |
+| `$TOPOLOGY_ROOT` | which directory is the **framework root** — where `skills/`, `security/rules.toml`, the instincts, and the gate `docs/` live | `$TOPOLOGY_ROOT` → nearest ancestor that has `skills/` **and** a Topology marker (`AGENTS.md` \| `gatekeeper/` \| `.claude-plugin/`) → the current directory |
+
+`$TOPOLOGY_ROOT` is the explicit way to pin the framework root when you run `gatekeeper` **from
+outside the repo** — a CI job, or another project's directory:
+
+```bash
+TOPOLOGY_ROOT=/path/to/topology gatekeeper list
+```
+
+Without it, resolution walks up from the current directory and only stops at a *marked* Topology
+root, so an unrelated `skills/` folder elsewhere on your machine (e.g. a stray `~/skills`) is never
+mistaken for the framework — it falls back to the current directory instead. The hooks already pin
+the root themselves (they `cd` into the repo before calling `gatekeeper`), so `$TOPOLOGY_ROOT` only
+matters for commands you run by hand.
+
 ---
 
 ## Uninstall
