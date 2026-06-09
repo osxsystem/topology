@@ -27,6 +27,50 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
     )
 }
 
+// --- version flag ---
+
+#[test]
+fn version_flag_long_exits_0_and_prints_version() {
+    let root = scratch_root("ver_long");
+    let (code, out) = run(&root, &["--version"]);
+    assert_eq!(code, 0, "--version should exit 0; out: {out}");
+    assert!(
+        out.starts_with("gatekeeper "),
+        "--version output should start with 'gatekeeper '; got: {out}"
+    );
+    assert!(
+        out.contains("(rules schema v"),
+        "--version output should contain '(rules schema v'; got: {out}"
+    );
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "--version output should contain crate version {}; got: {out}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn version_flag_short_exits_0_and_prints_version() {
+    let root = scratch_root("ver_short");
+    let (code, out) = run(&root, &["-V"]);
+    assert_eq!(code, 0, "-V should exit 0; out: {out}");
+    assert!(
+        out.starts_with("gatekeeper "),
+        "-V output should start with 'gatekeeper '; got: {out}"
+    );
+    assert!(
+        out.contains("(rules schema v"),
+        "-V output should contain '(rules schema v'; got: {out}"
+    );
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "-V output should contain crate version {}; got: {out}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 // --- research gate ---
 
 #[test]

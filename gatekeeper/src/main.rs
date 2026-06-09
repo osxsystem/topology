@@ -24,7 +24,8 @@
 //!   gatekeeper memory list                                         List all handoff artifacts (slug · created · status).
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
-//! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
+//! one single std-only macOS-arm64 executable (dynamically links libSystem).
+//! See docs/adr/0007-security-scanner-dependencies.md.
 
 use std::env;
 use std::fs;
@@ -38,6 +39,7 @@ mod learn;
 mod memory;
 mod review;
 mod scan;
+mod version;
 
 const PLACEHOLDERS: &[&str] = &[
     "tbd",
@@ -59,6 +61,14 @@ fn main() {
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
+        Some("--version") | Some("-V") => {
+            println!(
+                "gatekeeper {} (rules schema v{})",
+                version::tool(),
+                version::rules_schema()
+            );
+            0
+        }
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -74,7 +84,7 @@ fn main() {
 
 fn print_help() {
     println!(
-        "topology gatekeeper\n\n\
+        "topology gatekeeper {} (rules schema v{})\n\n\
          USAGE:\n  \
          gatekeeper list\n  \
          gatekeeper activate            (reads prompt on stdin)\n  \
@@ -84,6 +94,7 @@ fn print_help() {
          gatekeeper check verify --feature <slug>\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n  \
+         gatekeeper check docs\n  \
          gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
          gatekeeper scan --staged | --check-path <path>\n  \
          gatekeeper instinct list\n  \
@@ -94,7 +105,10 @@ fn print_help() {
          gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n  \
          gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
          gatekeeper memory read  --feature <slug>\n  \
-         gatekeeper memory list\n"
+         gatekeeper memory list\n  \
+         gatekeeper doctor\n",
+        version::tool(),
+        version::rules_schema()
     );
 }
 

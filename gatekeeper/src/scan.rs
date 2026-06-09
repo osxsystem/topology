@@ -15,6 +15,12 @@ use regex::bytes::{Regex, RegexSet};
 use serde::Deserialize;
 
 const SCHEMA_VERSION: u32 = 1;
+
+/// Expose the rules schema version to sibling modules without leaking the private const.
+pub fn schema_version() -> u32 {
+    SCHEMA_VERSION
+}
+
 /// PreToolUse inputs are latency-sensitive; cap at 5 MiB.
 const HOOK_INPUT_CAP: usize = 5 * 1024 * 1024;
 /// Pre-commit blobs can be large; cap generously at 50 MiB, over-cap blocks unless allowlisted.
