@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    name: Offline gate (just check + check docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gatekeeper
+
+      - name: Install just + typos
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,typos
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Offline gate (fmt-check, lint, test, shell, typos, docs)
+        run: just check
+
+      - name: Docs-coverage lint (gatekeeper check docs)
+        run: cargo run --manifest-path gatekeeper/Cargo.toml --quiet -- check docs
+
+  network:
+    name: Network gates (deny, links) — non-blocking
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gatekeeper
+
+      - name: Install just + cargo-deny + lychee
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-deny,lychee
+
+      - name: just deny
+        run: just deny
+
+      - name: just links
+        run: just links
