@@ -117,17 +117,34 @@ fn print_help() {
     );
 }
 
-/// Locate the framework root by walking up from cwd looking for a `skills/` dir.
-fn framework_root() -> PathBuf {
-    let mut dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper", ".claude-plugin"];
+
+fn is_marked_root(dir: &Path) -> bool {
+    dir.join("skills").is_dir() && ROOT_MARKERS.iter().any(|m| dir.join(m).exists())
+}
+
+fn resolve_root(start: &Path, env_override: Option<&Path>) -> PathBuf {
+    if let Some(o) = env_override {
+        if o.is_dir() {
+            return o.to_path_buf();
+        }
+    }
+    let mut dir = start.to_path_buf();
     loop {
-        if dir.join("skills").is_dir() {
+        if is_marked_root(&dir) {
             return dir;
         }
         if !dir.pop() {
-            return env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            return start.to_path_buf();
         }
     }
+}
+
+/// Locate the framework root by walking up from cwd looking for a marked Topology root.
+fn framework_root() -> PathBuf {
+    let start = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_override = env::var_os("TOPOLOGY_ROOT").map(PathBuf::from);
+    resolve_root(&start, env_override.as_deref())
 }
 
 fn cmd_list() -> i32 {
@@ -552,6 +569,103 @@ mod tests {
         assert_eq!(
             read_description(&md).as_deref(),
             Some("Do a thing. Use when needed.")
+        );
+    }
+
+    // resolve_root tests — each uses a distinct hard-coded tempdir subdir so reruns are clean.
+
+    #[test]
+    fn resolve_root_hijack_regression() {
+        // A chain whose only skills/ dir has NO marker → returns start (not the stray dir).
+        let base = env::temp_dir().join("topology_resolve_root_hijack");
+        let _ = fs::remove_dir_all(&base);
+        // stray parent: has skills/ but no marker
+        let stray = base.join("stray");
+        fs::create_dir_all(stray.join("skills")).unwrap();
+        // start is a subdir inside stray
+        let start = stray.join("project");
+        fs::create_dir_all(&start).unwrap();
+
+        let result = resolve_root(&start, None);
+        assert_eq!(
+            fs::canonicalize(&start).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "stray skills/ without marker must not hijack"
+        );
+    }
+
+    #[test]
+    fn resolve_root_marked_direct() {
+        // A dir containing both skills/ and AGENTS.md → returns that dir.
+        let base = env::temp_dir().join("topology_resolve_root_marked");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("skills")).unwrap();
+        fs::write(base.join("AGENTS.md"), "").unwrap();
+
+        let result = resolve_root(&base, None);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "marked root must be returned directly"
+        );
+    }
+
+    #[test]
+    fn resolve_root_nested_start() {
+        // Starting from a nested subdir of a marked root → walks up and returns the marked root.
+        let base = env::temp_dir().join("topology_resolve_root_nested");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("skills")).unwrap();
+        fs::write(base.join("AGENTS.md"), "").unwrap();
+        let nested = base.join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+
+        let result = resolve_root(&nested, None);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "nested start must walk up to the marked root"
+        );
+    }
+
+    #[test]
+    fn resolve_root_env_override_wins() {
+        // A valid env_override is returned regardless of what the walk-up would find.
+        let base = env::temp_dir().join("topology_resolve_root_override");
+        let _ = fs::remove_dir_all(&base);
+        // walk-up target: has a marked root
+        let marked = base.join("marked");
+        fs::create_dir_all(marked.join("skills")).unwrap();
+        fs::write(marked.join("AGENTS.md"), "").unwrap();
+        let start = marked.join("sub");
+        fs::create_dir_all(&start).unwrap();
+        // override dir: a different valid directory
+        let override_dir = base.join("override_dir");
+        fs::create_dir_all(&override_dir).unwrap();
+
+        let result = resolve_root(&start, Some(&override_dir));
+        assert_eq!(
+            fs::canonicalize(&override_dir).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "valid env override must win over walk-up"
+        );
+    }
+
+    #[test]
+    fn resolve_root_env_override_invalid_ignored() {
+        // A non-existent env_override is ignored; walk-up/fallback applies.
+        let base = env::temp_dir().join("topology_resolve_root_override_invalid");
+        let _ = fs::remove_dir_all(&base);
+        // No marked root anywhere — fallback to start
+        let start = base.join("project");
+        fs::create_dir_all(&start).unwrap();
+        let nonexistent = base.join("does_not_exist");
+
+        let result = resolve_root(&start, Some(&nonexistent));
+        assert_eq!(
+            fs::canonicalize(&start).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "non-existent env override must be ignored; fallback to start"
         );
     }
 }

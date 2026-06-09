@@ -17,7 +17,8 @@ fn git(root: &Path, args: &[&str]) {
 fn review_gate_runs_from_nested_subdir() {
     let root = std::env::temp_dir().join(format!("topo_cli_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("skills")).unwrap(); // marks the framework root
+    fs::create_dir_all(root.join("skills")).unwrap();
+    fs::write(root.join("AGENTS.md"), "").unwrap(); // marks the framework root
     git(&root, &["init", "-q", "-b", "main"]);
     git(&root, &["config", "user.email", "t@t.t"]);
     git(&root, &["config", "user.name", "t"]);
