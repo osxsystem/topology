@@ -268,10 +268,116 @@ fn cmd_check(args: &[String]) -> i32 {
             &feature_arg(args),
             base_arg(args).as_deref(),
         ),
+        "docs" => check_docs(&framework_root()),
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
         }
+    }
+}
+
+/// Docs-coverage lint (three rules, all satisfiable on the reconciled tree).
+///
+/// R1: every `skills/*/SKILL.md` passes `learn::validate_skill_file` (fence + non-empty name + description).
+/// R2: every `docs/adr/00NN-*.md` (excluding README.md) is linked from `docs/adr/README.md`.
+/// R3: every `docs/verify/<f>.md` token in `docs/ROADMAP.md` resolves on disk (forward-only; no regex dep).
+///
+/// Exit 0 clean, 1 listing specific gaps.
+fn check_docs(root: &Path) -> i32 {
+    let mut gaps: Vec<String> = Vec::new();
+
+    // R1 — skills frontmatter
+    let skills_dir = root.join("skills");
+    if let Ok(rd) = fs::read_dir(&skills_dir) {
+        let mut skill_dirs: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        skill_dirs.sort();
+        for skill_dir in skill_dirs {
+            let skill_md = skill_dir.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            if let Err(e) = learn::validate_skill_file(&skill_md) {
+                gaps.push(format!(
+                    "R1: skills/{}/SKILL.md: {e}",
+                    skill_dir.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
+    }
+
+    // R2 — ADR index coverage
+    let adr_dir = root.join("docs").join("adr");
+    let adr_readme = adr_dir.join("README.md");
+    let readme_text = fs::read_to_string(&adr_readme).unwrap_or_default();
+    if let Ok(rd) = fs::read_dir(&adr_dir) {
+        let mut adr_files: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                p.is_file()
+                    && name.ends_with(".md")
+                    && name != "README.md"
+                    && name.chars().take(4).all(|c| c.is_ascii_digit())
+            })
+            .collect();
+        adr_files.sort();
+        for adr_path in adr_files {
+            let fname = adr_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !readme_text.contains(&fname) {
+                gaps.push(format!(
+                    "R2: docs/adr/{fname} not linked from docs/adr/README.md"
+                ));
+            }
+        }
+    }
+
+    // R3 — ROADMAP verify-note pointers
+    let roadmap = root.join("docs").join("ROADMAP.md");
+    if let Ok(text) = fs::read_to_string(&roadmap) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Token-scan for "docs/verify/" followed by a valid filename (no regex dep).
+        let prefix = "docs/verify/";
+        let mut search = text.as_str();
+        while let Some(pos) = search.find(prefix) {
+            let after = &search[pos + prefix.len()..];
+            // Collect chars of the filename: alphanumeric, '.', '-', '_'
+            let fname: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+                .collect();
+            if fname.ends_with(".md") && !fname.is_empty() && seen.insert(fname.clone()) {
+                let target = root.join("docs").join("verify").join(&fname);
+                if !target.is_file() {
+                    gaps.push(format!(
+                        "R3: docs/verify/{fname} referenced in ROADMAP.md but file not found"
+                    ));
+                }
+            }
+            search = &search[pos + prefix.len()..];
+        }
+    }
+
+    if gaps.is_empty() {
+        println!("check docs: ok");
+        0
+    } else {
+        for g in &gaps {
+            println!("FAIL {g}");
+        }
+        1
     }
 }
 
