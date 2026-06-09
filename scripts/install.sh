@@ -72,3 +72,15 @@ cat <<EOF
     "$BIN" adapt --harness opencode   # opencode.json + .opencode/skills/
     "$BIN" adapt --harness claude     # .claude/settings.json    (precise generator of the wiring above)
 EOF
+
+cat <<EOF
+
+==> Claude Code plugin
+    This repo is also a Claude Code plugin (.claude-plugin/plugin.json + marketplace.json).
+    The plugin does NOT bundle the binary — the gatekeeper build above is its prerequisite
+    (hooks resolve gatekeeper via \$GATEKEEPER_BIN -> PATH). Install it from the marketplace:
+      /plugin marketplace add osxsystem/topology
+      /plugin install topology@topology
+    The plugin COEXISTS with adapt: 'gatekeeper adapt --harness {codex|cursor|opencode|claude}'
+    still generates per-harness configs for non-plugin installs — it does not replace them.
+EOF

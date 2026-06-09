@@ -33,7 +33,16 @@ fn run(cwd: &Path, args: &[&str], stdin: &[u8]) -> (i32, String) {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    // The child may reject its args and exit before reading stdin, closing the pipe; a
+    // partial write then races to BrokenPipe. We assert on the exit code and output, not on
+    // stdin being consumed, so tolerate EPIPE here.
+    let mut child_stdin = child.stdin.take().unwrap();
+    if let Err(e) = child_stdin.write_all(stdin) {
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            panic!("failed to write child stdin: {e}");
+        }
+    }
+    drop(child_stdin);
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(-1),

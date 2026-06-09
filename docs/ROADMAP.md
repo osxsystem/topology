@@ -6,7 +6,7 @@ is "done" without a check that proves it.
 
 > This is the plan, not a changelog. **Phase 0**, **Phase 1 (security scanning)**, the
 > **code-review gate** (Phase 1.5), **Phase 2 (instincts engine)**, **Phase 3 (continuous learning)**, and
-> **Phase 4 (cross-harness adapters)**, and **Phase 5 (memory + research-first)** are delivered. Phase 6 is designed and ordered, not built. See
+> **Phase 4 (cross-harness adapters)**, **Phase 5 (memory + research-first)**, and **Phase 6 (packaging & distribution)** are delivered. See
 > [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```mermaid
@@ -16,7 +16,7 @@ flowchart LR
     P2 --> P3["Phase 3<br/>Continuous<br/>learning ✅"]
     P3 --> P4["Phase 4<br/>Cross-harness<br/>adapters ✅"]
     P4 --> P5["Phase 5<br/>Memory +<br/>research-first ✅"]
-    P5 --> P6["Phase 6<br/>Packaging<br/>+ CI"]
+    P5 --> P6["Phase 6<br/>Packaging<br/>+ CI ✅"]
 ```
 
 **Why this order.** Security is the biggest true gap, so it's front-loaded (Phase 1). Instincts
@@ -158,7 +158,7 @@ round-trips (write → fresh session → resume); the `code-review` subagent ret
 
 ---
 
-## Phase 6 — Packaging & distribution
+## Phase 6 — Packaging & distribution ✅ *(delivered 2026-06-09)*
 
 **Goal.** One-command install per harness, pinned and CI-guarded.
 
@@ -170,7 +170,8 @@ round-trips (write → fresh session → resume); the `code-review` subagent ret
 **New `gatekeeper` surface.** `gatekeeper --version`; a `gatekeeper doctor` health check (optional).
 
 **Verify.** A clean-machine install works for each harness; CI is green on a fresh clone; a tagged
-release ships a static binary.
+release ships a single std-only macOS-arm64 binary (it dynamically links `libSystem`).
+**Evidence:** [`docs/verify/2026-06-09-packaging-distribution.md`](verify/2026-06-09-packaging-distribution.md) — all 12 acceptance criteria checked, quality gates green (213 passed / 2 ignored, no dependency change), `claude plugin validate .` passed.
 
 **Depends on.** Phases 1–5.
 
@@ -187,4 +188,4 @@ release ships a static binary.
 | 3 | Continuous learning | ✅ delivered |
 | 4 | Cross-harness adapters | ✅ delivered |
 | 5 | Memory + research-first | ✅ delivered |
-| 6 | Packaging & CI | ⏳ planned |
+| 6 | Packaging & CI | ✅ delivered |

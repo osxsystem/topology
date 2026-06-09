@@ -42,3 +42,7 @@ mis = "mis"
 # review gate detects a tampered base ref (docs/plans/.../code-review-gate.md and
 # gatekeeper/src/review.rs). It must stay byte-exact, so allow it.
 BSE = "BSE"
+# "EHR" = Electronic Health Records — medical-informatics abbreviation that appears
+# in research context (docs/research/2026-06-08-memory-research-first.md). typos
+# maps EHR -> HER; keep it as itself.
+EHR = "EHR"

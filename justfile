@@ -44,8 +44,12 @@ typos:
 links:
     lychee --config lychee.toml 'docs/**/*.md' '*.md'
 
+# Docs-coverage lint: skills frontmatter, ADR index, ROADMAP evidence paths.
+docs:
+    cargo run --manifest-path gatekeeper/Cargo.toml --quiet -- check docs
+
 # OFFLINE-safe aggregate: formatting, lint, tests, shell, spelling.
-check: fmt-check lint test shell typos
+check: fmt-check lint test shell typos docs
 
 # Full gate: everything, including network/slow checks (deny, links).
 ci: check deny links

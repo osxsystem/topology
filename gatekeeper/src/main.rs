@@ -22,9 +22,13 @@
 //!   gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>   Write a handoff artifact (body on stdin).
 //!   gatekeeper memory read  --feature <slug>                       Print a handoff artifact to stdout.
 //!   gatekeeper memory list                                         List all handoff artifacts (slug · created · status).
+//!   gatekeeper check docs                   Docs-coverage lint: skills frontmatter, ADR index, ROADMAP evidence paths.
+//!   gatekeeper doctor                       Read-only health check + binary-resolution transparency.
 //!
 //! Built offline from a small, vetted dependency set (regex, serde, serde_json, toml); ships as
-//! one static binary. See docs/adr/0007-security-scanner-dependencies.md.
+//! a single std-only macOS-arm64 executable (dynamically links libSystem). See
+//! docs/adr/0007-security-scanner-dependencies.md.
+//! See docs/adr/0007-security-scanner-dependencies.md.
 
 use std::env;
 use std::fs;
@@ -33,11 +37,13 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 mod adapt;
+mod doctor;
 mod instinct;
 mod learn;
 mod memory;
 mod review;
 mod scan;
+mod version;
 
 const PLACEHOLDERS: &[&str] = &[
     "tbd",
@@ -59,6 +65,15 @@ fn main() {
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
+        Some("doctor") => doctor::cmd_doctor(&framework_root()),
+        Some("--version") | Some("-V") => {
+            println!(
+                "gatekeeper {} (rules schema v{})",
+                version::tool(),
+                version::rules_schema()
+            );
+            0
+        }
         Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -74,7 +89,7 @@ fn main() {
 
 fn print_help() {
     println!(
-        "topology gatekeeper\n\n\
+        "topology gatekeeper {} (rules schema v{})\n\n\
          USAGE:\n  \
          gatekeeper list\n  \
          gatekeeper activate            (reads prompt on stdin)\n  \
@@ -84,6 +99,7 @@ fn print_help() {
          gatekeeper check verify --feature <slug>\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n  \
+         gatekeeper check docs\n  \
          gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
          gatekeeper scan --staged | --check-path <path>\n  \
          gatekeeper instinct list\n  \
@@ -94,7 +110,10 @@ fn print_help() {
          gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n  \
          gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
          gatekeeper memory read  --feature <slug>\n  \
-         gatekeeper memory list\n"
+         gatekeeper memory list\n  \
+         gatekeeper doctor\n",
+        version::tool(),
+        version::rules_schema()
     );
 }
 
@@ -250,10 +269,116 @@ fn cmd_check(args: &[String]) -> i32 {
             &feature_arg(args),
             base_arg(args).as_deref(),
         ),
+        "docs" => check_docs(&framework_root()),
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
         }
+    }
+}
+
+/// Docs-coverage lint (three rules, all satisfiable on the reconciled tree).
+///
+/// R1: every `skills/*/SKILL.md` passes `learn::validate_skill_file` (fence + non-empty name + description).
+/// R2: every `docs/adr/00NN-*.md` (excluding README.md) is linked from `docs/adr/README.md`.
+/// R3: every `docs/verify/<f>.md` token in `docs/ROADMAP.md` resolves on disk (forward-only; no regex dep).
+///
+/// Exit 0 clean, 1 listing specific gaps.
+fn check_docs(root: &Path) -> i32 {
+    let mut gaps: Vec<String> = Vec::new();
+
+    // R1 — skills frontmatter
+    let skills_dir = root.join("skills");
+    if let Ok(rd) = fs::read_dir(&skills_dir) {
+        let mut skill_dirs: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        skill_dirs.sort();
+        for skill_dir in skill_dirs {
+            let skill_md = skill_dir.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            if let Err(e) = learn::validate_skill_file(&skill_md) {
+                gaps.push(format!(
+                    "R1: skills/{}/SKILL.md: {e}",
+                    skill_dir.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+        }
+    }
+
+    // R2 — ADR index coverage
+    let adr_dir = root.join("docs").join("adr");
+    let adr_readme = adr_dir.join("README.md");
+    let readme_text = fs::read_to_string(&adr_readme).unwrap_or_default();
+    if let Ok(rd) = fs::read_dir(&adr_dir) {
+        let mut adr_files: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                p.is_file()
+                    && name.ends_with(".md")
+                    && name != "README.md"
+                    && name.chars().take(4).all(|c| c.is_ascii_digit())
+            })
+            .collect();
+        adr_files.sort();
+        for adr_path in adr_files {
+            let fname = adr_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !readme_text.contains(&fname) {
+                gaps.push(format!(
+                    "R2: docs/adr/{fname} not linked from docs/adr/README.md"
+                ));
+            }
+        }
+    }
+
+    // R3 — ROADMAP verify-note pointers
+    let roadmap = root.join("docs").join("ROADMAP.md");
+    if let Ok(text) = fs::read_to_string(&roadmap) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Token-scan for "docs/verify/" followed by a valid filename (no regex dep).
+        let prefix = "docs/verify/";
+        let mut search = text.as_str();
+        while let Some(pos) = search.find(prefix) {
+            let after = &search[pos + prefix.len()..];
+            // Collect chars of the filename: alphanumeric, '.', '-', '_'
+            let fname: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+                .collect();
+            if fname.ends_with(".md") && !fname.is_empty() && seen.insert(fname.clone()) {
+                let target = root.join("docs").join("verify").join(&fname);
+                if !target.is_file() {
+                    gaps.push(format!(
+                        "R3: docs/verify/{fname} referenced in ROADMAP.md but file not found"
+                    ));
+                }
+            }
+            search = &search[pos + prefix.len()..];
+        }
+    }
+
+    if gaps.is_empty() {
+        println!("check docs: ok");
+        0
+    } else {
+        for g in &gaps {
+            println!("FAIL {g}");
+        }
+        1
     }
 }
 

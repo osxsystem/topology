@@ -1,0 +1,10 @@
+{
+  "name": "topology",
+  "version": "0.1.0",
+  "description": "Topology gate-enforcement engine: routes skills and checks methodology gates.",
+  "author": { "name": "osxsystem" },
+  "repository": "https://github.com/osxsystem/topology",
+  "homepage": "https://github.com/osxsystem/topology",
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json"
+}

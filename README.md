@@ -26,7 +26,8 @@ topology/
 ├── AGENTS.md                  # the agent definition + bootstrap (portable across clients)
 ├── CLAUDE.md                  # symlink -> AGENTS.md (so Claude Code reads the same source)
 ├── .claude-plugin/
-│   └── plugin.json            # Claude Code packaging
+│   ├── plugin.json            # Claude Code plugin manifest
+│   └── marketplace.json       # marketplace listing (source "./")
 ├── skills/                    # Markdown skills (the methodology + meta skills)
 │   ├── _getting-started/
 │   ├── brainstorm-design/
@@ -71,6 +72,25 @@ echo "add a users table" | gatekeeper activate   # see which skills route in
 gatekeeper check design --feature add-users       # check a gate
 ```
 
+## Install as a Claude Code plugin
+
+Topology also ships as a Claude Code plugin. The `gatekeeper` binary is **not bundled** in the plugin — it's a prerequisite the hooks resolve on your `PATH` (or via `$GATEKEEPER_BIN`), so build it first, then add the marketplace and install:
+
+```bash
+./scripts/install.sh                          # builds gatekeeper (release) + wires hooks
+/plugin marketplace add osxsystem/topology    # in Claude Code
+/plugin install topology@topology
+```
+
+The plugin wires the same two hooks as a manual install — `UserPromptSubmit` → skill routing, `PreToolUse` → the security scan — via `${CLAUDE_PLUGIN_ROOT}`. Check the binary the hooks will use:
+
+```bash
+gatekeeper --version    # gatekeeper X.Y.Z (rules schema vN)
+gatekeeper doctor       # read-only health check: which binary resolves, plus rules/skills/hooks status
+```
+
+`doctor` is what surfaces *which* `gatekeeper` the hooks resolve (`$GATEKEEPER_BIN` → `PATH` → repo build); the hooks themselves stay silent on success.
+
 ## Make it yours
 
 1. **Pick your gates.** Topology gates on design docs + TDD. Swap in type-checking, an API contract, a coverage threshold — whatever fits your discipline. Edit `gatekeeper/src/main.rs`.
@@ -79,6 +99,6 @@ gatekeeper check design --feature add-users       # check a gate
 
 ## Stack rationale
 
-- **Rust** — the gatekeeper must be fast, deterministic, and safe to run on every prompt and in CI. A single static binary is trivial to distribute across machines.
+- **Rust** — the gatekeeper must be fast, deterministic, and safe to run on every prompt and in CI. A single std-only macOS-arm64 executable (dynamically links libSystem) is trivial to distribute across machines.
 - **Bash** — hooks and install glue; the lowest-common-denominator that every agent harness can shell out to.
 - **Markdown** — skills and the agent definition, so they're portable, diffable, and editable by humans and agents alike.

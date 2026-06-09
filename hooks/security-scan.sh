@@ -6,16 +6,19 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HOOK_DIR")"
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$HOOK_DIR")}"
 
 deny() {
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$1"
   exit 0
 }
 
-# Prefer the repo-built binary (the trusted, feature-current scanner) over whatever `gatekeeper`
-# happens to be on PATH — a stale or unrelated PATH binary must not stand in for the real veto.
-if [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
+# $GATEKEEPER_BIN (an explicit override) wins when set and executable; otherwise prefer the
+# repo-built binary (the trusted, feature-current scanner) over whatever `gatekeeper` happens to
+# be on PATH — a stale or unrelated PATH binary must not stand in for the real veto.
+if [[ -n "${GATEKEEPER_BIN:-}" && -x "${GATEKEEPER_BIN:-}" ]]; then
+  GK="$GATEKEEPER_BIN"
+elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/release/gatekeeper"
 elif [[ -x "$ROOT/gatekeeper/target/debug/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/debug/gatekeeper"

@@ -27,6 +27,50 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
     )
 }
 
+// --- version flag ---
+
+#[test]
+fn version_flag_long_exits_0_and_prints_version() {
+    let root = scratch_root("ver_long");
+    let (code, out) = run(&root, &["--version"]);
+    assert_eq!(code, 0, "--version should exit 0; out: {out}");
+    assert!(
+        out.starts_with("gatekeeper "),
+        "--version output should start with 'gatekeeper '; got: {out}"
+    );
+    assert!(
+        out.contains("(rules schema v"),
+        "--version output should contain '(rules schema v'; got: {out}"
+    );
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "--version output should contain crate version {}; got: {out}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn version_flag_short_exits_0_and_prints_version() {
+    let root = scratch_root("ver_short");
+    let (code, out) = run(&root, &["-V"]);
+    assert_eq!(code, 0, "-V should exit 0; out: {out}");
+    assert!(
+        out.starts_with("gatekeeper "),
+        "-V output should start with 'gatekeeper '; got: {out}"
+    );
+    assert!(
+        out.contains("(rules schema v"),
+        "-V output should contain '(rules schema v'; got: {out}"
+    );
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "-V output should contain crate version {}; got: {out}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 // --- research gate ---
 
 #[test]
@@ -164,6 +208,117 @@ fn design_gate_missing_feature_exits_2() {
     assert_eq!(
         code, 2,
         "missing --feature on the design gate should exit 2"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// --- check docs ---
+
+const VALID_SKILL_MD: &str = "---\nname: test-skill\ndescription: A test skill.\n---\n\nBody.\n";
+
+/// Build a scratch root that satisfies all three docs lint rules (R1/R2/R3).
+fn scratch_docs_root(tag: &str) -> PathBuf {
+    let root = scratch_root(&format!("docs_{tag}"));
+
+    // R1: one valid SKILL.md
+    fs::create_dir_all(root.join("skills").join("my-skill")).unwrap();
+    fs::write(
+        root.join("skills").join("my-skill").join("SKILL.md"),
+        VALID_SKILL_MD,
+    )
+    .unwrap();
+
+    // R2: a docs/adr/0001-x.md linked from a scratch docs/adr/README.md
+    fs::create_dir_all(root.join("docs").join("adr")).unwrap();
+    fs::write(
+        root.join("docs").join("adr").join("0001-x.md"),
+        "# 0001 — X\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("docs").join("adr").join("README.md"),
+        "| [0001](0001-x.md) | X | Accepted |\n",
+    )
+    .unwrap();
+
+    // R3: ROADMAP.md citing a docs/verify/<f>.md that exists
+    fs::create_dir_all(root.join("docs").join("verify")).unwrap();
+    fs::write(
+        root.join("docs").join("verify").join("2026-01-01-feat.md"),
+        "# Verify\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("docs").join("ROADMAP.md"),
+        "Evidence: `docs/verify/2026-01-01-feat.md`.\n",
+    )
+    .unwrap();
+
+    root
+}
+
+#[test]
+fn check_docs_clean_root_exits_0() {
+    let root = scratch_docs_root("clean");
+    let (code, out) = run(&root, &["check", "docs"]);
+    assert_eq!(code, 0, "clean docs root should exit 0; out: {out}");
+    assert!(out.contains("ok"), "output should say ok; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_docs_broken_skill_frontmatter_exits_1() {
+    let root = scratch_docs_root("bad_skill");
+    // Overwrite SKILL.md with missing frontmatter.
+    fs::write(
+        root.join("skills").join("my-skill").join("SKILL.md"),
+        "No frontmatter here.\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "docs"]);
+    assert_eq!(code, 1, "broken SKILL.md should exit 1; out: {out}");
+    assert!(out.contains("R1"), "output should name R1 gap; got: {out}");
+    assert!(out.contains("FAIL"), "output should say FAIL; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_docs_adr_absent_from_readme_exits_1() {
+    let root = scratch_docs_root("bad_adr");
+    // Add an ADR that is NOT in the README.
+    fs::write(
+        root.join("docs").join("adr").join("0002-y.md"),
+        "# 0002 — Y\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "docs"]);
+    assert_eq!(code, 1, "unlinked ADR should exit 1; out: {out}");
+    assert!(out.contains("R2"), "output should name R2 gap; got: {out}");
+    assert!(
+        out.contains("0002-y.md"),
+        "output should name the missing ADR; got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn check_docs_roadmap_verify_pointer_missing_exits_1() {
+    let root = scratch_docs_root("bad_r3");
+    // Overwrite ROADMAP to reference a non-existent verify note.
+    fs::write(
+        root.join("docs").join("ROADMAP.md"),
+        "Evidence: `docs/verify/2026-01-01-feat.md`. Also `docs/verify/missing.md`.\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "docs"]);
+    assert_eq!(code, 1, "missing verify note should exit 1; out: {out}");
+    assert!(out.contains("R3"), "output should name R3 gap; got: {out}");
+    assert!(
+        out.contains("missing.md"),
+        "output should name the missing file; got: {out}"
     );
     let _ = fs::remove_dir_all(&root);
 }
