@@ -130,18 +130,19 @@ uncommitted changes — the gate refuses to bless code it can't pin to a clean c
 
 ---
 
-## 4. What runs today vs. what's coming
+## 4. What runs today
 
-This guide describes what is **built and tested today**: the six gates above, keyword skill-routing
-through the prompt hook, and the one-command installer — all enforced by the `gatekeeper` binary
-(42 tests green, `fmt`/`clippy` clean).
-
-Designed and on the [roadmap](ROADMAP.md), **not yet built**:
+The whole [roadmap](ROADMAP.md) — Phases 0 through 6 — is **built and tested today**, all enforced by
+the `gatekeeper` binary (full test suite green, `fmt`/`clippy` clean). On top of the six gates above,
+keyword skill-routing through the prompt hook, and the one-command installer, that means:
 
 - a **security veto** that blocks secrets and dangerous commands *before* they run or get committed,
 - an always-on **instincts** layer (soft, reasoning-based nudges injected every session),
-- **continuous learning** that promotes recurring failures into new gates/rules, and
+- **continuous learning** that promotes recurring failures into new gates, skills, or scan rules, and
 - native **Codex / Cursor / OpenCode** support generated from this one Markdown source.
 
-Those layers slot into the same picture: routing and instincts wrap step ②, the security veto guards
+These layers slot into the same picture: routing and instincts wrap step ②, the security veto guards
 every tool call inside step ③, and learning feeds step ④'s lessons back to the top.
+
+For what's still on the horizon — deferred domain skills, more platform binaries, a growing operator
+library — see the **Future features** section of the [User Guide](USER-GUIDE.md).
