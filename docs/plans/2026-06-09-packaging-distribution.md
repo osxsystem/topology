@@ -72,10 +72,12 @@ Some("doctor") => doctor::cmd_doctor(&framework_root()),     // read-only health
 pub fn cmd_doctor(root: &Path) -> i32;
 
 // check_docs (in main.rs or a small docs.rs) — three rules, all satisfiable on this tree post-fix:
-//  R1 every skills/*/SKILL.md parses (skill loader)
+//  R1 every skills/*/SKILL.md validates via learn::validate_skill_file (fence + non-empty name + description)
 //  R2 every docs/adr/00NN-*.md (not README) is linked from docs/adr/README.md
-//  R3 every docs/verify/<f>.md path referenced in docs/ROADMAP.md exists on disk
-//      (Phase 0 references none → exempt; these prose pointers are NOT markdown links, so lychee misses them)
+//  R3 every docs/verify/<f>.md token in docs/ROADMAP.md resolves on disk (forward-only; std token-scan,
+//      no regex). Phases 1–4 cite it as backticked prose (lychee misses these); Phase 5 as a markdown link
+//      (lychee catches that one) — R3 matches the `docs/verify/<f>.md` token common to both spellings, so it
+//      is non-redundant for the prose majority. A phase citing none (Phase 0) contributes no token → exempt.
 ```
 
 ```json
@@ -99,22 +101,38 @@ pub fn cmd_doctor(root: &Path) -> i32;
 - **Change (b):** add the `Some("--version") | Some("-V")` arm (Files block) before the help arm, printing
   `gatekeeper {} (rules schema v{})` via `version::tool()`/`version::rules_schema()`; embed the same
   version line in `print_help()`'s header.
-- **Test:** unit test in `version.rs` (or `scan.rs`) asserting `version::rules_schema() == scan::schema_version()`
-  (the seam and the source agree — drift guard); new cases in `cli_check.rs`: `--version` and `-V` each
-  exit `0` and print a line starting `gatekeeper ` containing `(rules schema v` and the
-  `env!("CARGO_PKG_VERSION")` value. `cargo test --test cli_check` + `cargo test version` → green.
+- **Test:** in-crate `#[cfg(test)]` unit tests in `version.rs`: (i) `version::tool() == env!("CARGO_PKG_VERSION")`;
+  (ii) the delegation pin `version::rules_schema() == scan::schema_version()` (kept as a contract guard — it
+  pins that `rules_schema()` keeps delegating, though it cannot go red while it does); (iii) **advertised↔accepted
+  round-trip** — `scan::parse_rules_pub(&format!("schema_version = {}", version::rules_schema()))` returns `Ok`,
+  tying the schema we *print* to the schema the scanner *accepts* (this one can actually fail if the two
+  decouple). `parse_rules_pub` is `#[cfg(test)]`-gated and the crate is a binary (no lib for `tests/`), so these
+  live in-crate. Plus new cases in `cli_check.rs`: `--version` and `-V` each exit `0` and print a line starting
+  `gatekeeper ` containing `(rules schema v` and the `env!("CARGO_PKG_VERSION")` value.
+  `cargo test --test cli_check` + `cargo test version` → green.
 - **Commit:** `feat(gatekeeper): version seam + --version/-V prints tool + rules-schema version`
 
 ### Task 2: `gatekeeper doctor` health check
 - **File(s):** `gatekeeper/src/doctor.rs` (new), `gatekeeper/src/main.rs`; `gatekeeper/tests/cli_doctor.rs` (new)
 - **Change:** `mod doctor;` + the `Some("doctor")` dispatch arm + the help/`//!` line. `cmd_doctor(root)`
-  runs read-only probes — **resolution transparency first (`[rev:codex-2026-06-09]`, ADR-0010 §1):**
-  `std::env::current_exe()` + `version::tool()`, and how a `gatekeeper` would resolve for hook use
-  (`$GATEKEEPER_BIN` if set → else first on `PATH` → else "repo build only"); fails only if
-  `$GATEKEEPER_BIN` is set but missing/non-executable. Then: `security/rules.toml` present and its
-  `schema_version == version::rules_schema()` (via the seam; reuse the scan loader); `instincts/` parse;
-  every `skills/*/SKILL.md` parses; hook scripts in `hooks/` exist and are executable; `.git/hooks/pre-commit`
-  installed. Print `ok`/`FAIL` per probe + a summary; exit `0` if all ok, `1` otherwise. Writes nothing.
+  runs read-only probes — **resolution transparency first (`[rev:codex-2026-06-09]`, ADR-0010 §1):** print the
+  **raw facts, not a single merged order** — `std::env::current_exe()`; the version line
+  `gatekeeper {} (rules schema v{})` via `version::tool()`/`version::rules_schema()` (the seam's second
+  consumer); whether `$GATEKEEPER_BIN` is set and points at an executable; whether a `gatekeeper` is on `PATH`
+  (and where); whether a repo build exists (and where); then **one line naming the split** — "scan prefers the
+  repo build; activate prefers PATH; `$GATEKEEPER_BIN` overrides both" — because the two hooks resolve in
+  *opposite* orders (`security-scan.sh:18-25` repo-first, `skill-activation.sh:16-19` PATH-first), so no single
+  order is truthful for both. Fails only if `$GATEKEEPER_BIN` is set but missing/non-executable;
+  PATH-absent/repo-absent are informational. Then: `security/rules.toml` loads via `scan::load_rules` — which
+  self-validates `schema_version` against the value the seam reports *and* rejects duplicate ids / bad regex —
+  `ok` on `Ok`, `FAIL: {err}` on `Err` (the mismatch error already names the fault, e.g. "unsupported
+  schema_version 9 (expected 1)"); `instincts/` parse via the already-`pub` `instinct::validate_instinct_str`
+  (mirrors the skills probe); every `skills/*/SKILL.md` validates via the shared `learn::validate_skill_file`
+  (a new `pub(crate)` path wrapper over the existing `validate_skill_str`: fence + non-empty `name` +
+  non-empty `description` — the *same* check as `check docs` R1); every `hooks/*.sh` exists and is executable;
+  `.git/hooks/pre-commit` installed **only when `.git/` is present** (a plugin/PATH install has no `.git` →
+  report `n/a`, informational, no fail; `.git` present but hook missing → FAIL — mirrors the Q2 resolution
+  philosophy). Print `ok`/`FAIL`/`n/a` per probe + a summary; exit `0` if all ok, `1` on any FAIL. Writes nothing.
 - **Test:** `cli_doctor.rs` over a scratch root with the markers a healthy tree needs → exit `0` and the
   output names the resolved binary path + version + mechanism; a scratch root with a `schema_version`
   mismatch, a non-executable hook, **or `GATEKEEPER_BIN=/nonexistent`** → exit `1` naming the probe; assert
@@ -125,27 +143,39 @@ pub fn cmd_doctor(root: &Path) -> i32;
 - **File(s):** `gatekeeper/src/main.rs` (+ small `docs.rs` if cleaner), `gatekeeper/tests/cli_check.rs`,
   `docs/adr/README.md`, `docs/ARCHITECTURE.md`, `README.md`, `justfile`
 - **Change (a):** add the `"docs" =>` arm to `cmd_check` (no `--feature`) implementing R1/R2/R3 (Files
-  block). Exit `0` clean, `1` listing the specific gaps. R3 checks the *prose* `docs/verify/…md` pointers
-  in `ROADMAP.md` resolve — lychee misses them (they are backticked, not markdown links), so this is
-  non-redundant.
-- **Change (b) — reconciliation, the precondition for a clean lint (`[rev:codex-2026-06-09]`, ADR-0010 §6).**
-  The repo violates the invariants today; fix three files (only the first is *lint-gating*, the rest are
-  the honesty fixes the research A6 flagged in the same pass):
-  - **`docs/adr/README.md` (gates R2):** the index table stops at 0007 — add rows for **0008, 0009, 0010**
-    so R2 passes. (Real index drift, not a workaround.)
-  - **`docs/ARCHITECTURE.md` (honesty):** flip shipped modules `[planned]`→`[built]` (`scan`, `instinct`,
-    `learn`, `adapt`, `check research`, the Codex/Cursor/OpenCode adapters, `security-scan.sh`,
-    `pre-commit.sh`) and replace "static binary" with "single std-only macOS-arm64 executable."
-  - **`README.md` (honesty):** the phantom `.claude-plugin/plugin.json` (`README.md:28-29,78`) becomes
-    real once **Task 7** creates the manifest — so this lands *after* Task 7 (or note it as a forward dep);
-    fix "static binary" (`:82`) now.
+  block). Exit `0` clean, `1` listing the specific gaps. R3 token-scans `ROADMAP.md` for `docs/verify/…md`
+  and asserts each resolves on disk (forward-only, std) — non-redundant because the backticked-prose pointers
+  (Phases 1–4) are inline code, not markdown links, so lychee can't see them (Phase 5's link overlaps lychee).
+- **Change (b) — reconciliation (`[rev:codex-2026-06-09]`, ADR-0010 §6).** Only the ADR-index rows are
+  *lint-gating*; the rest is the honesty pass research A6 flagged. In a 1→2→3 run, land everything
+  **unblocked** and defer the one hunk Task 7 gates:
+  - **`docs/adr/README.md` (lint-gating — gates R2):** the index stops at 0007 — add rows for **0008, 0009,
+    0010** so R2 passes. (Real index drift, not a workaround.) *This is the only Change-(b) edit `check docs`
+    actually requires to exit `0`.*
+  - **`docs/ARCHITECTURE.md` (honesty, unblocked):** flip shipped modules `[planned]`→`[built]` (`scan`,
+    `instinct`, `learn`, `adapt`, `check research`, the Codex/Cursor/OpenCode adapters, `security-scan.sh`,
+    `pre-commit.sh`) and replace "static binary" (`:75`) with "single std-only macOS-arm64 executable
+    (dynamically links libSystem)."
+  - **`README.md` + `main.rs` "static binary" (honesty, unblocked):** fix the same overclaim in `README.md:82`
+    **and `gatekeeper/src/main.rs:26-27`** (the `//!` doc — the plan originally missed this third instance).
+    `main.rs` is edited by Tasks 1–3 anyway, so this rides the same serial sequence; no extra file contention.
+  - **`README.md` phantom manifest (honesty, BLOCKED → defer):** the phantom `.claude-plugin/plugin.json`
+    (`README.md:28-29,78`) only becomes true once **Task 7** creates the manifest. No gate depends on it
+    (`check docs` never reads README; lychee skips both refs — they are code-fence/backtick text, not links),
+    so **defer this hunk to Task 7/8** and drop a `<!-- forward-dep: Task 7 -->` marker so it isn't lost. Do
+    **not** "fix" it in this run — that would make README describe a file that does not yet exist.
 - **Change (c):** add a `docs:` recipe to the `justfile` running `gatekeeper check docs` and fold it into
   the `check` aggregate (so CI and the human gate both run it).
-- **Test:** `cli_check.rs`: `check docs` on the real repo root exits `0` (**after** Change (b)); in a
-  scratch root, exits `1` and names the gap for (i) a `SKILL.md` with broken frontmatter, (ii) an ADR file
-  absent from the README, and (iii) a ROADMAP `docs/verify/…md` pointer with no file. `just docs` → green;
-  `cargo test --test cli_check` → green.
-- **Commit:** `feat(gatekeeper): check docs lint + reconcile ADR index/ARCHITECTURE/README drift`
+- **Test:** `cli_check.rs`, **all hermetic** (scratch roots — no coupling to the real tree): a **clean-pass**
+  root satisfying R1/R2/R3 (one valid `SKILL.md`; a `docs/adr/0001-x.md` + a matching row in a scratch
+  `docs/adr/README.md`; a `docs/ROADMAP.md` citing a `docs/verify/…md` that exists) exits `0`; three **gap**
+  roots each exit `1` naming the gap — (i) a `SKILL.md` with broken frontmatter, (ii) an ADR absent from the
+  ADR README, (iii) a ROADMAP `docs/verify/…md` pointer with no file. **Real-repo cleanliness is the gate's
+  job, not `cargo test`'s:** `just docs` (folded into `check`, run in CI + pre-commit) exits `0` on the
+  reconciled tree, recorded once in Task 9. `cargo test --test cli_check` → green.
+- **Commit (two):** (1) `feat(gatekeeper): check docs lint + ADR index rows 0008-0010` — the lint and its
+  gating precondition together; (2) `docs: reconcile ARCHITECTURE/README/main.rs "static binary" + [planned] drift`
+  — the honesty pass (README phantom-manifest hunk deferred to Task 7/8).
 
 ### Task 4: Cargo packaging metadata
 - **File(s):** `gatekeeper/Cargo.toml`

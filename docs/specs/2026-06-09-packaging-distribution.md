@@ -44,22 +44,30 @@ the CI and plugin are YAML/JSON + Bash glue + Markdown contracts ([[three-langua
   health check and printing one line per probe with a final summary; exit `0` if all pass, non-zero if any
   fail. Probes (all over machinery that already exists):
   - **resolution transparency (`[rev:codex-2026-06-09]`)** — the binary's own path (`current_exe`) and
-    version (via the §1 seam), plus whether a `gatekeeper` is discoverable for hook use and *how*
-    (`$GATEKEEPER_BIN` if set, else `PATH`, else "not on PATH — hooks rely on the repo build"). This is the
-    one place that surfaces *which* binary wins and its version (ADR-0010 §1; the hooks stay silent on the
-    happy path, so `doctor` carries this). Informational unless `$GATEKEEPER_BIN` points at a
-    missing/non-executable path, which fails;
-  - `security/rules.toml` present and its `schema_version` equals the rules-schema version (via the seam;
-    reuse the scan loader);
-  - `instincts/` parse via the instinct loader; `skills/*/SKILL.md` parse via the skill loader;
-  - hook scripts in `hooks/` exist and are executable;
-  - the git `pre-commit` hook is installed (`.git/hooks/pre-commit` present).
+    version (via the §1 seam), plus the **raw resolution facts** for hook use: whether `$GATEKEEPER_BIN` is
+    set and executable, whether a `gatekeeper` is on `PATH` (and where), and whether a repo build exists —
+    followed by one line naming the split (scan resolves repo-first, activate PATH-first, `$GATEKEEPER_BIN`
+    overrides both). We print the facts, **not a single merged order**, because the two hooks resolve in
+    opposite orders, so no single order is truthful for both. This is the one place that surfaces *which*
+    binary wins and its version (ADR-0010 §1; the hooks stay silent on the happy path, so `doctor` carries
+    this). Informational unless `$GATEKEEPER_BIN` points at a missing/non-executable path, which fails;
+  - `security/rules.toml` loads via the scan loader, which self-validates `schema_version` against the
+    rules-schema version the seam reports (and also rejects duplicate ids / bad regex) — `ok` on a clean
+    load, `FAIL` naming the fault otherwise;
+  - `instincts/` parse via the already-`pub` `instinct::validate_instinct_str`; every `skills/*/SKILL.md`
+    validates via the shared `learn::validate_skill_file` (fence + non-empty `name` + `description` — the same
+    check as `check docs` R1);
+  - every `hooks/*.sh` exists and is executable;
+  - the git `pre-commit` hook — checked **only when `.git/` is present**: a dev clone missing the hook FAILs,
+    but a plugin/PATH install (no `.git`) reports `n/a` (informational), so `doctor` exits `0` on a healthy
+    plugin install as well as a healthy dev clone.
 - Writes nothing; framework root resolved the same way the other commands do.
 
 ### 3. `gatekeeper check docs` — docs-coverage lint (Rust)
 
 - A new arm in `cmd_check` (no `--feature`) enforcing repo-doc invariants lychee can't (ADR-0010 §6):
-  - every `skills/*/SKILL.md` has valid frontmatter (reuse the skill loader — fail lists the offenders);
+  - every `skills/*/SKILL.md` has valid frontmatter — reuse `learn::validate_skill_file` (fence + non-empty
+    `name` + `description`; the same helper doctor's skills probe calls), fail lists the offenders + the reason;
   - every `docs/verify/*.md` note *referenced from* `docs/ROADMAP.md` resolves to a file on disk (a phase
     that cites none — e.g. Phase 0, the no-code Blueprint — is exempt);
   - every `docs/adr/00NN-*.md` is linked from `docs/adr/README.md`.
@@ -149,10 +157,12 @@ skills/                # routed content AND the anchor framework_root() keys on 
    `schema_version` mismatches, a non-executable hook, or `$GATEKEEPER_BIN` pointing at a missing path) it
    exits non-zero naming the failing probe; it writes nothing (tree unchanged after the run). (CLI test in
    a scratch root, including a `GATEKEEPER_BIN`-set invocation.)
-3. **Docs-coverage lint passes clean and catches gaps.** `gatekeeper check docs` exits `0` on this branch;
-   in a scratch root it exits `1` and names the gap when a `SKILL.md` has broken frontmatter, a
-   `docs/verify/…md` pointer in `docs/ROADMAP.md` has no file on disk, or an ADR is unlinked from the ADR README. Missing/extra args behave like
-   the other `check` arms. (CLI test.)
+3. **Docs-coverage lint passes clean and catches gaps.** Tested **hermetically**: a scratch root satisfying
+   R1/R2/R3 exits `0`, and scratch roots each exit `1` naming the gap when a `SKILL.md` has broken
+   frontmatter, a `docs/verify/…md` pointer in `docs/ROADMAP.md` has no file on disk, or an ADR is unlinked
+   from the ADR README. **Real-repo cleanliness is enforced by the `just docs` gate (CI + pre-commit), not a
+   `cargo test` assertion**, and recorded once in the verify note. Missing/extra args behave like the other
+   `check` arms (the `docs` arm reads no `--feature`; stray args are ignored). (CLI tests + `just docs`.)
 4. **CI workflow runs the existing gate.** `.github/workflows/ci.yml` exists, is valid YAML, triggers on
    `push`+`pull_request`, installs `just` + the four tools, and invokes **`just check`** + `gatekeeper
    check docs` (the same recipes the human runs — asserted by grepping the workflow for the recipe names,
