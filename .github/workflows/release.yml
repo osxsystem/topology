@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: macOS arm64 release
+    runs-on: macos-14   # Apple Silicon (arm64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Version-match guard (tag == Cargo.toml version)
+        run: |
+          cargo_ver="$(grep -m1 '^version = ' gatekeeper/Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/')"
+          tag_ver="${GITHUB_REF_NAME#v}"
+          echo "Cargo.toml version: $cargo_ver | tag: $tag_ver"
+          if [ "$cargo_ver" != "$tag_ver" ]; then
+            echo "::error::tag v$tag_ver does not match Cargo.toml version $cargo_ver"
+            exit 1
+          fi
+
+      - name: Build release (aarch64-apple-darwin)
+        run: cargo build --release --locked --target aarch64-apple-darwin --manifest-path gatekeeper/Cargo.toml
+
+      - name: Stage artifact
+        run: cp gatekeeper/target/aarch64-apple-darwin/release/gatekeeper gatekeeper-aarch64-apple-darwin
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gatekeeper-aarch64-apple-darwin
