@@ -11,6 +11,7 @@ A methodology serves as a structured framework that defines roles, responsibilit
 ## Documentation
 
 - **[docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)** — a visual, end-user walkthrough: install once, then every task walks the gates (diagrams + ASCII fallbacks). Start here.
+- **[docs/USER-GUIDE.md](docs/USER-GUIDE.md)** — the end-user manual: install/uninstall, the full `gatekeeper` command reference, a typical session, and future features.
 - **[METHODOLOGY.md](METHODOLOGY.md)** — the operator methodology: the four operator types (instincts, skills, gates, scans), the six pillars, the gate sequence, and how it all maps to Anthropic's agent-building guidance.
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the layered design, control flow, and cross-harness fan-out (diagrams), plus the `gatekeeper` contract.
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — the phased path from today's gates to the full system (the code-review gate landed early; security scanning is next).
