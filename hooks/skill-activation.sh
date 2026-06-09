@@ -10,10 +10,13 @@
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(dirname "$HOOK_DIR")"
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$HOOK_DIR")}"
 
-# Prefer an installed binary, else the release build, else the debug build.
-if command -v gatekeeper >/dev/null 2>&1; then
+# $GATEKEEPER_BIN (an explicit override) wins when set and executable; otherwise prefer an
+# installed binary, else the release build, else the debug build.
+if [[ -n "${GATEKEEPER_BIN:-}" && -x "${GATEKEEPER_BIN:-}" ]]; then
+  GK="$GATEKEEPER_BIN"
+elif command -v gatekeeper >/dev/null 2>&1; then
   GK="$(command -v gatekeeper)"
 elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/release/gatekeeper"
