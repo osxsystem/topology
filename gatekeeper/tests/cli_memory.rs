@@ -45,7 +45,16 @@ fn run_stdin(cwd: &Path, args: &[&str], body: &[u8]) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn gatekeeper");
-    child.stdin.take().unwrap().write_all(body).unwrap();
+    // The child may reject its args and exit before reading stdin, closing the pipe; a
+    // partial write then races to BrokenPipe. We assert on the exit code and on-disk effect,
+    // not on stdin being consumed, so tolerate EPIPE here.
+    let mut child_stdin = child.stdin.take().unwrap();
+    if let Err(e) = child_stdin.write_all(body) {
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            panic!("failed to write child stdin: {e}");
+        }
+    }
+    drop(child_stdin);
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(-1),
