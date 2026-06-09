@@ -26,7 +26,7 @@ topology/
 ├── AGENTS.md                  # the agent definition + bootstrap (portable across clients)
 ├── CLAUDE.md                  # symlink -> AGENTS.md (so Claude Code reads the same source)
 ├── .claude-plugin/
-│   └── plugin.json            # Claude Code packaging
+│   └── plugin.json            # Claude Code packaging<!-- forward-dep: Task 7 -->
 ├── skills/                    # Markdown skills (the methodology + meta skills)
 │   ├── _getting-started/
 │   ├── brainstorm-design/
@@ -79,6 +79,6 @@ gatekeeper check design --feature add-users       # check a gate
 
 ## Stack rationale
 
-- **Rust** — the gatekeeper must be fast, deterministic, and safe to run on every prompt and in CI. A single static binary is trivial to distribute across machines.
+- **Rust** — the gatekeeper must be fast, deterministic, and safe to run on every prompt and in CI. A single std-only macOS-arm64 executable (dynamically links libSystem) is trivial to distribute across machines.
 - **Bash** — hooks and install glue; the lowest-common-denominator that every agent harness can shell out to.
 - **Markdown** — skills and the agent definition, so they're portable, diffable, and editable by humans and agents alike.
