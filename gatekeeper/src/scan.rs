@@ -355,13 +355,21 @@ pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path) -> i32 {
             return 2;
         }
     };
+    // Compute the cwd ONCE here, before dispatching to subcommands.  The hook and check-path lanes
+    // receive relative paths whose base is the writer's own working directory; hook events from
+    // Claude Code carry absolute paths (so the base only affects relative spellings), and the hook
+    // wrapper preserves the project cwd so that a relative path is resolved honestly against the
+    // caller's location — not hard-wired to the framework root.  We compute this here so that unit
+    // tests can pass an explicit base without depending on or mutating the process cwd.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
     match args.first().map(String::as_str) {
-        Some("--hook") => scan_hook(&rules, root, artifacts_root),
+        Some("--hook") => scan_hook(&rules, root, artifacts_root, &cwd),
         Some("--cmd") => scan_cmd_cmd(&rules),
         Some("--check-path") => scan_check_path(
             &rules,
             root,
             artifacts_root,
+            &cwd,
             args.get(1).map(String::as_str),
         ),
         Some("--staged") => scan_staged(&rules, root, artifacts_root, STAGED_BLOB_CAP),
@@ -512,10 +520,17 @@ fn resolve_against_root(root: &Path, p: &str) -> PathBuf {
     pb
 }
 
-fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
-    let target = resolve_against_root(root, path);
+/// Returns true if `target` (already resolved to an absolute, normalised path) matches any entry
+/// in `protected` resolved against `anchor_root`.  Keeping target resolution separate from entry
+/// resolution is the fix for the staged-lane double-prefix bug: in the staged lane the git-emitted
+/// path must be resolved against the *framework root* (the repo root), not against whatever anchor
+/// root a given protected set uses.  If both the target and the entry are resolved against the same
+/// root the caller must pass the same path for both; but when those roots differ (staging lane vs
+/// hook lane) this function only resolves the ENTRIES — the caller resolves the target once and
+/// passes it in.
+fn is_protected_with_target(anchor_root: &Path, protected: &[String], target: &Path) -> bool {
     protected.iter().any(|p| {
-        let pr = resolve_against_root(root, p);
+        let pr = resolve_against_root(anchor_root, p);
         // Exact match OR target is strictly beneath the protected directory.
         // Path::starts_with is component-wise: `docs/memory` matches
         // `docs/memory/x.md` but NOT `docs/memory-evil/x.md`.
@@ -523,25 +538,59 @@ fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
     })
 }
 
+/// Convenience wrapper: resolve `path` against `root` and check it against the protected entries
+/// also anchored at `root`.  All callers where the target base and the entry anchor are the SAME
+/// root (e.g. checking a framework-anchored entry with a framework-rooted path) should use this
+/// form — it preserves the original semantics exactly and keeps the call sites concise.
+///
+/// Production code routes through `is_protected_any` (which resolves the target once against an
+/// explicit `target_base`); this wrapper is used directly by unit tests that exercise single-set
+/// semantics.
+#[cfg_attr(not(test), allow(dead_code))]
+fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
+    let target = resolve_against_root(root, path);
+    is_protected_with_target(root, protected, &target)
+}
+
 /// Check protection against BOTH the framework-anchored set and the artifacts-anchored set.
-/// A path is protected if it matches either; the two sets resolve against distinct roots so that
-/// governed-project handoffs (artifacts_root = <project>/.claude/topology) are not silently
-/// bypassed when root = framework_root (a different directory).
+///
+/// `target_base` is the root against which the *input path* is resolved — distinct from the
+/// per-set *anchor roots* (framework_root for framework entries, artifacts_root for artifact
+/// entries).  Separating the two prevents the double-prefix bug: in the staged integrity lane git
+/// emits repo-root-relative paths, so `target_base` = framework_root (the repo root), while the
+/// artifact entries must still be resolved against `artifacts_root` (e.g. `<repo>/docs`).  If
+/// target_base == framework_root (the common case for the hook and check-path lanes) the
+/// framework-anchored check degenerates to the original `is_protected` call.
+///
+/// A path is protected if it matches EITHER set; the two sets resolve their entries against
+/// distinct anchor roots so that governed-project handoffs (artifacts_root =
+/// <project>/.claude/topology) are not silently bypassed when framework_root is a different
+/// directory.
 fn is_protected_any(
+    target_base: &Path,
     framework_root: &Path,
     framework_protected: &[String],
     artifacts_root: &Path,
     artifact_protected: &[String],
     path: &str,
 ) -> bool {
-    is_protected(framework_root, framework_protected, path)
-        || is_protected(artifacts_root, artifact_protected, path)
+    // Resolve the target ONCE against target_base; each set then compares against its own anchor.
+    let target = resolve_against_root(target_base, path);
+    is_protected_with_target(framework_root, framework_protected, &target)
+        || is_protected_with_target(artifacts_root, artifact_protected, &target)
 }
 
-fn scan_check_path(rules: &Rules, root: &Path, artifacts_root: &Path, path: Option<&str>) -> i32 {
+fn scan_check_path(
+    rules: &Rules,
+    root: &Path,
+    artifacts_root: &Path,
+    target_base: &Path,
+    path: Option<&str>,
+) -> i32 {
     match path {
         Some(p)
             if is_protected_any(
+                target_base,
                 root,
                 &rules.protected,
                 artifacts_root,
@@ -781,7 +830,14 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
         Ok(entries) => {
             for (status, paths) in entries {
                 for p in &paths {
+                    // In the staged lane `git diff --cached` emits paths relative to the repo
+                    // root (= framework root = `root`), so target_base = root.  The artifact
+                    // entries are still resolved against artifacts_root (e.g. <root>/docs), which
+                    // is a DIFFERENT base — this is exactly the split that prevents the
+                    // double-prefix bug: without it `docs/memory/x.handoff.md` would resolve to
+                    // `<root>/docs/docs/memory/x.handoff.md` and miss the "memory" entry.
                     if is_protected_any(
+                        root,
                         root,
                         &protected_fw_union,
                         artifacts_root,
@@ -958,14 +1014,20 @@ fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> Option<String> {
 /// Returns true if `file_path` matches any framework-anchored OR artifacts-anchored protected entry.
 /// resolve_against_root handles both absolute hook paths and `..` aliases that climb out of and
 /// back into the repo, so a parent-and-return spelling cannot dodge the protected-file gate.
+///
+/// `target_base` is the process cwd at the time the hook fires — hook events from Claude Code
+/// carry absolute paths, so the base only matters when the path is relative (in which case the
+/// honest resolution is against the cwd, not hard-wired to the framework root).
 fn hook_path_protected(
     framework_protected: &[String],
     artifact_protected: &[String],
     file_path: &str,
     framework_root: &Path,
     artifacts_root: &Path,
+    target_base: &Path,
 ) -> bool {
     is_protected_any(
+        target_base,
         framework_root,
         framework_protected,
         artifacts_root,
@@ -974,7 +1036,7 @@ fn hook_path_protected(
     )
 }
 
-fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path) -> i32 {
+fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Path) -> i32 {
     let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
         Ok(d) => d,
         Err(e) => {
@@ -1033,6 +1095,7 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path) -> i32 {
                 &fp,
                 root,
                 artifacts_root,
+                target_base,
             ) {
                 return emit_ask(&fp);
             }
@@ -1059,6 +1122,7 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path) -> i32 {
                 &fp,
                 root,
                 artifacts_root,
+                target_base,
             ) {
                 return emit_ask(&fp);
             }
@@ -1140,6 +1204,89 @@ blob_oid = "{oid}"
             scan_staged(&parse_rules(&toml).unwrap(), &root, &artifacts_root, 8),
             0,
             "allowlisted by blob_oid passes"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Staged-lane target-base regression tests ─────────────────────────────
+    //
+    // These reproduce the double-prefix bug found by the fresh-context critic (HEAD 1f9265b).
+    //
+    // Setup: a scratch git repo with `protected_artifact_paths = ["memory"]` and
+    // `artifacts_root = <repo>/docs`.  Git emits paths relative to the REPO ROOT (e.g.
+    // `docs/memory/x.handoff.md`).  The old code resolved that target against `artifacts_root`
+    // (`<repo>/docs`) yielding `<repo>/docs/docs/memory/x.handoff.md` — no match.  The fix
+    // resolves the target against `root` (the repo root = framework root) and only the entries
+    // against their respective anchor roots.
+
+    /// Build a scratch git repo whose rules.toml has `protected_artifact_paths = ["memory"]`.
+    /// `artifacts_root` = `<root>/docs` (framework-repo layout).
+    fn staged_artifact_root(tag: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("topo_staged_art_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("security")).unwrap();
+        // Minimal rules with only the artifact-protected set; no content rules to avoid spurious
+        // blocks from the content-scan pass.
+        let rules_toml = "schema_version = 1\n\
+            [integrity]\nprotected_artifact_paths = [\"memory\"]\n";
+        std::fs::write(root.join("security").join("rules.toml"), rules_toml).unwrap();
+        std::fs::create_dir_all(root.join("skills")).unwrap(); // required marker
+        std::fs::write(root.join("AGENTS.md"), "").unwrap(); // required marker
+        git_raw(&root, &["init", "-q", "-b", "main"]).unwrap();
+        git_raw(&root, &["config", "user.email", "t@t.t"]).unwrap();
+        git_raw(&root, &["config", "user.name", "t"]).unwrap();
+        // Initial commit so that HEAD exists (the integrity pass reads HEAD:security/rules.toml).
+        git_raw(&root, &["add", "."]).unwrap();
+        git_raw(&root, &["commit", "-q", "-m", "init"]).unwrap();
+        root
+    }
+
+    #[test]
+    fn staged_handoff_in_docs_memory_is_blocked() {
+        // Regression: staging docs/memory/x.handoff.md must be BLOCKED (was allowed by the
+        // double-prefix bug: target resolved against artifacts_root → <root>/docs/docs/memory/…).
+        let root = staged_artifact_root("handoff_block");
+        let artifacts_root = root.join("docs");
+        std::fs::create_dir_all(root.join("docs").join("memory")).unwrap();
+        std::fs::write(
+            root.join("docs").join("memory").join("x.handoff.md"),
+            "body",
+        )
+        .unwrap();
+        git_raw(&root, &["add", "docs/memory/x.handoff.md"]).unwrap();
+        let rules = parse_rules(
+            &std::fs::read_to_string(root.join("security").join("rules.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            scan_staged(&rules, &root, &artifacts_root, STAGED_BLOB_CAP),
+            1,
+            "staging docs/memory/x.handoff.md must be blocked (protected_artifact_paths)"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staged_memory_readme_in_framework_root_not_blocked() {
+        // Spurious-block regression: staging memory/README.md (at the FRAMEWORK root, not under
+        // docs/memory/) must NOT be blocked.  The old code resolved `memory/README.md` against
+        // `artifacts_root` (`<root>/docs`) → `<root>/docs/memory/README.md` which starts_with
+        // `<root>/docs/memory` — a false positive.  The fix resolves against `root` (the repo
+        // root) → `<root>/memory/README.md`, which does NOT start_with `<root>/docs/memory`.
+        let root = staged_artifact_root("mem_readme");
+        let artifacts_root = root.join("docs");
+        std::fs::create_dir_all(root.join("memory")).unwrap();
+        std::fs::write(root.join("memory").join("README.md"), "template\n").unwrap();
+        git_raw(&root, &["add", "memory/README.md"]).unwrap();
+        let rules = parse_rules(
+            &std::fs::read_to_string(root.join("security").join("rules.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            scan_staged(&rules, &root, &artifacts_root, STAGED_BLOB_CAP),
+            0,
+            "staging memory/README.md at the framework root must NOT be blocked"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1572,8 +1719,11 @@ mod is_protected_tests {
             "artifact-root-anchored check MUST match the governed-project path"
         );
         // And is_protected_any combines both correctly.
+        // The target is already absolute, so target_base does not affect resolution — use fw_root()
+        // as the base (this matches the hook lane where absolute paths are the norm).
         assert!(
             is_protected_any(
+                &fw_root(),
                 &fw_root(),
                 &[],
                 &project_artifacts_root(),
@@ -1627,6 +1777,96 @@ mod is_protected_tests {
         assert!(
             !is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
             "memory/artifacts/x.md must NOT be protected under the new protected set"
+        );
+    }
+
+    // ── target_base / entry-anchor separation (double-prefix regression) ──────
+    //
+    // These pin the specific staged-lane bug found by the fresh-context critic:
+    //
+    // (a) DOUBLE-PREFIX MISS: in the staged lane git emits repo-root-relative paths.
+    //     The path "docs/memory/x.handoff.md" must be resolved against the REPO ROOT
+    //     (`fw_root()`), NOT against `artifacts_root` (`fw_root()/docs`).  The old code
+    //     resolved against `artifacts_root`, yielding `fw_root/docs/docs/memory/x.handoff.md`,
+    //     which does NOT start_with `fw_root/docs/memory` — a miss (tamper ALLOWED).
+    //
+    // (b) SPURIOUS BLOCK: "memory/README.md" resolved against `fw_root/docs` gives
+    //     `fw_root/docs/memory/README.md`, which starts_with `fw_root/docs/memory` — a false
+    //     positive (unprotected seed file spuriously BLOCKED).
+    //
+    // The fix: is_protected_any takes an explicit `target_base` that is separate from each set's
+    // anchor root.  In the staged lane target_base = fw_root (the repo root).
+
+    #[test]
+    fn staged_relative_docs_memory_file_is_protected_with_fw_root_as_base() {
+        // (a) "docs/memory/x.handoff.md" from git diff --cached, target_base = fw_root().
+        // The artifact entry "memory" resolves to fw_artifacts_root()/memory = fw_root/docs/memory.
+        // Resolved target = fw_root/docs/memory/x.handoff.md → starts_with fw_root/docs/memory → BLOCKED.
+        assert!(
+            is_protected_any(
+                &fw_root(),            // target_base: repo-root-relative git path
+                &fw_root(),            // framework anchor (no framework entries in this check)
+                &[],
+                &fw_artifacts_root(),  // artifact anchor: <fw_root>/docs
+                &artifact_protected(), // ["memory"] → <fw_root>/docs/memory
+                "docs/memory/x.handoff.md",
+            ),
+            "repo-root-relative 'docs/memory/x.handoff.md' with target_base=fw_root must be protected"
+        );
+    }
+
+    #[test]
+    fn staged_relative_memory_readme_not_spuriously_blocked() {
+        // (b) "memory/README.md" from git diff --cached, target_base = fw_root().
+        // Resolved target = fw_root/memory/README.md.
+        // Artifact entry "memory" resolves to fw_artifacts_root()/memory = fw_root/docs/memory.
+        // fw_root/memory/README.md does NOT start_with fw_root/docs/memory → NOT protected.
+        assert!(
+            !is_protected_any(
+                &fw_root(), // target_base: repo-root-relative git path
+                &fw_root(), // framework anchor
+                &[],
+                &fw_artifacts_root(),  // artifact anchor: <fw_root>/docs
+                &artifact_protected(), // ["memory"] → <fw_root>/docs/memory
+                "memory/README.md",
+            ),
+            "repo-root-relative 'memory/README.md' with target_base=fw_root must NOT be protected"
+        );
+    }
+
+    #[test]
+    fn absolute_and_relative_spellings_agree_via_is_protected_any() {
+        // An absolute path and its repo-root-relative spelling must produce the same result when
+        // target_base = fw_root().  This pins the check-path consistency guarantee.
+        let rel = "security/rules.toml";
+        let abs = format!("{}/{}", fw_root().display(), rel);
+        let fw_protected = fw_protected();
+        let no_artifacts: Vec<String> = vec![];
+
+        let result_rel = is_protected_any(
+            &fw_root(),
+            &fw_root(),
+            &fw_protected,
+            &fw_artifacts_root(),
+            &no_artifacts,
+            rel,
+        );
+        let result_abs = is_protected_any(
+            &fw_root(),
+            &fw_root(),
+            &fw_protected,
+            &fw_artifacts_root(),
+            &no_artifacts,
+            &abs,
+        );
+        assert_eq!(
+            result_rel, result_abs,
+            "relative and absolute spellings of the same protected path must agree: \
+             rel={result_rel}, abs={result_abs}"
+        );
+        assert!(
+            result_rel,
+            "security/rules.toml must be protected in both spellings"
         );
     }
 }
