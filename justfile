@@ -27,6 +27,10 @@ test:
 deny:
     cargo deny --manifest-path gatekeeper/Cargo.toml check
 
+# Smoke-test the payload builder (builds into a tempdir, asserts manifest + VERSION).
+test-payload:
+    bash scripts/test-build-payload.sh
+
 # ShellCheck across hooks and scripts.
 shell:
     shellcheck hooks/*.sh scripts/*.sh
