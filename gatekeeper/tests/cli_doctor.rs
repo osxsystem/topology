@@ -105,6 +105,77 @@ fn doctor_does_not_write_any_files() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// ── AC-7: roots and PATH version skew ────────────────────────────────────
+
+#[test]
+fn doctor_prints_all_three_root_lines() {
+    let root = scratch_root("roots");
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(code, 0, "healthy root should exit 0; out:\n{out}");
+    assert!(
+        out.contains("framework root:"),
+        "output must contain 'framework root:'; got:\n{out}"
+    );
+    assert!(
+        out.contains("project root:"),
+        "output must contain 'project root:'; got:\n{out}"
+    );
+    assert!(
+        out.contains("artifacts root:"),
+        "output must contain 'artifacts root:'; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_path_skew_is_informational_not_a_failure() {
+    // Build a scratch dir with a fake 'gatekeeper' binary that prints an old version.
+    let root = scratch_root("skew");
+    let fake_bin_dir = std::env::temp_dir().join(format!("topo_fake_bin_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&fake_bin_dir);
+    fs::create_dir_all(&fake_bin_dir).unwrap();
+
+    // The fake binary just prints a static old-version string.
+    let fake_bin = fake_bin_dir.join("gatekeeper");
+    fs::write(
+        &fake_bin,
+        "#!/usr/bin/env bash\necho 'gatekeeper 0.0.1 (rules schema v0)'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // Prepend the fake bin dir to PATH.
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{original_path}", fake_bin_dir.display());
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gatekeeper"));
+    cmd.current_dir(&root).args(["doctor"]).env("PATH", &new_path);
+    let out = cmd.output().unwrap();
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // Exit code must be 0 — version skew is informational.
+    assert_eq!(
+        code, 0,
+        "version skew must not fail (exit 0); out:\n{stdout}"
+    );
+
+    // Output must name the skew.
+    assert!(
+        stdout.contains("version skew"),
+        "output must mention 'version skew'; got:\n{stdout}"
+    );
+
+    // The skew note must name both versions.
+    assert!(
+        stdout.contains("0.0.1"),
+        "output must name the stale version; got:\n{stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&fake_bin_dir);
+}
+
 // ── GATEKEEPER_BIN fault → exit 1 ────────────────────────────────────────
 
 #[test]
