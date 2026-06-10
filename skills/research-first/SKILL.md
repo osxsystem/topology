@@ -1,6 +1,6 @@
 ---
 name: research-first
-description: Gather cited evidence about a problem space before writing any design or code. Use when starting a new feature, when the problem space is unfamiliar or ambiguous, or when the design gate requires a research note to proceed.
+description: Gather cited evidence about a problem space before writing any design or code; research artifact lands under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use when starting a new feature, when the problem space is unfamiliar or ambiguous, or when the design gate requires a research note to proceed.
 ---
 
 # Research First (the research gate)

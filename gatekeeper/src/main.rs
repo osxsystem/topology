@@ -62,7 +62,7 @@ fn main() {
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
-        Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
+        Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
         Some("doctor") => doctor::cmd_doctor(&framework_root()),
@@ -145,6 +145,51 @@ fn framework_root() -> PathBuf {
     let start = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let env_override = env::var_os("TOPOLOGY_ROOT").map(PathBuf::from);
     resolve_root(&start, env_override.as_deref())
+}
+
+/// Walk up from `start` to the nearest directory that contains `.git` (as a dir or file, so
+/// worktrees are handled). Falls back to `start` when no `.git` is found.
+pub(crate) fn resolve_project_root(start: &Path) -> PathBuf {
+    let mut dir = start.to_path_buf();
+    loop {
+        let git_entry = dir.join(".git");
+        if git_entry.is_dir() || git_entry.is_file() {
+            return dir;
+        }
+        if !dir.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+/// Locate the project root (nearest `.git` ancestor of cwd, or cwd).
+pub(crate) fn project_root() -> PathBuf {
+    let start = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_project_root(&start)
+}
+
+/// Compute the artifacts root given the project and framework roots.
+///
+/// Rule: when project == framework (the framework repo governs itself), artifacts live at
+/// `project/docs`; otherwise they live at `project/.claude/topology`. Comparison uses
+/// `canonicalize` when available, falling back to plain equality when the paths are not yet
+/// on disk.
+pub(crate) fn resolve_artifacts_root(project: &Path, framework: &Path) -> PathBuf {
+    let same = match (fs::canonicalize(project), fs::canonicalize(framework)) {
+        (Ok(p), Ok(f)) => p == f,
+        _ => project == framework,
+    };
+    if same {
+        project.join("docs")
+    } else {
+        project.join(".claude").join("topology")
+    }
+}
+
+/// The artifacts root for the current process: docs/ when project == framework, else
+/// .claude/topology/ relative to the project root.
+pub(crate) fn artifacts_root() -> PathBuf {
+    resolve_artifacts_root(&project_root(), &framework_root())
 }
 
 fn cmd_list() -> i32 {
@@ -272,7 +317,11 @@ fn cmd_check(args: &[String]) -> i32 {
             }
             match find_doc("research", &f) {
                 None => {
-                    println!("FAIL design gate: research-first — no docs/research/*{f}*.md");
+                    let dir = artifacts_root().join("research");
+                    println!(
+                        "FAIL design gate: research-first — no {}/*{f}*.md",
+                        dir.display()
+                    );
                     1
                 }
                 Some(_) => gate_doc_exists("specs", &f),
@@ -282,7 +331,8 @@ fn cmd_check(args: &[String]) -> i32 {
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
         "review" => review::gate_review(
-            &framework_root(),
+            &project_root(),
+            &artifacts_root(),
             &feature_arg(args),
             base_arg(args).as_deref(),
         ),
@@ -419,12 +469,12 @@ fn base_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Find a markdown doc under docs/<sub>/ whose filename contains the feature slug.
+/// Find a markdown doc under <artifacts_root>/<sub>/ whose filename contains the feature slug.
 pub(crate) fn find_doc(sub: &str, feature: &str) -> Option<PathBuf> {
     if feature.is_empty() {
         return None;
     }
-    let dir = framework_root().join("docs").join(sub);
+    let dir = artifacts_root().join(sub);
     let rd = fs::read_dir(dir).ok()?;
     for e in rd.flatten() {
         let p = e.path();
@@ -447,7 +497,8 @@ fn gate_doc_exists(sub: &str, feature: &str) -> i32 {
             0
         }
         None => {
-            println!("FAIL {sub} gate: no docs/{sub}/*{feature}*.md found");
+            let dir = artifacts_root().join(sub);
+            println!("FAIL {sub} gate: no {}/*{feature}*.md found", dir.display());
             1
         }
     }
@@ -459,7 +510,8 @@ fn gate_plan(feature: &str) -> i32 {
         return 2;
     }
     let Some(p) = find_doc("plans", feature) else {
-        println!("FAIL plan gate: no docs/plans/*{feature}*.md found");
+        let dir = artifacts_root().join("plans");
+        println!("FAIL plan gate: no {}/*{feature}*.md found", dir.display());
         return 1;
     };
     let text = fs::read_to_string(&p).unwrap_or_default();
@@ -667,5 +719,108 @@ mod tests {
             fs::canonicalize(&result).unwrap(),
             "non-existent env override must be ignored; fallback to start"
         );
+    }
+
+    // ── resolve_project_root tests ────────────────────────────────────────────
+
+    #[test]
+    fn project_root_git_dir_found() {
+        // A .git directory at 'base' → returns base.
+        let base = env::temp_dir().join("topology_prj_root_dir");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+
+        let result = resolve_project_root(&base);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            ".git dir should be found"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_git_file_found() {
+        // A .git FILE (worktree) at 'base' → returns base.
+        let base = env::temp_dir().join("topology_prj_root_file");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join(".git"), "gitdir: /some/path\n").unwrap();
+
+        let result = resolve_project_root(&base);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            ".git file (worktree) should be found"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_no_git_returns_start() {
+        // No .git anywhere in the chain → returns start.
+        let base = env::temp_dir().join("topology_prj_root_none");
+        let _ = fs::remove_dir_all(&base);
+        let start = base.join("deeply").join("nested");
+        fs::create_dir_all(&start).unwrap();
+
+        let result = resolve_project_root(&start);
+        assert_eq!(
+            fs::canonicalize(&start).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "no .git → fallback to start"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_walks_up_to_git() {
+        // .git is at 'base', start is a nested subdir → walks up.
+        let base = env::temp_dir().join("topology_prj_root_walk");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        let start = base.join("src").join("deeply").join("nested");
+        fs::create_dir_all(&start).unwrap();
+
+        let result = resolve_project_root(&start);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "nested start must walk up to the .git root"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── resolve_artifacts_root tests ─────────────────────────────────────────
+
+    #[test]
+    fn artifacts_root_equal_roots_yields_docs() {
+        // project == framework → project/docs
+        let base = env::temp_dir().join("topology_artifacts_equal");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let result = resolve_artifacts_root(&base, &base);
+        assert_eq!(result, base.join("docs"), "equal roots → docs/");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn artifacts_root_differing_roots_yields_claude_topology() {
+        // project != framework → project/.claude/topology
+        let base = env::temp_dir().join("topology_artifacts_diff");
+        let _ = fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let framework = base.join("framework");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&framework).unwrap();
+
+        let result = resolve_artifacts_root(&project, &framework);
+        assert_eq!(
+            result,
+            project.join(".claude").join("topology"),
+            "differing roots → .claude/topology/"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }

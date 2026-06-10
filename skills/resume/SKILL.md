@@ -1,6 +1,6 @@
 ---
 name: resume
-description: Reload a handoff artifact and verify real repo state before continuing work on a feature. Use when picking up a feature across sessions, re-entering a worktree, or starting a fresh session on an in-progress branch.
+description: Reload a handoff artifact and verify real repo state before continuing work on a feature; gate artifacts live under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use when picking up a feature across sessions, re-entering a worktree, or starting a fresh session on an in-progress branch.
 ---
 
 # Resume (the startup gate)

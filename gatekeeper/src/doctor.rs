@@ -15,7 +15,15 @@ use crate::version;
 
 /// Run all doctor probes and print a report. Returns 0 (all ok) or 1 (any FAIL).
 pub fn cmd_doctor(root: &Path) -> i32 {
+    use crate::{artifacts_root, project_root};
     let mut failures = 0usize;
+
+    // ── Two-roots transparency ───────────────────────────────────────────────
+    println!("framework root: {}", root.display());
+    let proj_root = project_root();
+    println!("project root: {}", proj_root.display());
+    let art_root = artifacts_root();
+    println!("artifacts root: {}", art_root.display());
 
     // ── Resolution transparency ──────────────────────────────────────────────
     // Print raw facts, not a single merged order — the two hooks resolve in opposite orders.
@@ -49,9 +57,22 @@ pub fn cmd_doctor(root: &Path) -> i32 {
         }
     }
 
-    // gatekeeper on PATH.
+    // gatekeeper on PATH — probe its version and note any skew (informational, not a failure).
     match which_gatekeeper() {
-        Some(p) => println!("PATH gatekeeper: {p}"),
+        Some(p) => {
+            // Run the PATH binary with --version to detect skew.
+            let their_version = probe_version(&p);
+            let my_version = version::tool();
+            if let Some(theirs) = their_version {
+                if theirs != my_version {
+                    println!("PATH gatekeeper: {p} (version skew: {theirs} vs {my_version})");
+                } else {
+                    println!("PATH gatekeeper: {p}");
+                }
+            } else {
+                println!("PATH gatekeeper: {p}");
+            }
+        }
         None => println!("PATH gatekeeper: not found (informational)"),
     }
 
@@ -140,6 +161,21 @@ fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Run `<bin> --version` and extract the version string (e.g. "0.2.0") from the first line.
+/// Returns None if the binary can't be run or the output isn't parseable.
+fn probe_version(bin: &str) -> Option<String> {
+    let out = std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Expected format: "gatekeeper X.Y.Z (rules schema vN)"
+    // Extract the token at index 1 (the version).
+    let first_line = stdout.lines().next()?;
+    let version = first_line.split_whitespace().nth(1)?;
+    Some(version.to_string())
 }
 
 /// Find `gatekeeper` on PATH, returning its path string.

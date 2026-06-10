@@ -1,6 +1,6 @@
 ---
 name: getting-started
-description: Bootstrap the Topology methodology for a coding session. Use at the start of any coding task, or when the user mentions starting a feature, fixing a bug, planning work, or asks what to do next.
+description: Bootstrap the Topology methodology for a coding session; gate artifacts land under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use at the start of any coding task, or when the user mentions starting a feature, fixing a bug, planning work, or asks what to do next.
 ---
 
 # Getting Started with Topology

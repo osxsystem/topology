@@ -260,8 +260,10 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
 
 /// Claude: the source-native harness — emit the `.claude/settings.json` hook wiring `install.sh`
 /// otherwise hand-prints, in the loadable array-of-matcher-groups schema.
-fn build_claude(root: &Path) -> Result<Vec<GenFile>, String> {
-    require_agents_md(root)?;
+/// Hook command paths are rooted at `framework_root` (where the hooks actually live).
+fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
+    require_agents_md(framework_root)?;
+    let root = framework_root;
     let skill_activation = root.join("hooks/skill-activation.sh").display().to_string();
     let security_scan = root.join("hooks/security-scan.sh").display().to_string();
     let settings = serde_json::json!({
@@ -283,7 +285,12 @@ fn build_claude(root: &Path) -> Result<Vec<GenFile>, String> {
 }
 
 /// Entry point for `gatekeeper adapt ...`. Returns the process exit code (0 / 1 / 2).
-pub fn cmd_adapt(args: &[String], root: &Path) -> i32 {
+///
+/// - `read_root`: the framework root — skills, instincts, and AGENTS.md are read from here;
+///   hook command paths in the generated config point here.
+/// - `write_root`: the project root — generated files are written relative to this directory.
+///   When `read_root == write_root` (in-framework use) the behavior is identical to v1.
+pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
     let mut harness: Option<String> = None;
     let mut check = false;
     let mut i = 0;
@@ -313,11 +320,13 @@ pub fn cmd_adapt(args: &[String], root: &Path) -> i32 {
         eprintln!("gatekeeper adapt: --harness <codex|cursor|opencode|claude> is required");
         return 2;
     };
+    // Build generates paths relative to write_root; hook paths embedded in config point at
+    // read_root (the framework, where hooks/skill-activation.sh actually lives).
     let built = match harness.as_str() {
-        "codex" => build_codex(root),
-        "cursor" => build_cursor(root),
-        "opencode" => build_opencode(root),
-        "claude" => build_claude(root),
+        "codex" => build_codex(read_root),
+        "cursor" => build_cursor(read_root),
+        "opencode" => build_opencode(read_root),
+        "claude" => build_claude(read_root),
         other => {
             eprintln!(
                 "gatekeeper adapt: unknown harness '{other}' (expected codex|cursor|opencode|claude)"
@@ -326,7 +335,7 @@ pub fn cmd_adapt(args: &[String], root: &Path) -> i32 {
         }
     };
     match built {
-        Ok(files) => apply_or_check(&files, root, check),
+        Ok(files) => apply_or_check(&files, write_root, check),
         Err(e) => {
             eprintln!("gatekeeper adapt {harness}: {e}");
             2

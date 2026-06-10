@@ -41,22 +41,36 @@ Two moving parts you interact with:
 curl -fsSL https://raw.githubusercontent.com/osxsystem/topology/main/scripts/install.sh | bash
 ```
 
+The installer **asks** (when a terminal is available) which scope and harness to use. Without a tty
+(piped, CI) it prints the defaults it assumed and the flags that override them.
+
+**Installer flags:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--global` | ✓ | Install at `${TOPOLOGY_HOME:-~/.topology}` (shared across projects) |
+| `--project <path>` | — | Vendor at `<path>/.topology` and wire that project; mutually exclusive with `--global` |
+| `--harness <h>` | ask / `claude` | Wire `claude`, `codex`, `cursor`, `opencode`, or `none` |
+| `--yes` | — | Accept all defaults non-interactively |
+| `--build-from-source` | — | Build gatekeeper from source instead of downloading |
+
 This one command:
 
-1. **Clones** the repo into `${TOPOLOGY_HOME:-$HOME/.topology}` (or updates it if already present).
+1. **Clones** the repo into `${TOPOLOGY_HOME:-$HOME/.topology}` for global scope (or updates it if already present), or vendors a copy at `<path>/.topology` for local scope.
 2. **Downloads** the prebuilt `gatekeeper` binary for your platform, verifies its SHA-256 checksum,
    smoke-tests `--version`, and places it at `$ROOT/bin/gatekeeper`.
 3. **Falls back** to `cargo build --release` if no prebuilt binary is available for your platform.
 4. **Links** `CLAUDE.md → AGENTS.md` so Claude Code reads the same operating contract as every other harness.
 5. **Marks** the hook and helper scripts executable.
 6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` into `.git/hooks/` — re-run install to update it).
-7. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check.
+7. **Wires the harness** — for `--project` installs runs `gatekeeper adapt --harness <h>` from the project dir, generating `.claude/settings.json` (or the equivalent for other harnesses) with hook paths pointing at the framework. For global-only installs it prints the exact command to run inside any project.
+8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present.
+9. **Detects stale PATH binaries** — if a `gatekeeper` on PATH has a different version, with a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
+10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check.
 
 If you already have a checkout, run `./scripts/install.sh` from inside it (the curl pipe detects this automatically). Pass `--build-from-source` to skip the prebuilt download and always build from source.
 
-Then wire the prompt + security hooks into your **project-local** `.claude/settings.json` (the
-installer prints this block — paste it into `.claude/settings.json` *inside the repo*, **not**
-`~/.claude/settings.json`):
+For `--harness none`, the installer prints the hook config block — paste it into `.claude/settings.json` *inside the repo*:
 
 ```json
 {
@@ -77,6 +91,41 @@ installer prints this block — paste it into `.claude/settings.json` *inside th
 > **Why project-local?** The repo-local settings file is covered by Topology's protected paths, so the
 > security floor guards its own registration. A home-directory settings file is outside the repo and
 > can't be protected.
+
+### Gate artifact layout for governed projects
+
+When governing an external project (topology vendored at `<project>/.topology`, `TOPOLOGY_ROOT` set),
+gate artifacts live under **`<project>/.claude/topology/`** — not in the project's root `docs/`.
+The framework repo itself keeps its root `docs/` layout unchanged.
+
+| Artifact type | Location in governed project | Location in the framework repo |
+|---|---|---|
+| `research/` | `.claude/topology/research/` | `docs/research/` |
+| `specs/` | `.claude/topology/specs/` | `docs/specs/` |
+| `plans/` | `.claude/topology/plans/` | `docs/plans/` |
+| `verify/` | `.claude/topology/verify/` | `docs/verify/` |
+| `reviews/` | `.claude/topology/reviews/` | `docs/reviews/` |
+
+**One-time migration** (if existing gate artifacts live in a governed project's root `docs/`):
+
+```bash
+mkdir -p .claude/topology
+git mv docs/research  .claude/topology/research
+git mv docs/specs     .claude/topology/specs
+git mv docs/plans     .claude/topology/plans
+git mv docs/verify    .claude/topology/verify
+git mv docs/reviews   .claude/topology/reviews
+git commit -m "chore: migrate gate artifacts to .claude/topology/"
+```
+
+### Stale-PATH repair
+
+After install, if a `gatekeeper` binary on PATH has a different version (e.g. an old `~/.cargo/bin/gatekeeper` from a previous `cargo install`):
+
+- **With a tty:** prompted `replace <path> (<old>) with <new>? [y/N]` — on yes, the binary is overwritten in place with `cp` (no deletion); on no, a warning is printed.
+- **Without a tty (CI, `--yes`):** a warning block is printed naming the path, both versions, and the two remedies (`cp` to overwrite; or remove the path from PATH).
+
+`gatekeeper doctor` also reports a version skew note informally (exit 0).
 
 **Put `gatekeeper` on your `PATH`** (optional but recommended, so you can call it from anywhere):
 

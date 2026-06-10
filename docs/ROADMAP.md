@@ -175,6 +175,8 @@ release ships a single std-only macOS-arm64 binary (it dynamically links `libSys
 
 **Addendum (2026-06-10):** Prebuilt-binary distribution (four-target release matrix, installer download, plugin self-provisioning) delivered as a follow-on. Decision: [ADR-0011](adr/0011-prebuilt-binary-distribution.md). Verify: [`docs/verify/2026-06-10-one-command-install.md`](verify/2026-06-10-one-command-install.md).
 
+**Addendum (2026-06-10):** Guided installer (harness/scope prompts), project-local artifact root (`.claude/topology/`), stale-PATH repair delivered as a follow-on. Decision: [ADR-0012](adr/0012-project-root-vs-framework-root.md). Verify: [`docs/verify/2026-06-10-installer-v2.md`](verify/2026-06-10-installer-v2.md).
+
 **Depends on.** Phases 1–5.
 
 ---

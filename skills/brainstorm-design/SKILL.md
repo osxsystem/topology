@@ -1,6 +1,6 @@
 ---
 name: brainstorm-design
-description: Turn a rough idea into an approved written design before any code is written. Use when starting a new feature, when the user describes something they want built, or when requirements are vague and need clarifying.
+description: Turn a rough idea into an approved written design before any code is written; spec artifact lands under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use when starting a new feature, when the user describes something they want built, or when requirements are vague and need clarifying.
 ---
 
 # Brainstorm & Design (the design gate)

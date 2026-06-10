@@ -200,29 +200,40 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// True only if a `git status --porcelain` line is a change confined to
-/// `docs/reviews/`. Rename/copy entries (`R`/`C`) — which the review workflow
-/// never produces — are never treated as clean, so a rename moving a file *out*
-/// of `docs/reviews/` cannot slip a dirty worktree past the gate (a rename's path
-/// field is `<old> -> <new>` and begins with the old path, which may itself be
-/// under `docs/reviews/` even when the destination is not).
-fn is_clean_review_path(line: &str) -> bool {
+/// the active reviews path prefix (e.g. `docs/reviews/` for the framework repo or
+/// `.claude/topology/reviews/` for an external project).
+/// Rename/copy entries (`R`/`C`) — which the review workflow never produces — are never
+/// treated as clean, so a rename moving a file *out* of the reviews path cannot slip a
+/// dirty worktree past the gate.
+fn is_clean_review_path(line: &str, reviews_prefix: &str) -> bool {
     let status = line.get(0..2).unwrap_or("");
     if status.contains('R') || status.contains('C') {
         return false;
     }
-    line.get(3..).unwrap_or("").starts_with("docs/reviews/")
+    line.get(3..).unwrap_or("").starts_with(reviews_prefix)
 }
 
-/// The `review` gate. `root` is the framework root; all git runs with `-C root`
-/// so the result is independent of the process working directory. Returns a
-/// process exit code: 0 pass, 1 veto, 2 usage error.
-pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
+/// The `review` gate.
+///
+/// - `git_root`: the project root — all git commands run with `-C git_root` so the result is
+///   independent of the process working directory.
+/// - `artifacts_root`: the artifacts root — review artifacts are read from
+///   `<artifacts_root>/reviews/`; the clean-tree filter accepts only paths under that directory
+///   (expressed as a relpath from `git_root`).
+///
+/// Returns a process exit code: 0 pass, 1 veto, 2 usage error.
+pub fn gate_review(
+    git_root: &Path,
+    artifacts_root: &Path,
+    feature: &str,
+    base_ref: Option<&str>,
+) -> i32 {
     if feature.is_empty() {
         eprintln!("gatekeeper: --feature <slug> is required");
         return 2;
     }
 
-    let head = match git(root, &["rev-parse", "HEAD"]) {
+    let head = match git(git_root, &["rev-parse", "HEAD"]) {
         Some(h) => h,
         None => {
             println!("FAIL review gate: not a git repository (git rev-parse HEAD failed)");
@@ -230,11 +241,29 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
         }
     };
 
-    // Clean worktree, ignoring untracked/modified paths under docs/reviews/.
+    // Derive the reviews relpath (relative to git_root) for the clean-tree filter.
+    // Use strip_prefix for correctness; fall back to the legacy hardcoded value on failure.
+    let reviews_prefix: String = match artifacts_root.strip_prefix(git_root) {
+        Ok(rel) => {
+            let s = rel.join("reviews").to_string_lossy().into_owned();
+            // Ensure a trailing slash so "docs/reviewsX" can't slip through.
+            if s.is_empty() {
+                "reviews/".to_string()
+            } else {
+                format!("{s}/")
+            }
+        }
+        Err(_) => "docs/reviews/".to_string(),
+    };
+
+    // Clean worktree, ignoring untracked/modified paths under the active reviews relpath.
     // `--untracked-files=all` lists files individually so an untracked directory is NOT
-    // collapsed to a bare `docs/` entry (which would slip past the docs/reviews/ filter).
+    // collapsed to a bare entry (which would slip past the path filter).
     // A failed status is fail-closed, never assumed clean.
-    let porcelain = match git(root, &["status", "--porcelain", "--untracked-files=all"]) {
+    let porcelain = match git(
+        git_root,
+        &["status", "--porcelain", "--untracked-files=all"],
+    ) {
         Some(p) => p,
         None => {
             println!("FAIL review gate: git status failed");
@@ -243,10 +272,10 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
     };
     let dirty: Vec<&str> = porcelain
         .lines()
-        .filter(|l| !is_clean_review_path(l))
+        .filter(|l| !is_clean_review_path(l, &reviews_prefix))
         .collect();
     if !dirty.is_empty() {
-        println!("FAIL review gate: uncommitted changes outside docs/reviews/:");
+        println!("FAIL review gate: uncommitted changes outside {reviews_prefix}:");
         for l in &dirty {
             println!("  {l}");
         }
@@ -261,7 +290,7 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
         eprintln!("gatekeeper: --base must be a ref name, not an option ('{branch}')");
         return 2;
     }
-    let base = match git(root, &["merge-base", branch, "HEAD"]) {
+    let base = match git(git_root, &["merge-base", branch, "HEAD"]) {
         Some(b) => b,
         None => {
             println!("FAIL review gate: cannot resolve merge-base of '{branch}' and HEAD");
@@ -270,7 +299,7 @@ pub fn gate_review(root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
     };
 
     // Select artifacts whose line-2 HEAD equals the current HEAD.
-    let dir = root.join("docs").join("reviews");
+    let dir = artifacts_root.join("reviews");
     let suffix = format!("-{feature}.md");
     let want_head = format!("HEAD: {head}");
     let mut matches: Vec<PathBuf> = Vec::new();
@@ -533,11 +562,19 @@ mod gate_tests {
         fs::write(dir.join("2026-06-05-code-review-gate.md"), body).unwrap();
     }
 
+    // Helper: artifacts live under root/docs/ (the framework-same-roots layout).
+    fn arts(root: &Path) -> PathBuf {
+        root.join("docs")
+    }
+
     #[test]
     fn fresh_pass_exits_zero() {
         let (root, head) = repo("pass");
         write_artifact(&root, &head, &head, true); // single-commit repo: merge-base(main,HEAD)==HEAD
-        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -548,7 +585,10 @@ mod gate_tests {
         let porcelain = git(&root, &["status", "--porcelain", "--untracked-files=all"]).unwrap();
         assert!(porcelain.lines().any(|l| l.contains("docs/reviews/")));
         // ... yet the gate still passes, because the clean-tree check excludes docs/reviews/.
-        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -560,7 +600,10 @@ mod gate_tests {
             &head,
             true,
         );
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -568,7 +611,10 @@ mod gate_tests {
         let (root, head) = repo("dirty");
         write_artifact(&root, &head, &head, true);
         fs::write(root.join("a.txt"), "changed\n").unwrap(); // tracked file modified
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -577,7 +623,10 @@ mod gate_tests {
         let (root, head) = repo("untracked_out");
         write_artifact(&root, &head, &head, true);
         fs::write(root.join("stray.txt"), "junk\n").unwrap();
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -589,14 +638,20 @@ mod gate_tests {
             "1111111111111111111111111111111111111111",
             true,
         );
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn fail_verdict_exits_one() {
         let (root, head) = repo("failv");
         write_artifact(&root, &head, &head, false);
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -604,7 +659,12 @@ mod gate_tests {
         let (root, head) = repo("nobase");
         write_artifact(&root, &head, &head, true);
         assert_eq!(
-            gate_review(&root, "code-review-gate", Some("no-such-branch")),
+            gate_review(
+                &root,
+                &arts(&root),
+                "code-review-gate",
+                Some("no-such-branch")
+            ),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -614,7 +674,10 @@ mod gate_tests {
         let root = env::temp_dir().join(format!("topo_gate_norepo_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -628,7 +691,10 @@ mod gate_tests {
             body,
         )
         .unwrap();
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -643,10 +709,16 @@ mod gate_tests {
         assert_ne!(head, base);
         // Correct review: BASE is the fork point, not HEAD.
         write_artifact(&root, &head, &base, true);
-        assert_eq!(gate_review(&root, "code-review-gate", None), 0);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            0
+        );
         // A review lying with BASE == HEAD must be rejected (merge-base != HEAD here).
         write_artifact(&root, &head, &head, true);
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -665,7 +737,10 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         // Stage a rename moving the tracked review file out of docs/reviews/.
         run(&root, &["mv", "docs/reviews/tracked.md", "moved.rs"]);
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -676,7 +751,10 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         let dir = root.join("docs").join("reviews");
         fs::write(dir.join("bad-code-review-gate.md"), b"\xff\xfe\x00\x9f").unwrap();
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -694,7 +772,10 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         // Unstaged modification -> porcelain " M adocs/reviews/x.rs" (sorts before docs/).
         fs::write(sneaky.join("x.rs"), "two\n").unwrap();
-        assert_eq!(gate_review(&root, "code-review-gate", None), 1);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
     #[test]
@@ -704,7 +785,12 @@ mod gate_tests {
         let (root, head) = repo("optbase");
         write_artifact(&root, &head, &head, true);
         assert_eq!(
-            gate_review(&root, "code-review-gate", Some("--independent")),
+            gate_review(
+                &root,
+                &arts(&root),
+                "code-review-gate",
+                Some("--independent")
+            ),
             2
         );
         let _ = fs::remove_dir_all(&root);

@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Dispatch a fresh-context critic subagent to audit the branch diff against the plan and the repo's standards, then write a commit-bound review artifact the review gate checks. Use after verify-before-done passes and before finish-branch, or when the user asks for a review, audit, or critique before merge.
+description: Dispatch a fresh-context critic subagent to audit the branch diff against the plan and the repo's standards, then write a commit-bound review artifact (under the artifacts root: `docs/` here, `.claude/topology/` in a governed project) the review gate checks. Use after verify-before-done passes and before finish-branch, or when the user asks for a review, audit, or critique before merge.
 ---
 
 # Code Review (the review gate)
