@@ -65,32 +65,46 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 
 ## Quick start
 
+**One command — no Rust required:**
+
 ```bash
-cd topology
-./scripts/install.sh          # builds gatekeeper, creates CLAUDE.md symlink, prints hook config
+curl -fsSL https://raw.githubusercontent.com/osxsystem/topology/main/scripts/install.sh | bash
+```
+
+This downloads a prebuilt `gatekeeper` binary for your platform, creates the `CLAUDE.md → AGENTS.md` symlink, marks hooks executable, installs the git pre-commit hook, and prints every file it created as a manifest. No Rust toolchain needed when a prebuilt binary is available.
+
+Then wire the hooks and verify:
+
+```bash
 gatekeeper list               # list available skills
 echo "add a users table" | gatekeeper activate   # see which skills route in
 gatekeeper check design --feature add-users       # check a gate
 ```
 
-## Install as a Claude Code plugin
-
-Topology also ships as a Claude Code plugin. The `gatekeeper` binary is **not bundled** in the plugin — it's a prerequisite the hooks resolve on your `PATH` (or via `$GATEKEEPER_BIN`), so build it first, then add the marketplace and install:
+**Build from source** (if you prefer, or when no prebuilt binary matches your platform):
 
 ```bash
-./scripts/install.sh                          # builds gatekeeper (release) + wires hooks
+git clone https://github.com/osxsystem/topology.git && cd topology
+./scripts/install.sh --build-from-source
+```
+
+## Install as a Claude Code plugin
+
+Topology also ships as a Claude Code plugin. The `gatekeeper` binary **self-provisions on the first session** — no separate build step required:
+
+```bash
 /plugin marketplace add osxsystem/topology    # in Claude Code
 /plugin install topology@topology
 ```
 
-The plugin wires the same two hooks as a manual install — `UserPromptSubmit` → skill routing, `PreToolUse` → the security scan — via `${CLAUDE_PLUGIN_ROOT}`. Check the binary the hooks will use:
+The plugin wires three hooks via `${CLAUDE_PLUGIN_ROOT}`: `SessionStart` ensures the binary is available (downloads it silently if needed), `UserPromptSubmit` → skill routing, `PreToolUse` → the security scan.
 
 ```bash
 gatekeeper --version    # gatekeeper X.Y.Z (rules schema vN)
 gatekeeper doctor       # read-only health check: which binary resolves, plus rules/skills/hooks status
 ```
 
-`doctor` is what surfaces *which* `gatekeeper` the hooks resolve (`$GATEKEEPER_BIN` → `PATH` → repo build); the hooks themselves stay silent on success.
+`doctor` surfaces *which* `gatekeeper` the hooks resolve (the full resolution order: `$GATEKEEPER_BIN` → `bin/` → plugin data → repo build → `PATH`); the hooks themselves stay silent on success.
 
 ## Make it yours
 

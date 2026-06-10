@@ -9,33 +9,89 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: macOS arm64 release
-    runs-on: macos-14   # Apple Silicon (arm64)
+  version-guard:
+    name: Version-match guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Assert tag == all three manifests
+        run: |
+          tag_ver="${GITHUB_REF_NAME#v}"
+          cargo_ver="$(grep -m1 '^version = ' gatekeeper/Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/')"
+          plugin_ver="$(grep -m1 '"version"' .claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
+          market_ver="$(grep -m1 '"version"' .claude-plugin/marketplace.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
+          echo "tag=$tag_ver  Cargo.toml=$cargo_ver  plugin.json=$plugin_ver  marketplace.json=$market_ver"
+          fail=0
+          if [ "$cargo_ver" != "$tag_ver" ]; then
+            echo "::error::gatekeeper/Cargo.toml version $cargo_ver != tag $tag_ver"
+            fail=1
+          fi
+          if [ "$plugin_ver" != "$tag_ver" ]; then
+            echo "::error::.claude-plugin/plugin.json version $plugin_ver != tag $tag_ver"
+            fail=1
+          fi
+          if [ "$market_ver" != "$tag_ver" ]; then
+            echo "::error::.claude-plugin/marketplace.json version $market_ver != tag $tag_ver"
+            fail=1
+          fi
+          exit $fail
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version-guard
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-14
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
-      - name: Version-match guard (tag == Cargo.toml version)
+      - name: Build release
         run: |
-          cargo_ver="$(grep -m1 '^version = ' gatekeeper/Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/')"
-          tag_ver="${GITHUB_REF_NAME#v}"
-          echo "Cargo.toml version: $cargo_ver | tag: $tag_ver"
-          if [ "$cargo_ver" != "$tag_ver" ]; then
-            echo "::error::tag v$tag_ver does not match Cargo.toml version $cargo_ver"
-            exit 1
-          fi
-
-      - name: Build release (aarch64-apple-darwin)
-        run: cargo build --release --locked --target aarch64-apple-darwin --manifest-path gatekeeper/Cargo.toml
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked --target ${{ matrix.target }} --manifest-path gatekeeper/Cargo.toml
 
       - name: Stage artifact
-        run: cp gatekeeper/target/aarch64-apple-darwin/release/gatekeeper gatekeeper-aarch64-apple-darwin
+        run: cp gatekeeper/target/${{ matrix.target }}/release/gatekeeper gatekeeper-${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gatekeeper-${{ matrix.target }}
+          path: gatekeeper-${{ matrix.target }}
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: sha256sum gatekeeper-* > SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: gatekeeper-aarch64-apple-darwin
+          files: |
+            gatekeeper-aarch64-apple-darwin
+            gatekeeper-x86_64-apple-darwin
+            gatekeeper-x86_64-unknown-linux-gnu
+            gatekeeper-aarch64-unknown-linux-gnu
+            SHA256SUMS

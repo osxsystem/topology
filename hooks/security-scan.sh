@@ -3,6 +3,15 @@
 # Pipes the event JSON (stdin) to `gatekeeper scan --hook`, which emits the Claude permission
 # decision on stdout (deny/ask) or stays silent (allow). Fail-closed: a missing/erroring binary
 # emits a deny. No jq; the binary owns all JSON parsing.
+#
+# Binary resolution order:
+#   1. $GATEKEEPER_BIN          (explicit override, wins when set and executable)
+#   2. $ROOT/bin/gatekeeper     (installer-placed prebuilt)
+#   3. $CLAUDE_PLUGIN_DATA/bin/gatekeeper  (plugin-provisioned prebuilt)
+#   4. $ROOT/gatekeeper/target/release/gatekeeper  (repo release build)
+#   5. $ROOT/gatekeeper/target/debug/gatekeeper    (repo debug build)
+#   6. gatekeeper on PATH
+#   7. deny (fail-closed)
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,11 +22,14 @@ deny() {
   exit 0
 }
 
-# $GATEKEEPER_BIN (an explicit override) wins when set and executable; otherwise prefer the
-# repo-built binary (the trusted, feature-current scanner) over whatever `gatekeeper` happens to
-# be on PATH — a stale or unrelated PATH binary must not stand in for the real veto.
+# Resolution order: explicit override → installer bin/ → plugin data bin/ →
+# repo release build → repo debug build → PATH → deny (fail-closed).
 if [[ -n "${GATEKEEPER_BIN:-}" && -x "${GATEKEEPER_BIN:-}" ]]; then
   GK="$GATEKEEPER_BIN"
+elif [[ -x "$ROOT/bin/gatekeeper" ]]; then
+  GK="$ROOT/bin/gatekeeper"
+elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" && -x "$CLAUDE_PLUGIN_DATA/bin/gatekeeper" ]]; then
+  GK="$CLAUDE_PLUGIN_DATA/bin/gatekeeper"
 elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/release/gatekeeper"
 elif [[ -x "$ROOT/gatekeeper/target/debug/gatekeeper" ]]; then
