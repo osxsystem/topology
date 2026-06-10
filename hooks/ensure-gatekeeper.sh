@@ -48,8 +48,8 @@ fi
 
 INSTALLED_PATH=""
 if INSTALLED_PATH="$("$FETCH_SCRIPT" "$DEST_BIN_DIR" 2>/dev/null)"; then
-  VERSION_LINE="$("$INSTALLED_PATH" --version 2>/dev/null || true)"
-  echo "Topology: gatekeeper $VERSION_LINE provisioned at $INSTALLED_PATH"
+  VERSION_LINE="$("$INSTALLED_PATH" --version 2>/dev/null || echo "gatekeeper")"
+  echo "Topology: $VERSION_LINE provisioned at $INSTALLED_PATH"
 else
   echo "Topology: could not provision gatekeeper automatically. To fix, run one of:" >&2
   echo "  bash scripts/install.sh" >&2

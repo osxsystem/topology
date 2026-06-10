@@ -90,7 +90,8 @@ if [[ -z "$SUMS_LINE" ]]; then
 fi
 echo "$SUMS_LINE" > "$TMPDIR_WORK/SHA256SUMS.single"
 
-(cd "$TMPDIR_WORK" && $SHASUM_CMD -c SHA256SUMS.single) || {
+# Verification chatter goes to stderr — the path printed at the end must be the only stdout line.
+(cd "$TMPDIR_WORK" && $SHASUM_CMD -c SHA256SUMS.single >&2) || {
   echo "fetch-gatekeeper: checksum verification failed" >&2
   exit 1
 }

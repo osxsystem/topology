@@ -64,8 +64,8 @@ pub fn cmd_doctor(root: &Path) -> i32 {
 
     // The split: one line naming how the two hooks resolve.
     println!(
-        "resolution split: scan prefers the repo build; activate prefers PATH; \
-         $GATEKEEPER_BIN overrides both"
+        "resolution split: both hooks try $GATEKEEPER_BIN, then prebuilt bin/ and plugin-data \
+         bin/; then scan prefers the repo build and activate prefers PATH"
     );
 
     // ── security/rules.toml ─────────────────────────────────────────────────
