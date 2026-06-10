@@ -94,9 +94,10 @@ For `--harness none`, the installer prints the hook config block — paste it in
 
 ### Gate artifact layout for governed projects
 
-When governing an external project (topology vendored at `<project>/.topology`),
-gate artifacts live under **`<project>/.claude/topology/`** — not in the project's root `docs/`.
-The framework repo itself keeps its root `docs/` layout unchanged.
+When governing an external project — any repo that isn't the framework checkout itself, whether the
+framework is global (`~/.topology`) or vendored (`<project>/.topology`) — gate artifacts live under
+**`<project>/.claude/topology/`**, not in the project's root `docs/`. The framework repo itself
+keeps its root `docs/` layout unchanged.
 
 | Artifact type | Location in governed project | Location in the framework repo |
 |---|---|---|
@@ -132,7 +133,8 @@ After install, if a `gatekeeper` binary on PATH has a different version (e.g. an
 - **With a tty:** prompted `replace <path> (<old>) with <new>? [y/N]` — on yes, the binary is overwritten in place with `cp` (no deletion); on no, a warning is printed.
 - **Without a tty (CI, `--yes`):** a warning block is printed naming the path, both versions, and the two remedies (`cp` to overwrite; or remove the path from PATH).
 
-`gatekeeper doctor` also reports a version skew note informally (exit 0).
+`gatekeeper doctor` also appends an informational version-skew note to its `PATH gatekeeper:` probe
+(it stays exit 0 — the note is a flag, not a failure).
 
 **Put `gatekeeper` on your `PATH`** (optional but recommended, so you can call it from anywhere):
 
@@ -177,6 +179,16 @@ gatekeeper adapt --harness opencode   # opencode.json + .opencode/skills/
 gatekeeper adapt --harness claude     # .claude/settings.json    (precise generator of the hook wiring)
 ```
 
+`adapt` **reads** skills/instincts/AGENTS.md from the framework root and **writes** the generated
+files into the project root (the nearest `.git` ancestor of where you run it). To wire an external
+project, run it from inside that project with the framework pinned — this is exactly what the
+installer's `--project … --harness …` mode does for you:
+
+```bash
+cd /path/to/your-project
+TOPOLOGY_ROOT="$HOME/.topology" gatekeeper adapt --harness claude
+```
+
 ### Verify the install
 
 ```bash
@@ -186,9 +198,10 @@ gatekeeper list         # lists the available skills
 echo "add a users table" | gatekeeper activate   # shows which skills route in
 ```
 
-`doctor` is the tool that tells you *which* `gatekeeper` your hooks will actually run (the
-`$GATEKEEPER_BIN` → `PATH` → repo-build resolution). The hooks themselves stay silent on success, so
-`doctor` is your window into them.
+`doctor` is the tool that tells you *which* `gatekeeper` your hooks will actually run (the full
+resolution chain from the table below), plus the three roots it resolved — `framework root:`,
+`project root:`, and `artifacts root:` — and a version-skew note if a different `gatekeeper` sits
+on PATH. The hooks themselves stay silent on success, so `doctor` is your window into them.
 
 ### Binary resolution order
 
@@ -221,7 +234,7 @@ can never stand in for the veto, while skill routing (advisory) accepts `PATH` f
 | Variable | Controls |
 |---|---|
 | `$GATEKEEPER_BIN` | Which binary the hooks run (wins over all other resolution steps when set and executable) |
-| `$TOPOLOGY_ROOT` | Framework root directory — where `skills/`, `security/rules.toml`, instincts, and gate docs live |
+| `$TOPOLOGY_ROOT` | Framework root directory — where `skills/`, `security/rules.toml`, and instincts live (gate artifacts anchor to the *project* root instead — see the layout table above) |
 | `$TOPOLOGY_HOME` | Clone destination for piped installs (default `$HOME/.topology`) |
 | `$TOPOLOGY_RELEASE_BASE_URL` | URL prefix for prebuilt binary downloads (supports `file://` for offline testing; default: the GitHub releases URL) |
 | `$TOPOLOGY_VERSION` | Override the version otherwise read from the `VERSION` file at the framework root (dev checkouts fall back to `gatekeeper/Cargo.toml`) — for testing or pinning a specific release |
@@ -251,43 +264,56 @@ and the framework.
 
 ## Uninstall
 
-There is no `uninstall.sh`; removal is the reverse of install. Do the steps that apply to how you
-installed:
+There is no `uninstall.sh`; removal is the reverse of install. Do the block that matches how you
+installed.
+
+**Global install** (`~/.topology`):
 
 ```bash
-# 1. Remove the PATH symlink (if you created it)
-sudo rm -f /usr/local/bin/gatekeeper
+sudo rm -f /usr/local/bin/gatekeeper   # the PATH symlink, if you created it
+rm -rf ~/.topology                     # the framework clone, binary included
+```
 
-# 2. Remove the git pre-commit hook copy
-rm -f .git/hooks/pre-commit
+**Local install** (vendored into a project):
 
-# 3. Remove the CLAUDE.md -> AGENTS.md symlink (optional; it's only a symlink)
-rm -f CLAUDE.md
+```bash
+cd /path/to/your-project
+rm -rf .topology                       # the vendored framework + binary
+# the wiring + artifacts, if you don't want to keep them:
+#   .claude/settings.json — delete the UserPromptSubmit / PreToolUse entries the installer added
+rm -rf .claude/topology                # gate artifacts (research/specs/plans/verify/reviews)
+# remove the '.topology/' line from .gitignore if you like; it's harmless to keep
+```
 
-# 4. Delete the built binary + build cache
-( cd gatekeeper && cargo clean )
+**Generated per-harness config** (any install mode, if you ran `adapt`):
 
-# 5. Remove any generated per-harness config you don't want to keep
+```bash
 rm -f .codex/config.toml opencode.json
 rm -rf .cursor/rules .opencode
+```
 
-# 6. Remove the framework itself
-rm -rf ~/.topology              # global install (or $TOPOLOGY_HOME if you set it)
-rm -rf <project>/.topology      # local install — also drop the .topology/ line from .gitignore
+Remove the hook config you pasted into `.claude/settings.json` (delete the `UserPromptSubmit`
+and `PreToolUse` entries you added).
+
+**Claude Code plugin**, from inside Claude Code (the self-provisioned binary lives in the plugin
+data dir, which Claude Code removes with the plugin):
+
+```text
+/plugin uninstall topology@topology
+/plugin marketplace remove topology
+```
+
+**Working from a development checkout of this repo:**
+
+```bash
+rm -f .git/hooks/pre-commit            # the pre-commit hook copy
+rm -f CLAUDE.md                        # the CLAUDE.md -> AGENTS.md symlink
+rm -rf bin                             # the installer-placed prebuilt, if any
+( cd gatekeeper && cargo clean )       # build cache
 ```
 
 Your gate artifacts under `.claude/topology/` (research, specs, plans, memory handoffs, the learn
 ledger) are project state, not framework files — keep or delete them as you see fit.
-
-7. **Remove the hook config** you pasted into `.claude/settings.json` (delete the `UserPromptSubmit`
-   and `PreToolUse` entries you added).
-
-8. **If you installed the plugin**, remove it from inside Claude Code:
-
-   ```text
-   /plugin uninstall topology@topology
-   /plugin marketplace remove topology
-   ```
 
 ---
 
@@ -312,6 +338,10 @@ echo "fix the failing login test" | gatekeeper activate
 
 The gates run in this order; production code may not be written until **research → design → plan**
 have passed.
+
+Artifact locations below are relative to the **artifacts root**: `docs/` when you're inside the
+framework repo itself, `.claude/topology/` in a governed project (see the layout table in the
+install section). The gate's FAIL message prints the exact directory it looked in.
 
 | Gate | Command | Passes when |
 |---|---|---|
@@ -436,7 +466,7 @@ they're committed project state, beside the gate artifacts they relate to.
 
 | Command | What it does |
 |---|---|
-| `gatekeeper doctor` | Read-only health check + which binary the hooks resolve |
+| `gatekeeper doctor` | Read-only health check: which binary the hooks resolve, the three roots (framework / project / artifacts), PATH version skew, rules/skills/hooks status |
 | `gatekeeper --version` (`-V`) | Print the tool version and rules-schema version |
 | `gatekeeper --help` (`-h`) | Print the full usage list |
 
