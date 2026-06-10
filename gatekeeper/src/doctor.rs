@@ -62,6 +62,16 @@ pub fn parse_version_file(path: &Path) -> VersionProbe {
     }
 }
 
+/// Returns `true` when the payload version in `vf` does not match the running binary version.
+///
+/// Extracted from the `cmd_doctor` match arm so the skew decision is independently testable:
+/// the test can call this function with both a matching and a mismatched `VersionFile` and
+/// assert the return value — which means a regression in the comparison logic would fail the
+/// test rather than just asserting values the test itself constructed.
+pub fn version_skew(vf: &VersionFile) -> bool {
+    vf.version != version::tool()
+}
+
 /// Run all doctor probes and print a report. Returns 0 (all ok) or 1 (any FAIL).
 pub fn cmd_doctor(root: &Path) -> i32 {
     use crate::{artifacts_root, project_root};
@@ -94,18 +104,18 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     let version_path = root.join("VERSION");
     match parse_version_file(&version_path) {
         VersionProbe::Present(ref vf) => {
-            let my_ver = version::tool();
-            if vf.version == my_ver {
+            if version_skew(vf) {
+                println!(
+                    "VERSION: FAIL: payload version {} does not match binary version {}",
+                    vf.version,
+                    version::tool()
+                );
+                failures += 1;
+            } else {
                 println!(
                     "VERSION: payload {} (rules schema v{})",
                     vf.version, vf.rules_schema
                 );
-            } else {
-                println!(
-                    "VERSION: FAIL: payload version {} does not match binary version {}",
-                    vf.version, my_ver
-                );
-                failures += 1;
             }
         }
         VersionProbe::Absent => {
@@ -450,28 +460,29 @@ mod tests {
 
     #[test]
     fn version_file_skew_vs_match() {
-        // Inline the skew logic from the cmd_doctor match arm to verify the behaviour
-        // without relying on process-global env state.
+        // Call the production `version_skew()` function for both cases so this test
+        // goes red if the skew comparison is broken (previously the test only asserted
+        // values it had just constructed, never exercising the production code path).
         let my_ver = version::tool();
 
-        // Case: matching version — must NOT count as failure
+        // Case: matching version — version_skew must return false (no skew → no failure).
         let matching = VersionFile {
             version: my_ver.to_string(),
             rules_schema: 1,
         };
-        assert_eq!(
-            matching.version, my_ver,
-            "matching version must not produce a skew failure"
+        assert!(
+            !version_skew(&matching),
+            "version_skew must return false when payload version matches binary version"
         );
 
-        // Case: skewed version — must count as failure
+        // Case: mismatched version — version_skew must return true (skew → failure).
         let skewed = VersionFile {
             version: "99.99.99".to_string(),
             rules_schema: 1,
         };
-        assert_ne!(
-            skewed.version, my_ver,
-            "different version must produce a skew failure"
+        assert!(
+            version_skew(&skewed),
+            "version_skew must return true when payload version differs from binary version"
         );
     }
 
