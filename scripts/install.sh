@@ -435,7 +435,12 @@ if [[ "$HARNESS" != "claude" ]]; then
 EOF
 fi
 
-# ─── 11. Post-install summary ────────────────────────────────────────────────
+# ─── 11. Stale-PATH check ────────────────────────────────────────────────────
+# Runs before the summary so an accepted overwrite appears in the printed manifest.
+
+repair_stale_path "$BIN"
+
+# ─── 12. Post-install summary ────────────────────────────────────────────────
 
 echo ""
 echo "==> Installed gatekeeper"
@@ -451,10 +456,6 @@ done
 echo ""
 echo "==> Optional: put gatekeeper on PATH"
 echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"
-
-# ─── 12. Stale-PATH check ────────────────────────────────────────────────────
-
-repair_stale_path "$BIN"
 
 echo ""
 echo "==> Health check"
