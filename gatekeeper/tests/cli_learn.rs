@@ -562,3 +562,70 @@ fn in_repo_capture_still_lands_at_docs_learn() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+// ── Task 4: promote refuses in governed projects ──────────────────────────────
+
+#[test]
+fn governed_promote_exits_nonzero_writes_nothing() {
+    let fw = scratch_framework("gov-promote");
+    let proj = scratch_project("gov-promote");
+
+    // First capture an entry in the governed project's ledger.
+    let (cc, _, ce) = run_with_topology_root(
+        &proj,
+        &fw,
+        &[
+            "learn",
+            "capture",
+            "--summary",
+            "a governed gotcha to try promoting",
+            "--id",
+            "gov-promote-id",
+            "--kind",
+            "instinct",
+        ],
+        b"",
+    );
+    assert_eq!(cc, 0, "capture must succeed; stderr={ce}");
+
+    // Attempt promote — must be refused (exit non-zero).
+    let (code, stdout, stderr) = run_with_topology_root(
+        &proj,
+        &fw,
+        &["learn", "promote", "--id", "gov-promote-id", "--yes"],
+        b"",
+    );
+    assert_ne!(code, 0, "promote in a governed project must exit non-zero");
+
+    // The refusal message must name the ledger path.
+    let combined = format!("{stdout}{stderr}");
+    let ledger_path = proj
+        .join(".claude")
+        .join("topology")
+        .join("learn")
+        .join("ledger.md");
+    assert!(
+        combined.contains(ledger_path.to_str().unwrap())
+            || combined.contains(".claude/topology/learn/ledger.md"),
+        "refusal must name the ledger path; output={combined}"
+    );
+
+    // The refusal message must cite ADR-0013.
+    assert!(
+        combined.contains("ADR-0013"),
+        "refusal must cite ADR-0013; output={combined}"
+    );
+
+    // Nothing must be written inside the framework dir (payload stays read-only).
+    let fw_instincts = fw.join("instincts");
+    let new_files: Vec<_> = fs::read_dir(&fw_instincts)
+        .map(|rd| rd.flatten().collect())
+        .unwrap_or_default();
+    assert!(
+        new_files.is_empty(),
+        "promote must write nothing into the framework root; files={new_files:?}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}

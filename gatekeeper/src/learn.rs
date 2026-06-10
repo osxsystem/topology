@@ -537,7 +537,39 @@ impl Plan {
     }
 }
 
+/// Returns `true` when the caller is running inside the framework repo — i.e. when
+/// `artifacts_root` equals `framework_root/docs` (the value `resolve_artifacts_root` produces
+/// when `project == framework`).  Uses `canonicalize` for a reliable comparison, falling back
+/// to plain path equality when either path is not yet on disk.
+fn is_framework_repo(artifacts_root: &Path, framework_root: &Path) -> bool {
+    let expected = framework_root.join("docs");
+    match (
+        std::fs::canonicalize(artifacts_root),
+        std::fs::canonicalize(&expected),
+    ) {
+        (Ok(a), Ok(e)) => a == e,
+        _ => artifacts_root == expected,
+    }
+}
+
 fn cmd_promote(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
+    // ── ADR-0013 §3: promote is framework-only ─────────────────────────────────
+    // The promotion targets (instincts/, skills/, security/rules.toml) live inside
+    // the payload.  In a governed project the payload is replaced wholesale on
+    // upgrade, so any file written there would be silently deleted.  Refuse with an
+    // actionable message instead of producing silent data loss.
+    if !is_framework_repo(artifacts_root, framework_root) {
+        let ledger_path = artifacts_root.join(LEDGER_REL);
+        eprintln!(
+            "gatekeeper learn promote: this is a governed project — promote is not available here.\n\
+             The gotcha is safe in the ledger at {lp}.\n\
+             To promote it into a standing operator, run `learn promote` from your framework fork.\n\
+             See ADR-0013 for the rationale.",
+            lp = ledger_path.display()
+        );
+        return 2;
+    }
+
     let root = framework_root;
     let mut id: Option<String> = None;
     let mut kind_override: Option<Kind> = None;
