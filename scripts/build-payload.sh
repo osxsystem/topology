@@ -24,11 +24,26 @@ STAGE_DIR="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Guard: stage dir must be absent or empty ───────────────────────────────────
+# Stale content in an existing stage dir leaks into the tarball; fail fast rather
+# than silently shipping unexpected files. The caller is responsible for passing a
+# fresh path (or cleaning up before re-invoking).
+if [[ -d "$STAGE_DIR" ]]; then
+  if [[ -n "$(ls -A "$STAGE_DIR" 2>/dev/null)" ]]; then
+    echo "build-payload: stage dir '$STAGE_DIR' already exists and is non-empty; remove it before running" >&2
+    exit 1
+  fi
+fi
+
 # ── Resolve version ────────────────────────────────────────────────────────────
-if [[ -n "${TOPOLOGY_VERSION:-}" ]]; then
-  VERSION="$TOPOLOGY_VERSION"
-elif [[ $# -eq 2 && -n "$2" ]]; then
+# An explicit positional argument beats the TOPOLOGY_VERSION env var.
+# TOPOLOGY_VERSION is the *fallback* for automation (e.g. CI sets it when no
+# explicit arg is provided); it must NOT silently shadow an argument that was
+# intentionally passed.
+if [[ $# -eq 2 && -n "$2" ]]; then
   VERSION="$2"
+elif [[ -n "${TOPOLOGY_VERSION:-}" ]]; then
+  VERSION="$TOPOLOGY_VERSION"
 else
   CARGO_TOML="$REPO_ROOT/gatekeeper/Cargo.toml"
   if [[ ! -f "$CARGO_TOML" ]]; then
@@ -84,6 +99,20 @@ cp "$REPO_ROOT/security/rules.toml" "$STAGE_DIR/security/rules.toml"
 # scripts/fetch-gatekeeper.sh
 mkdir -p "$STAGE_DIR/scripts"
 cp "$REPO_ROOT/scripts/fetch-gatekeeper.sh" "$STAGE_DIR/scripts/fetch-gatekeeper.sh"
+
+# AGENTS.md — root-marker file required by is_marked_root() in main.rs.
+# The unpacked payload tree contains skills/ (shipped above); is_marked_root also
+# requires at least one of ROOT_MARKERS = ["AGENTS.md", "gatekeeper", ".claude-plugin"].
+# AGENTS.md is the right choice: it is a real, human-readable install-doc that makes
+# sense at the payload root, unlike the "gatekeeper" binary (not yet present at unpack
+# time) or ".claude-plugin" (plugin-only, excluded on purpose).  Without this marker
+# the binary walks up to $HOME or further when TOPOLOGY_ROOT is unset.
+SRC_AGENTS="$REPO_ROOT/AGENTS.md"
+if [[ ! -f "$SRC_AGENTS" ]]; then
+  echo "build-payload: missing required marker file: AGENTS.md" >&2
+  exit 1
+fi
+cp "$SRC_AGENTS" "$STAGE_DIR/AGENTS.md"
 
 # ── Write VERSION ──────────────────────────────────────────────────────────────
 printf 'version = "%s"\nrules_schema = %s\n' "$VERSION" "$RULES_SCHEMA" > "$STAGE_DIR/VERSION"

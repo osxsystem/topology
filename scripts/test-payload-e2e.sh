@@ -119,6 +119,21 @@ else
   fail "VERSION file missing after unpack"
 fi
 
+# Assert the unpacked payload satisfies is_marked_root() (skills/ + one ROOT_MARKER).
+# Without AGENTS.md the binary walks past the payload root to $HOME or beyond when
+# TOPOLOGY_ROOT is unset, breaking every subcommand that calls framework_root().
+if [[ -d "$TMPDIR_TOPOLOGY/skills" ]]; then
+  pass "unpacked payload: skills/ present (required by is_marked_root)"
+else
+  fail "unpacked payload: skills/ missing — is_marked_root cannot pass without it"
+fi
+
+if [[ -f "$TMPDIR_TOPOLOGY/AGENTS.md" ]]; then
+  pass "unpacked payload: AGENTS.md present (ROOT_MARKERS sentinel for is_marked_root)"
+else
+  fail "unpacked payload: AGENTS.md missing — framework root resolution falls back to \$HOME without a marker"
+fi
+
 # ── Step 3: Run the UNPACKED fetch-gatekeeper.sh via file:// ──────────────────
 UNPACKED_FETCH="$TMPDIR_TOPOLOGY/scripts/fetch-gatekeeper.sh"
 if [[ ! -f "$UNPACKED_FETCH" ]]; then
@@ -169,7 +184,10 @@ else
 fi
 
 # ── Step 4d: doctor contains the payload VERSION probe line ──────────────────
-DOCTOR_OUT="$("$GK" doctor 2>&1)"
+# Capture output regardless of doctor's exit code: doctor may report other probe
+# failures (e.g. an unrelated rules.toml validation issue) that are not under test
+# here; the assertion is only that the VERSION probe line is present.
+DOCTOR_OUT="$("$GK" doctor 2>&1 || true)"
 if echo "$DOCTOR_OUT" | grep -qE "^VERSION: payload "; then
   pass "gatekeeper doctor: VERSION probe line present ($(echo "$DOCTOR_OUT" | grep 'VERSION:'))"
 else

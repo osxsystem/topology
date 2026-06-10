@@ -46,6 +46,9 @@ REQUIRED_ENTRIES=(
   "security/rules.toml"
   "scripts/fetch-gatekeeper.sh"
   "VERSION"
+  # AGENTS.md is the ROOT_MARKERS sentinel required by is_marked_root(); without it
+  # the unpacked payload tree cannot be resolved as the framework root (Note 4).
+  "AGENTS.md"
 )
 
 for entry in "${REQUIRED_ENTRIES[@]}"; do
@@ -153,6 +156,57 @@ else
   else
     fail "rules_schema mismatch: VERSION='$PARSED_SCHEMA' vs scan.rs='$SCAN_SCHEMA'"
   fi
+fi
+
+# ── AC-marked-root: unpacked payload satisfies is_marked_root (skills/ + AGENTS.md) ──────
+# is_marked_root in main.rs requires both: a skills/ directory AND at least one of
+# ROOT_MARKERS = ["AGENTS.md", "gatekeeper", ".claude-plugin"]. The unpacked tarball
+# ships skills/ (tested above) and AGENTS.md (asserted in REQUIRED_ENTRIES); verify
+# both are present together in the unpacked tree so a future build regression trips here.
+if [[ -d "$TMPDIR_UNPACK/skills" ]]; then
+  pass "unpacked payload has skills/ (required by is_marked_root)"
+else
+  fail "unpacked payload missing skills/ — is_marked_root would fail without it"
+fi
+
+if [[ -f "$TMPDIR_UNPACK/AGENTS.md" ]]; then
+  pass "unpacked payload has AGENTS.md (ROOT_MARKERS sentinel for is_marked_root)"
+else
+  fail "unpacked payload missing AGENTS.md — is_marked_root would fall back to \$HOME without a marker"
+fi
+
+# ── AC-non-empty-stage: build-payload.sh refuses a non-empty stage dir ────────
+# Ensures stale files from a previous run cannot silently leak into a new payload.
+TMPDIR_STALE="$(mktemp -d)"
+echo "stale-file" > "$TMPDIR_STALE/stale.txt"
+STALE_OUT="$(bash "$BUILD_SCRIPT" "$TMPDIR_STALE" 2>&1)" && STALE_EXIT=0 || STALE_EXIT=$?
+rm -rf "$TMPDIR_STALE"
+if [[ "$STALE_EXIT" -ne 0 ]] && echo "$STALE_OUT" | grep -q "non-empty"; then
+  pass "build-payload refuses non-empty stage dir with clear error"
+else
+  fail "build-payload should exit non-zero with 'non-empty' message for non-empty stage dir (exit=$STALE_EXIT, output: $STALE_OUT)"
+fi
+
+# ── AC-version-arg-beats-env: explicit arg overrides TOPOLOGY_VERSION env var ─
+# The env var is the fallback for automation; an explicit positional argument must
+# win so CI can pin a version without the env leaking an unintended override.
+TMPDIR_VARG_STAGE="$(mktemp -d)"
+TMPDIR_VARG_WORK="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_STAGE" "$TMPDIR_WORK" "$TMPDIR_UNPACK" "$TMPDIR_VARG_STAGE" "$TMPDIR_VARG_WORK"' EXIT
+
+VARG_TARBALL="$(cd "$TMPDIR_VARG_WORK" && TOPOLOGY_VERSION="99.99.99" bash "$BUILD_SCRIPT" "$TMPDIR_VARG_STAGE" "1.2.3")"
+if [[ -f "$VARG_TARBALL" ]]; then
+  VARG_UNPACK="$(mktemp -d)"
+  tar -xzf "$VARG_TARBALL" -C "$VARG_UNPACK"
+  VARG_VER="$(grep -m1 '^version' "$VARG_UNPACK/VERSION" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
+  rm -rf "$VARG_UNPACK"
+  if [[ "$VARG_VER" == "1.2.3" ]]; then
+    pass "explicit version arg (1.2.3) beats TOPOLOGY_VERSION env (99.99.99)"
+  else
+    fail "explicit version arg should beat env; got VERSION='$VARG_VER' (expected 1.2.3)"
+  fi
+else
+  fail "build-payload did not produce a tarball when testing version-arg-beats-env"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────
