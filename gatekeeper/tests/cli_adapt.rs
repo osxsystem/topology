@@ -150,3 +150,81 @@ fn check_mode_is_idempotent_then_detects_drift() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+// ── AC-4: adapt writes to the project root; hook paths point at the framework root ──
+
+#[test]
+fn adapt_writes_to_project_not_framework() {
+    // Run adapt from a scratch project dir (git repo) with TOPOLOGY_ROOT → scratch framework.
+    // Asserts: .claude/settings.json written in project, nothing written in framework,
+    // hook paths in settings.json point at the framework dir.
+    let fw = std::env::temp_dir().join(format!("topo_adapt_fw_{}", std::process::id()));
+    let proj = std::env::temp_dir().join(format!("topo_adapt_proj_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+
+    // Framework: skills/ + AGENTS.md + hooks/ (marks it as topology root).
+    fs::create_dir_all(fw.join("skills").join("s")).unwrap();
+    fs::create_dir_all(fw.join("instincts")).unwrap();
+    fs::create_dir_all(fw.join("hooks")).unwrap();
+    fs::write(fw.join("AGENTS.md"), "# Topology\n\nGates.\n").unwrap();
+    fs::write(
+        fw.join("skills").join("s").join("SKILL.md"),
+        "---\nname: s\ndescription: A skill.\n---\nBody.\n",
+    )
+    .unwrap();
+
+    // Project: a git repo (so project_root() resolves here).
+    fs::create_dir_all(&proj).unwrap();
+    std::process::Command::new("git")
+        .args(["-C", proj.to_str().unwrap(), "init", "-q", "-b", "main"])
+        .status()
+        .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
+        .current_dir(&proj)
+        .env("TOPOLOGY_ROOT", &fw)
+        .args(["adapt", "--harness", "claude"])
+        .output()
+        .unwrap();
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(code, 0, "adapt should succeed; out:\n{stdout}");
+
+    // .claude/settings.json must exist in the project.
+    let settings_path = proj.join(".claude").join("settings.json");
+    assert!(
+        settings_path.exists(),
+        ".claude/settings.json must be written in the project"
+    );
+
+    // Hook paths must reference the framework dir (not the project).
+    let settings = fs::read_to_string(&settings_path).unwrap();
+    assert!(
+        settings.contains(fw.to_str().unwrap()),
+        "hook paths must reference the framework root; settings:\n{settings}"
+    );
+
+    // Nothing must have been written under the framework root.
+    let fw_claude = fw.join(".claude");
+    assert!(
+        !fw_claude.exists(),
+        ".claude/ must not be created under the framework root"
+    );
+
+    // adapt --check passes immediately after.
+    let check_out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
+        .current_dir(&proj)
+        .env("TOPOLOGY_ROOT", &fw)
+        .args(["adapt", "--harness", "claude", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        check_out.status.code().unwrap_or(-1),
+        0,
+        "adapt --check must pass after a successful write"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}

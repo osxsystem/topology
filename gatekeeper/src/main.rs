@@ -62,7 +62,7 @@ fn main() {
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
-        Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root()),
+        Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
         Some("doctor") => doctor::cmd_doctor(&framework_root()),
@@ -328,7 +328,8 @@ fn cmd_check(args: &[String]) -> i32 {
         "verify" => gate_doc_exists("verify", &feature_arg(args)),
         "finish" => gate_finish(args),
         "review" => review::gate_review(
-            &framework_root(),
+            &project_root(),
+            &artifacts_root(),
             &feature_arg(args),
             base_arg(args).as_deref(),
         ),
