@@ -71,7 +71,19 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 curl -fsSL https://raw.githubusercontent.com/osxsystem/topology/main/scripts/install.sh | bash
 ```
 
-This downloads a prebuilt `gatekeeper` binary for your platform, creates the `CLAUDE.md → AGENTS.md` symlink, marks hooks executable, installs the git pre-commit hook, and prints every file it created as a manifest. No Rust toolchain needed when a prebuilt binary is available.
+The installer **asks** (when a terminal is available) which harness to wire and whether to install **global** (`~/.topology`) or **local** (vendored into a project). With a tty it prompts; without one (CI, pipes) it prints the defaults it assumed.
+
+**Installer flags:**
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--global` | ✓ | Install at `${TOPOLOGY_HOME:-~/.topology}` (shared) |
+| `--project <path>` | — | Vendor at `<path>/.topology`; wire `<path>`; mutually exclusive with `--global` |
+| `--harness <h>` | ask / `claude` | Wire `claude`, `codex`, `cursor`, `opencode`, or `none` |
+| `--yes` | — | Accept all defaults non-interactively |
+| `--build-from-source` | — | Build gatekeeper from source instead of downloading |
+
+After install, any **stale `gatekeeper` on PATH** (a version-skewed binary from a previous install) is detected. With a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
 
 Then wire the hooks and verify:
 
@@ -79,6 +91,7 @@ Then wire the hooks and verify:
 gatekeeper list               # list available skills
 echo "add a users table" | gatekeeper activate   # see which skills route in
 gatekeeper check design --feature add-users       # check a gate
+gatekeeper doctor             # health check: both roots, artifacts root, version skew
 ```
 
 **Build from source** (if you prefer, or when no prebuilt binary matches your platform):
@@ -86,6 +99,30 @@ gatekeeper check design --feature add-users       # check a gate
 ```bash
 git clone https://github.com/osxsystem/topology.git && cd topology
 ./scripts/install.sh --build-from-source
+```
+
+### Gate artifacts for governed projects
+
+When governing an external project (topology vendored at `<project>/.topology`, `TOPOLOGY_ROOT` set), gate artifacts live under **`<project>/.claude/topology/`** — not in the project's root `docs/`. The framework repo itself keeps its root `docs/` layout unchanged.
+
+**Two-roots model:**
+
+| What | Anchored to |
+|---|---|
+| `skills/`, `instincts/`, `security/rules.toml`, hook scripts | framework root (`~/.topology` or vendored copy) |
+| Gate artifacts (`research/ specs/ plans/ verify/ reviews/`) | project root — under `.claude/topology/` in governed projects, `docs/` in the framework repo itself |
+| `adapt`-generated configs (`.claude/settings.json`, etc.) | project root |
+| `learn` ledger, `memory` artifacts | framework root |
+
+**One-time migration** (if you have existing artifacts in `docs/` of a governed project):
+
+```bash
+git mv docs/research  .claude/topology/research
+git mv docs/specs     .claude/topology/specs
+git mv docs/plans     .claude/topology/plans
+git mv docs/verify    .claude/topology/verify
+git mv docs/reviews   .claude/topology/reviews
+git commit -m "chore: migrate gate artifacts to .claude/topology/"
 ```
 
 ## Install as a Claude Code plugin

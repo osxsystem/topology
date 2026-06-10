@@ -1,6 +1,6 @@
 ---
 name: write-plan
-description: Decompose an approved design into a placeholder-free, step-by-step implementation plan. Use after a design is approved and before writing code, or when the user asks for a plan, breakdown, or task list.
+description: Decompose an approved design into a placeholder-free, step-by-step implementation plan; artifact lands under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use after a design is approved and before writing code, or when the user asks for a plan, breakdown, or task list.
 ---
 
 # Write Plan (the plan gate)

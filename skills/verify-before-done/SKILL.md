@@ -1,6 +1,6 @@
 ---
 name: verify-before-done
-description: Prove a task is actually complete with evidence before claiming done. Use when you believe a feature or fix is finished, before saying "done" or "fixed", and before moving to finish a branch.
+description: Prove a task is actually complete with evidence before claiming done; verify artifact lands under the artifacts root (`docs/` here, `.claude/topology/` in a governed project). Use when you believe a feature or fix is finished, before saying "done" or "fixed", and before moving to finish a branch.
 ---
 
 # Verify Before Done (the verify gate)
