@@ -81,11 +81,10 @@ while [[ $# -gt 0 ]]; do
       fi
       SCOPE_PROJECT="$2"; shift 2 ;;
     --yes) YES=1; shift ;;
-    -*)
-      echo "error: unknown flag '$1'" >&2
+    *)
+      echo "error: unexpected argument '$1'" >&2
       usage
       exit 2 ;;
-    *) shift ;;
   esac
 done
 
@@ -306,7 +305,11 @@ case "$HARNESS" in
   claude|codex|cursor|opencode)
     if [[ "$SCOPE" == "local" ]]; then
       echo "==> Wiring harness: $HARNESS"
-      WIRING_OUTPUT="$(cd "$PROJECT_PATH" && TOPOLOGY_ROOT="$ROOT" "$BIN" adapt --harness "$HARNESS" 2>&1)"
+      if ! WIRING_OUTPUT="$(cd "$PROJECT_PATH" && TOPOLOGY_ROOT="$ROOT" "$BIN" adapt --harness "$HARNESS" 2>&1)"; then
+        echo "$WIRING_OUTPUT" >&2
+        echo "error: harness wiring failed (adapt --harness $HARNESS)" >&2
+        exit 1
+      fi
       echo "$WIRING_OUTPUT"
       # Note each generated file in the manifest.
       while IFS= read -r line; do
@@ -396,7 +399,7 @@ repair_stale_path() {
   else
     printf '\nreplace %s (%s) with %s? [y/N]: ' "$found" "${old_version:-?}" "$new_version" > /dev/tty
     local ans
-    read -r ans < "$PROMPT_INPUT_FD"
+    read -r ans < "$PROMPT_INPUT_FD" || ans=""
     if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
       cp "$new_bin" "$found"
       note "$found (overwritten with $new_version)"

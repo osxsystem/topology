@@ -109,6 +109,7 @@ The framework repo itself keeps its root `docs/` layout unchanged.
 **One-time migration** (if existing gate artifacts live in a governed project's root `docs/`):
 
 ```bash
+mkdir -p .claude/topology
 git mv docs/research  .claude/topology/research
 git mv docs/specs     .claude/topology/specs
 git mv docs/plans     .claude/topology/plans

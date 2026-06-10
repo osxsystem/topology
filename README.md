@@ -117,6 +117,7 @@ When governing an external project (topology vendored at `<project>/.topology`, 
 **One-time migration** (if you have existing artifacts in `docs/` of a governed project):
 
 ```bash
+mkdir -p .claude/topology
 git mv docs/research  .claude/topology/research
 git mv docs/specs     .claude/topology/specs
 git mv docs/plans     .claude/topology/plans
