@@ -360,9 +360,13 @@ EOF
 esac
 
 # ─── 9. Stale-PATH repair ─────────────────────────────────────────────────────
-
-# PROMPT_INPUT_FD: fd to read repair confirmation from (default /dev/tty).
-# Overridable by tests (Task 6 seam).
+#
+# PROMPT_INPUT_FD test seam: the interactive repair branch reads confirmation
+# from this fd (default /dev/tty). CI and tests set it to a file/pipe
+# containing the answer so the tty is not required. The production default
+# stays /dev/tty — no code path prompts when /dev/tty cannot be opened
+# (can_prompt() guards the interactive branch; --yes / non-tty take the
+# warning-only path without reading from this fd at all).
 : "${PROMPT_INPUT_FD:=/dev/tty}"
 
 repair_stale_path() {
