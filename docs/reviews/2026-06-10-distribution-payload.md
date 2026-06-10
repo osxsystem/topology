@@ -1,38 +1,156 @@
-VERDICT: fail
-HEAD: 5168a7150b5fe742237cb99ff542059bc556ab75
+VERDICT: pass
+HEAD: f1afc4d0cb640d20b9bc7a584a6235b620bc92d9
 BASE: a617311271fedf3ed6af847125c3d4d1a1423dfe
 
 # Review: distribution-payload (2026-06-10)
 
+Fresh-context adversarial review of the full branch (a617311..f1afc4d), including round 1
+(0782103, 10c2791, 1f9265b) and round 2 (4865ae3, 21112a5, aa84861, f1afc4d). The previous review
+at HEAD 1f9265b failed on two blockers; both reproductions were re-run from scratch against the
+release binary built at this HEAD — nothing below is taken on trust from the fix commits or their
+messages. Fixtures: scratch marked-root git repos and scratch governed git projects under
+/private/tmp (canonical paths), payload built by `scripts/build-payload.sh` and unpacked
+standalone, hooks exercised through the REAL wrapper scripts with `CLAUDE_PLUGIN_ROOT` /
+`GATEKEEPER_BIN` / `TOPOLOGY_ROOT` on the command.
+
 ## Blocking findings
-- gatekeeper/src/memory.rs:217 — `git_info(artifacts_root)` runs before `fs::create_dir_all(&memory_dir)` (memory.rs:268). In a fresh governed project the artifacts root (`<project>/.claude/topology`) does not exist yet, so `git -C <nonexistent>` fails and the FIRST handoff is rendered with empty `branch:` and `head_sha:` even though the project is a real git repo on a real branch; the second write records them correctly. Reproduced against the release binary: first write emitted `branch:` / `head_sha:` empty, second write emitted `branch: feature-branch` and the full SHA. The frontmatter is documented as "the machine contract" (memory.rs module docs) and the resume skill's step 2 compares recorded vs actual git state — silent provenance loss on the primary new scenario this branch exists to deliver. Fix is small: derive git info from the project root / cwd (the repo the handoff describes), or move the call after directory creation. None of the new governed-write tests assert non-empty branch/sha in a git repo, so the suite stays green over the bug.
-- security/rules.toml:169 — the new `.claude/topology/memory` protected-path entry does not protect the governed project's handoffs in the real two-roots deployment, weakening the guard relative to the pre-change `memory/artifacts` entry. `is_protected` (gatekeeper/src/scan.rs:498-507) resolves protected entries against the framework root (`scan::cmd_scan(&args[1..], &framework_root())`, main.rs:63; the hook runs `cd "$ROOT"`, hooks/security-scan.sh:43), so the entry resolves to `<framework_root>/.claude/topology/memory` — but governed handoffs live at `<project_root>/.claude/topology/memory` (memory.rs per ADR-0013). Reproduced against the release binary with the branch's own rules.toml: a Write hook event with an ABSOLUTE file_path into the governed project's memory dir is silently ALLOWED (no ask); the relative spelling only triggers an ask by lexical coincidence (it resolves to a framework-root path that is not the real file). Claude Code's Write/Edit tools send absolute paths, so the protection this diff claims to add (rules.toml:166-169 comments, memory/README.md "PreToolUse guard" section, TEMPLATE.handoff.md) is a dead letter in governed projects — and pre-change, the `memory/artifacts` entry DID protect the actual handoff location in both worlds because handoffs lived inside the framework root. The new unit tests (scan.rs:1350, 1367, 1397) resolve both the entries and the target against the same single root, so they never model the governed two-roots world and mask the gap. Either the protected-path resolution must anchor project-anchored entries to the project root, or the docs/rules comments must stop claiming governed-path coverage.
+
+None.
 
 ## Non-blocking notes
-- gatekeeper/src/memory.rs:499,527 — `handoff_path_equal_roots_is_under_docs_memory` and `handoff_path_differing_roots_is_under_claude_topology_memory` are tautological: they hand-construct paths with `Path::join` and assert the joins they just made; no production code is exercised. The plan's Task 1 asked for "unit — path construction for equal vs differing roots"; the honest coverage is the integration tests (cli_memory.rs), which are genuinely good. Delete these or have them call `resolve_artifacts_root`.
-- gatekeeper/src/doctor.rs:452 — `version_file_skew_vs_match` asserts that a string equals itself and that "99.99.99" differs from the binary version; it never executes the `cmd_doctor` skew arm whose behavior it claims to verify. The e2e (test-payload-e2e.sh step 4d) covers the match case end-to-end; the skew-FAIL path has no test.
-- scripts/build-payload.sh:6,58 — the header says the stage dir "must be empty or non-existent" but the script never enforces it (`mkdir -p` then `tar -C "$STAGE_DIR" .`); leftover files in a reused stage dir would be tarred into the payload. CI uses a fresh `runner.temp` and the tests use `mktemp -d`, so no current leak, but a one-line `[ -z "$(ls -A ...)" ]` guard would close the documented contract.
-- scripts/build-payload.sh:28-31 — `TOPOLOGY_VERSION` env overrides the explicit positional version argument; in CI a stray `TOPOLOGY_VERSION` in the environment would silently override the tag version. Conventional precedence is explicit arg > env.
-- scripts/build-payload.sh:74,78 — `skills/` and `instincts/` are copied from the working tree, not from git; untracked strays (`.DS_Store`, editor backups) would ship. Fine on a clean CI checkout; worth a `--exclude` or git-archive staging later.
-- scripts/test-fetch-version.sh:29-40,48 — `run_fetch_capture_stderr` is dead code, and Piece 1's symlinked fake root + decoy VERSION file are unused because the test invokes `$FETCH_SCRIPT` directly (the repo copy), so the "overrides VERSION file" assertion actually only proves the env var wins over the repo's Cargo.toml fallback. The precedence conclusion still holds; the setup implies a stronger test than is run.
-- The payload contains none of `ROOT_MARKERS` (`AGENTS.md`, `gatekeeper`, `.claude-plugin` — main.rs:120), so `is_marked_root` never matches an unpacked payload and framework-root resolution rests entirely on `TOPOLOGY_ROOT` / the cwd fallback (hooks `cd "$ROOT"`). Works today; fragile if a hook ever runs the binary from project cwd without the env var. Consider shipping a marker in the payload.
+
+- **Cross-context framework-handoff hook coverage narrowed (new in this branch's design, judged
+  non-blocking):** artifact entries (`protected_artifact_paths = ["memory"]`) anchor to the
+  SESSION's artifacts root, so from a foreign cwd (e.g. a governed project) an absolute-path Write
+  into the FRAMEWORK's own `docs/memory/` is not asked (reproduced: `scan --check-path
+  <fw>/docs/memory/x.handoff.md` with cwd outside and `TOPOLOGY_ROOT=<fw>` → exit 0; the
+  framework-anchored `security/rules.toml` → exit 1). At base, the framework-anchored
+  `memory/artifacts` entry covered the old handoff dir from any cwd. Mitigations that keep this
+  non-blocking: the payload ships no `docs/` at all; the staged lane still blocks committing a
+  tampered framework handoff (reproduced); the Bash tamper rule still denies literal redirects
+  into `docs/memory/`; and the round-2 doc claims (memory/README.md, rules.toml comments) are
+  per-context and accurate — they do not promise cross-context coverage.
+- **learn-capture.sh never checks `$ROOT/bin/gatekeeper`:** resolution is PATH → repo
+  release/debug builds, but install.sh/fetch-gatekeeper place the prebuilt at `$ROOT/bin/`
+  (security-scan.sh checks it; learn-capture.sh does not). In a payload install with no
+  `gatekeeper` on PATH the optional Stop-hook capture silently degrades to "not built". Lines are
+  identical at the merge-base (pre-existing), but the branch newly routes governed ledger
+  anchoring through this wrapper, so it is worth a follow-up.
+- **test-fetch-version Piece 1 decoy still decorative (carried, half-fixed):** aa84861 removed the
+  dead `run_fetch_capture_stderr` helper and replaced the symlink with a `cp`, but Piece 1 still
+  invokes `bash "$FETCH_SCRIPT"` (the repo copy), so the fake root's `VERSION = 9.9.9` is never
+  read — with no VERSION at the repo root, Piece 1 actually tests env-over-Cargo.toml, not
+  env-over-VERSION-file as its comment claims. Pieces 2–3 run the copied script and are sound.
+- **Payload AGENTS.md audience (carried, half-fixed):** the spec manifest now documents AGENTS.md
+  as the `is_marked_root` sentinel (round-2 spec hunk — accurate), but the shipped file remains
+  the framework repo's contributor instructions, partially wrong audience at a payload root.
+- **Carried, still true (recorded in the committed handoff doc):** `Integrity` is
+  `#[serde(deny_unknown_fields)]` so pre-branch binaries fail closed on the new
+  `protected_artifact_paths` key with `rules_schema` still 1 (bricked-session UX, safe direction);
+  `build-payload.sh` `cp -R`s `skills/` and `instincts/` from the working tree (strays would ship
+  on a dirty checkout; clean on CI); `scan --staged` runs `git -C <framework root>` so a governed
+  project's index is never scanned (governed pre-commit is Phase 8 by spec); protected-path
+  matching is lexical and does not follow symlinks (pre-existing design).
 
 ## Criteria checked
+
+### Prior blocker 1 (staged-lane inversion) — FIXED, reproduced both directions
+Scratch marked-root repo (skills/, AGENTS.md, this branch's security/rules.toml; `git init`,
+initial commit). Staged tamper of `docs/memory/x.handoff.md` → `scan --staged` printed
+`BLOCK protected-path: staged change (A) to docs/memory/x.handoff.md`, exit 1 (was exit 0 at
+1f9265b). Staged change to `memory/README.md` only → exit 0 (was spuriously blocked). The fix
+(4865ae3) separates the target base from the per-set entry anchors: `is_protected_any` now takes
+an explicit `target_base`, the staged lane passes the repo root (git paths are repo-root-relative —
+and `git_raw` runs `git -C <root>`, so this holds regardless of process cwd), and only the entries
+resolve against `artifacts_root`. `scan --check-path` relative vs absolute now agree (both exit 1
+for `docs/memory/x.handoff.md` and `security/rules.toml` from the repo root). Alias probes:
+`docs/../docs/memory/x.handoff.md` and `../<repo-dir>/docs/memory/x.handoff.md` both exit 1
+(lexical collapse holds). New unit tests pin exactly the previously-masked shapes: a real staged
+lane through `scan_staged` with relative git paths (`staged_handoff_in_docs_memory_is_blocked`,
+`staged_memory_readme_in_framework_root_not_blocked`) and the target_base/anchor split in
+`is_protected_tests` — the masking gap the previous review called out is closed.
+
+### Prior blocker 2 (governed hook bypass through the real wrapper) — FIXED, reproduced
+The fix (21112a5) removes `cd "$ROOT"` from hooks/security-scan.sh and hooks/learn-capture.sh;
+the binary now runs from the session cwd and the framework root travels via
+`TOPOLOGY_ROOT="${TOPOLOGY_ROOT:-$ROOT}"`. Reproduced the previous review's exact bypass setup:
+payload built and unpacked at a standalone root, scratch governed git project, cwd = project,
+the payload's own hooks/security-scan.sh invoked with `CLAUDE_PLUGIN_ROOT=<payload>`
+`GATEKEEPER_BIN=<release binary>`:
+- Write event with the ABSOLUTE path `<project>/.claude/topology/memory/x.handoff.md` →
+  permissionDecision **"ask"** (was silent allow at 1f9265b).
+- Write event with the RELATIVE spelling `.claude/topology/memory/x.handoff.md` → **"ask"**
+  (relative hook paths now resolve against the session cwd; was unprotected).
+- Ordinary project file → silent allow, exit 0.
+- Evil sibling `<project>/.claude/topology/memory-evil/x.md` → silent allow (no over-match).
+Learn anchoring: from project cwd with `TOPOLOGY_ROOT=<payload>`, `learn capture` wrote
+`<project>/.claude/topology/learn/ledger.md`; `find <payload> -newer <tarball>` returned nothing
+and `<payload>/docs` does not exist (the ADR-0013 data-loss path is closed). Same result through
+the REAL hooks/learn-capture.sh wrapper (`TOPOLOGY_GOTCHA` set, binary on PATH): second ledger
+entry appended to the project ledger, nothing under the payload.
+
+### Prior round-1 blocker (first governed handoff metadata) — still FIXED
+Fresh scratch git project on branch `feature-xyz`, payload as framework via `TOPOLOGY_ROOT`,
+FIRST `memory write` with `.claude/topology/` absent: frontmatter recorded `branch: feature-xyz`
+and the full 40-hex `head_sha` (reproduced).
+
+### Round-2 diff (1f9265b..HEAD), hunk by hunk
+- scan.rs target-base refactor: read in full; `cwd` computed once in `cmd_scan`
+  (`current_dir().unwrap_or(root)`), threaded to hook/check-path lanes; staged lane passes `root`
+  (correct: `git_raw` is `git -C root`, paths repo-relative regardless of cwd); `is_protected`
+  kept as a test-only wrapper (`cfg_attr(not(test), allow(dead_code))`). Probed for new edge
+  cases: relative check-path from a cwd that differs from any root resolves honestly against the
+  cwd (relative and absolute spellings of the same file agree — both exit 0 from the foreign cwd,
+  both exit 1 from the repo root); `..` aliases collapse and still match; evil siblings do not.
+  The one semantic narrowing found is the cross-context note above.
+- Hook wrappers: `TOPOLOGY_ROOT="${TOPOLOGY_ROOT:-$ROOT}"` honors a pre-set env, defaults to
+  `CLAUDE_PLUGIN_ROOT`/hook-dir parent; cwd contract documented in both headers and verified
+  empirically through both wrappers (above). hooks/pre-commit.sh deliberately keeps `cd "$ROOT"`
+  for the staged lane — consistent with `git -C root`. shellcheck clean.
+- Docs: memory/README.md and TEMPLATE.handoff.md now describe `protected_artifact_paths`
+  resolved against the artifacts root — matches the code at HEAD; spec manifest gained the
+  AGENTS.md row — matches the tarball (listed it). Committed handoff doc's lane numbers match my
+  runs (257 tests), and its deferred-notes list matches what I independently re-verified.
+- test-fetch-version.sh: dead helper gone; Piece-1 inaccuracy noted above; 3/3 pass.
+
 ### Spec/plan
-- AC-1 (release carries topology-payload.tar.gz + SHA256SUMS entry) — .github/workflows/release.yml adds a `payload` job after version-guard, uploads the tarball, `release` job (merge-multiple download) adds it to `sha256sum gatekeeper-* topology-payload.tar.gz` and to the release files. Reviewed; cannot exercise a real tag from here.
-- AC-2 (unpack + fetch-gatekeeper yields working `--version`/`activate`/`scan` with TOPOLOGY_ROOT) — scripts/test-payload-e2e.sh builds the payload, serves via `file://`, installs via the UNPACKED fetch script, asserts all three plus the doctor VERSION probe. Ran it: 8 passed, 0 failed.
-- AC-3 (no `*.rs`, `docs/`, `.git`, plugin files) — build-payload.sh stages an explicit copy list (four hooks + skill-rules.json, skills/, instincts/, security/rules.toml, fetch-gatekeeper.sh, VERSION); scripts/test-build-payload.sh asserts the positive manifest and all four negatives. Ran it: 21 passed, 0 failed.
-- AC-4 (VERSION parses by bash grep + toml crate, matches tag) — `doctor::parse_version_file` (toml crate) with unit tests; test-build-payload.sh parses with the grep -m1 idiom and cross-checks Cargo.toml and scan.rs SCHEMA_VERSION; CI passes the tag version and version-guard pins tag == Cargo.toml.
-- AC-5 (governed: memory → .claude/topology/memory, capture → .claude/topology/learn/ledger.md, promote refuses) — honest integration tests with a real scratch git project + separate framework dir and TOPOLOGY_ROOT on the spawned command: cli_memory.rs `governed_write_lands_at_claude_topology_memory` / `governed_read_round_trips_write`; cli_learn.rs `governed_capture_lands_at_claude_topology_learn` / `governed_promote_exits_nonzero_writes_nothing` (asserts non-zero exit, ledger-path + ADR-0013 in the message, nothing written under the framework dir). Satisfied — but see blocking finding 1 for the provenance corruption these tests don't catch.
-- AC-6 (framework repo: learn byte-identical, memory at docs/memory after git mv) — `LEDGER_REL` = `learn/ledger.md` against artifacts_root = `docs/` keeps `docs/learn/ledger.md`; pre-existing in-repo learn fixtures unchanged and green; cli_learn.rs `in_repo_capture_still_lands_at_docs_learn`, cli_memory.rs `in_repo_write_lands_at_docs_memory`; docs/memory/.gitkeep added, .gitignore entry for /memory/artifacts/ removed.
-- AC-7 (cargo test covers anchoring, refusal, VERSION parsing) — present (with the two tautological-test caveats above). Full gates run by this reviewer: `cargo fmt --check` clean, `cargo clippy -- -D warnings` clean, `cargo test --release` 250 passed / 2 ignored.
-- Plan Task 4 (promote refusal via canonicalized compare) — `is_framework_repo` (learn.rs) compares `canonicalize(artifacts_root)` to `canonicalize(framework_root/docs)` with a plain-equality fallback; an indirect proxy for the plan's `project_root() != framework_root()` but equivalent over the two values `resolve_artifacts_root` can produce.
-- Plan Task 6 (keep version-guard plugin.json assertions) — version-guard untouched; only the payload lane added. No scope creep found beyond docs/ROADMAP.md, which records the grilled Track 2 phase plan the spec cites.
+Acceptance criteria re-verified at HEAD:
+- **AC-1** (release carries tarball + SHA256SUMS entry): read .github/workflows/release.yml —
+  `payload` job (needs version-guard) builds and uploads `topology-payload.tar.gz`; release job
+  runs `sha256sum gatekeeper-* topology-payload.tar.gz > SHA256SUMS` and lists both in the
+  release files. Unchanged in round 2; cannot exercise a real tag from here.
+- **AC-2** (unpack + fetch yields working tree): ran `bash scripts/test-payload-e2e.sh` — 10
+  passed, 0 failed (`--version`, `activate`, `scan --cmd` veto, doctor VERSION probe, all with
+  `TOPOLOGY_ROOT` at the unpacked tree and the shipped fetch script over `file://`).
+- **AC-3** (no `*.rs`/`docs/`/`.git`/plugin files): ran `bash scripts/test-build-payload.sh` —
+  26 passed, 0 failed; independently built my own tarball and grepped the listing for
+  `\.rs$|^docs/|\.git|plugin` — no hits.
+- **AC-4** (VERSION parses both ways, matches tag): `bash scripts/test-fetch-version.sh` 3/3
+  (bash grep consumer); doctor probe in e2e printed `VERSION: payload 0.3.0 (rules schema v1)`
+  (toml-crate consumer); CI version-guard pins tag == Cargo.toml.
+- **AC-5** (governed paths + promote refusal): reproduced all three in the scratch governed
+  fixture — `memory write` → `.claude/topology/memory/first-test.handoff.md`, `learn capture` →
+  `.claude/topology/learn/ledger.md` (direct AND via the real Stop hook), `learn promote --yes` →
+  exit 2 with the ledger path, fork pointer, and ADR-0013 in the message.
+- **AC-6** (framework repo paths): in the equal-roots scratch marked-root repo — `memory write` →
+  `docs/memory/eqroots.handoff.md`, `learn capture` → `docs/learn/ledger.md`.
+- **AC-7** (cargo test coverage): 257 passed / 2 ignored / 0 failed, now including the
+  staged-lane regression tests with relative git-emitted paths and the target_base/anchor-split
+  unit tests — the production invocation shapes that both previous masking gaps missed.
 
 ### Standards
-- ADR-0013 §1 (payload read-only at runtime) — memory write uses framework_root only to READ security/rules.toml (memory.rs:229-231 comment + code); learn capture/list never touch the framework root; promote writes are framework-repo-only. Governed tests assert nothing lands under the scratch framework dir. Conforms.
-- ADR-0013 §2 (mutable state anchors to artifacts_root) — memory.rs and learn.rs (`LEDGER_REL`) anchor to artifacts_root; main.rs:66-67 dispatch passes both roots explicitly (the `resolve_*` explicit-path-argument pattern from the plan conventions). Conforms — but the guard documentation that travels with this change overclaims (blocking finding 2).
-- ADR-0013 §3 (promote refuses with fork pointer) — refusal message names the ledger path, the fork story, and ADR-0013; exit 2; capture/list unaffected. Conforms.
-- AGENTS.md stack conventions (fmt/clippy -D warnings; shellcheck-clean bash with `set -euo pipefail`) — all three new scripts and both edited scripts use `set -euo pipefail`; `just shell` lane covers them; fmt/clippy clean as run above.
-- Plan conventions (integration tests spawn the binary with TOPOLOGY_ROOT on the command, scratch git repo + scratch framework dir with markers; no `env::set_var`) — followed in cli_memory.rs / cli_learn.rs helpers (`.env("TOPOLOGY_ROOT", ...)` on the Command, real `git init` projects). The two memory.rs "unit tests" are the exception in spirit (tautologies), noted above.
-- METHODOLOGY tdd gate (test you watched fail first) — cannot be verified from the diff alone; commit sequence is per-task as planned. The two blocking findings are both cases where the tests that exist do not bite the behavior they name.
+ADR-0013 and repo conventions:
+- §1 payload read-only at runtime: holds through BOTH hook wrappers now (find -newer over the
+  payload after capture: empty) and for direct governed memory/learn invocations.
+- §2/§3 anchoring + promote refusal: verified above.
+- Plan test conventions (scratch git + scratch framework, `TOPOLOGY_ROOT` on the command, no
+  `env::set_var`): followed by the new round-2 tests (scan.rs staged fixtures build their own
+  marked-root git repos; cwd never mutated — target_base injected explicitly).
+
+### Quality lanes (all run by this reviewer at HEAD f1afc4d)
+- `cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean.
+- `cargo test --release` 257 passed, 2 ignored, 0 failed (9 suites).
+- `shellcheck hooks/*.sh scripts/*.sh` clean; `typos` clean.
+- `bash scripts/test-build-payload.sh` 26/26; `bash scripts/test-fetch-version.sh` 3/3;
+  `bash scripts/test-payload-e2e.sh` 10/10.
+- `./gatekeeper/target/release/gatekeeper check docs` → `check docs: ok`.
