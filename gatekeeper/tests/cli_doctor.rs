@@ -149,7 +149,9 @@ fn doctor_path_skew_is_informational_not_a_failure() {
     let new_path = format!("{}:{original_path}", fake_bin_dir.display());
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gatekeeper"));
-    cmd.current_dir(&root).args(["doctor"]).env("PATH", &new_path);
+    cmd.current_dir(&root)
+        .args(["doctor"])
+        .env("PATH", &new_path);
     let out = cmd.output().unwrap();
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

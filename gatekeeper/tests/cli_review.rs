@@ -101,10 +101,21 @@ fn scratch_proj(tag: &str) -> (std::path::PathBuf, String) {
 }
 
 /// Write a review artifact at `<root>/<reviews_sub>/<date>-<feature>.md`.
-fn write_artifact(root: &std::path::Path, reviews_sub: &str, head: &str, base: &str, feature: &str, pass: bool) {
+fn write_artifact(
+    root: &std::path::Path,
+    reviews_sub: &str,
+    head: &str,
+    base: &str,
+    feature: &str,
+    pass: bool,
+) {
     let dir = root.join(reviews_sub);
     fs::create_dir_all(&dir).unwrap();
-    let (v, blk) = if pass { ("pass", "None.") } else { ("fail", "- a.txt:1 — wrong") };
+    let (v, blk) = if pass {
+        ("pass", "None.")
+    } else {
+        ("fail", "- a.txt:1 — wrong")
+    };
     let body = format!(
         "VERDICT: {v}\nHEAD: {head}\nBASE: {base}\n\n# Review\n\n## Blocking findings\n{blk}\n\n## Criteria checked\n### Spec/plan\n- crit — met\n### Standards\n- rule — met\n"
     );
@@ -117,7 +128,14 @@ fn external_project_review_passes_with_artifact_in_claude_topology() {
     let fw = scratch_fw("rv_pass");
     let (proj, head) = scratch_proj("rv_pass");
 
-    write_artifact(&proj, ".claude/topology/reviews", &head, &head, "installer-v2", true);
+    write_artifact(
+        &proj,
+        ".claude/topology/reviews",
+        &head,
+        &head,
+        "installer-v2",
+        true,
+    );
 
     let (code, out) = run_review(&proj, &fw, "installer-v2");
     assert_eq!(code, 0, "should PASS; out:\n{out}");
@@ -133,7 +151,14 @@ fn external_project_review_fails_dirty_non_reviews_file() {
     let fw = scratch_fw("rv_dirty");
     let (proj, head) = scratch_proj("rv_dirty");
 
-    write_artifact(&proj, ".claude/topology/reviews", &head, &head, "installer-v2", true);
+    write_artifact(
+        &proj,
+        ".claude/topology/reviews",
+        &head,
+        &head,
+        "installer-v2",
+        true,
+    );
     // Modify a tracked file in the project repo → dirty tree.
     fs::write(proj.join("a.txt"), "changed\n").unwrap();
 

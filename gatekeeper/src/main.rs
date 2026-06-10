@@ -318,7 +318,10 @@ fn cmd_check(args: &[String]) -> i32 {
             match find_doc("research", &f) {
                 None => {
                     let dir = artifacts_root().join("research");
-                    println!("FAIL design gate: research-first — no {}/*{f}*.md", dir.display());
+                    println!(
+                        "FAIL design gate: research-first — no {}/*{f}*.md",
+                        dir.display()
+                    );
                     1
                 }
                 Some(_) => gate_doc_exists("specs", &f),

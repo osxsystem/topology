@@ -330,8 +330,7 @@ fn check_docs_roadmap_verify_pointer_missing_exits_1() {
 
 /// Build a minimal framework dir: skills/ + AGENTS.md (marks it as a topology root).
 fn scratch_framework(tag: &str) -> PathBuf {
-    let fw =
-        std::env::temp_dir().join(format!("topo_check_fw_{tag}_{}", std::process::id()));
+    let fw = std::env::temp_dir().join(format!("topo_check_fw_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&fw);
     fs::create_dir_all(fw.join("skills")).unwrap();
     fs::write(fw.join("AGENTS.md"), "").unwrap();
@@ -340,8 +339,7 @@ fn scratch_framework(tag: &str) -> PathBuf {
 
 /// Build a scratch git project dir: git init, no topology root markers.
 fn scratch_project(tag: &str) -> PathBuf {
-    let proj =
-        std::env::temp_dir().join(format!("topo_check_proj_{tag}_{}", std::process::id()));
+    let proj = std::env::temp_dir().join(format!("topo_check_proj_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&proj);
     fs::create_dir_all(&proj).unwrap();
     // init a git repo so project_root() resolves here
@@ -436,10 +434,7 @@ fn external_project_design_passes_after_artifacts_placed_in_claude_topology() {
         code, 0,
         "design should PASS after both artifacts placed; out:\n{out}"
     );
-    assert!(
-        out.contains("PASS"),
-        "output should say PASS; got:\n{out}"
-    );
+    assert!(out.contains("PASS"), "output should say PASS; got:\n{out}");
 
     let _ = fs::remove_dir_all(&fw);
     let _ = fs::remove_dir_all(&proj);
