@@ -101,7 +101,7 @@ PROJECT_PATH=""
 
 if [[ -n "$SCOPE_PROJECT" ]]; then
   SCOPE="local"
-  PROJECT_PATH="$(cd "$SCOPE_PROJECT" 2>/dev/null && pwd || true)"
+  PROJECT_PATH="$(cd "$SCOPE_PROJECT" 2>/dev/null && pwd)" || PROJECT_PATH=""
   if [[ -z "$PROJECT_PATH" ]]; then
     echo "error: --project '$SCOPE_PROJECT' does not exist" >&2
     exit 1
@@ -125,7 +125,7 @@ if [[ "$SCOPE" == "local" && -z "$PROJECT_PATH" ]]; then
     echo "assumed: project path=$(pwd) (use --project <path> to override)"
   else
     answer=$(ask "Project path" "$(pwd)")
-    PROJECT_PATH="$(cd "$answer" 2>/dev/null && pwd || true)"
+    PROJECT_PATH="$(cd "$answer" 2>/dev/null && pwd)" || PROJECT_PATH=""
     if [[ -z "$PROJECT_PATH" ]]; then
       echo "error: project path '$answer' does not exist" >&2
       exit 1
