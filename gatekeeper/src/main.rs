@@ -64,7 +64,7 @@ fn main() {
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
-        Some("memory") => memory::cmd_memory(&args[1..], &framework_root()),
+        Some("memory") => memory::cmd_memory(&args[1..], &artifacts_root(), &framework_root()),
         Some("doctor") => doctor::cmd_doctor(&framework_root()),
         Some("--version") | Some("-V") => {
             println!(

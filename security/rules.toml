@@ -121,17 +121,19 @@ severity = "block"
 description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
 pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
 
-# Heuristic: flags a shell command that WRITES into memory/artifacts/ — a redirect (`>`/`>>`) or a
-# mutating verb (tee/cp/mv/ln/chmod/rm/dd/install/truncate/sed -i), mirroring tamper-security-wiring.
-# The tool guard only sees Write/Edit/MultiEdit; this catches the obvious shell vectors that bypass
-# it. It RAISES — does not close — the residual: an indirectly-built path (variable/heredoc) or an
-# interpreter write (`python -c …`) still evades this regex. Treat a finding as a prompt for review.
+# Heuristic: flags a shell command that WRITES into the memory handoff directories — a redirect
+# (`>`/`>>`) or a mutating verb (tee/cp/mv/ln/chmod/rm/dd/install/truncate/sed -i), mirroring
+# tamper-security-wiring. Covers both the framework-repo path (docs/memory/) and the governed-project
+# path (.claude/topology/memory/). The tool guard only sees Write/Edit/MultiEdit; this catches the
+# obvious shell vectors that bypass it. It RAISES — does not close — the residual: an
+# indirectly-built path (variable/heredoc) or an interpreter write (`python -c …`) still evades
+# this regex. Treat a finding as a prompt for review.
 [[rule]]
 id = "tamper-memory-artifacts"
 kind = "command"
 severity = "block"
-description = "heuristic: a shell command writing into memory/artifacts/ (redirect/tee/cp/mv/rm/…) — bypasses the tool guard; raises, does not close, the residual (built paths and interpreter writes still evade it)"
-pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*memory/artifacts/'
+description = "heuristic: a shell command writing into docs/memory/ or .claude/topology/memory/ (redirect/tee/cp/mv/rm/…) — bypasses the tool guard; raises, does not close, the residual (built paths and interpreter writes still evade it)"
+pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(docs/memory/|\.claude/topology/memory/)'
 
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]
@@ -159,7 +161,10 @@ protected_paths = [
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".git/hooks/pre-commit",
-  # Directory-prefix entry: protects memory/artifacts/ and every file beneath it.
-  # is_protected uses Path::starts_with (component-wise), so memory/artifacts-evil/ is NOT matched.
-  "memory/artifacts",
+  # Directory-prefix entries for handoff artifacts (ADR-0013):
+  #   docs/memory              — framework-repo path (project == framework, artifacts_root = docs/)
+  #   .claude/topology/memory  — governed-project path (project != framework, artifacts_root = .claude/topology/)
+  # is_protected uses Path::starts_with (component-wise), so docs/memory-evil/ is NOT matched.
+  "docs/memory",
+  ".claude/topology/memory",
 ]

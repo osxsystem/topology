@@ -1328,45 +1328,76 @@ mod is_protected_tests {
             // Exact-match entries (existing behaviour must be preserved).
             "security/rules.toml".to_string(),
             "gatekeeper/src/scan.rs".to_string(),
-            // Directory-prefix entry under test.
-            "memory/artifacts".to_string(),
+            // Directory-prefix entries for handoff artifacts (ADR-0013):
+            //   docs/memory   — framework repo (project == framework)
+            //   .claude/topology/memory — governed project (project != framework)
+            "docs/memory".to_string(),
+            ".claude/topology/memory".to_string(),
         ]
     }
 
     // ---- PROTECTED (must return true) ----
 
     #[test]
-    fn file_inside_artifacts_dir_is_protected() {
+    fn file_inside_docs_memory_is_protected() {
         assert!(
-            is_protected(&root(), &protected(), "memory/artifacts/x.md"),
-            "a file inside memory/artifacts/ must be protected"
+            is_protected(&root(), &protected(), "docs/memory/x.md"),
+            "a file inside docs/memory/ must be protected (framework-repo path)"
         );
     }
 
     #[test]
-    fn absolute_in_repo_path_to_artifacts_file_is_protected() {
-        let abs = format!("{}/memory/artifacts/some.handoff.md", root().display());
+    fn file_inside_claude_topology_memory_is_protected() {
+        assert!(
+            is_protected(&root(), &protected(), ".claude/topology/memory/x.md"),
+            "a file inside .claude/topology/memory/ must be protected (governed-project path)"
+        );
+    }
+
+    #[test]
+    fn absolute_in_repo_path_to_docs_memory_file_is_protected() {
+        let abs = format!("{}/docs/memory/some.handoff.md", root().display());
         assert!(
             is_protected(&root(), &protected(), &abs),
-            "an absolute in-repo path into memory/artifacts/ must be protected"
+            "an absolute in-repo path into docs/memory/ must be protected"
         );
     }
 
     #[test]
-    fn dotdot_alias_into_artifacts_is_protected() {
-        // memory/artifacts/../artifacts/x.md resolves to memory/artifacts/x.md.
+    fn absolute_in_repo_path_to_claude_topology_memory_is_protected() {
+        let abs = format!(
+            "{}/.claude/topology/memory/some.handoff.md",
+            root().display()
+        );
         assert!(
-            is_protected(&root(), &protected(), "memory/artifacts/../artifacts/x.md"),
-            "a .. alias that resolves into memory/artifacts/ must be protected"
+            is_protected(&root(), &protected(), &abs),
+            "an absolute in-repo path into .claude/topology/memory/ must be protected"
         );
     }
 
     #[test]
-    fn trailing_slash_form_is_protected() {
-        // memory/artifacts/ resolves to memory/artifacts (Path strips trailing slash).
+    fn dotdot_alias_into_docs_memory_is_protected() {
+        // docs/memory/../memory/x.md resolves to docs/memory/x.md.
         assert!(
-            is_protected(&root(), &protected(), "memory/artifacts/"),
-            "memory/artifacts/ (trailing slash) must be protected"
+            is_protected(&root(), &protected(), "docs/memory/../memory/x.md"),
+            "a .. alias that resolves into docs/memory/ must be protected"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_docs_memory_is_protected() {
+        // docs/memory/ resolves to docs/memory (Path strips trailing slash).
+        assert!(
+            is_protected(&root(), &protected(), "docs/memory/"),
+            "docs/memory/ (trailing slash) must be protected"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_claude_topology_memory_is_protected() {
+        assert!(
+            is_protected(&root(), &protected(), ".claude/topology/memory/"),
+            ".claude/topology/memory/ (trailing slash) must be protected"
         );
     }
 
@@ -1383,20 +1414,30 @@ mod is_protected_tests {
 
     #[test]
     fn template_file_in_memory_root_not_protected() {
-        // memory/TEMPLATE.handoff.md is a sibling seed, NOT inside memory/artifacts/.
+        // memory/TEMPLATE.handoff.md lives under memory/ (not docs/memory/ or .claude/topology/memory/).
         assert!(
             !is_protected(&root(), &protected(), "memory/TEMPLATE.handoff.md"),
-            "memory/TEMPLATE.handoff.md must NOT be protected (it is not inside memory/artifacts/)"
+            "memory/TEMPLATE.handoff.md must NOT be protected (it is not inside docs/memory/ or .claude/topology/memory/)"
         );
     }
 
     #[test]
-    fn artifacts_evil_sibling_not_protected() {
-        // THE KEY COLLISION CASE: memory/artifacts-evil/ shares a string prefix with
-        // memory/artifacts but Path::starts_with is component-wise and must reject it.
+    fn docs_memory_evil_sibling_not_protected() {
+        // docs/memory-evil/ shares a string prefix with docs/memory but
+        // Path::starts_with is component-wise and must reject it.
         assert!(
-            !is_protected(&root(), &protected(), "memory/artifacts-evil/x.md"),
-            "memory/artifacts-evil/x.md must NOT be protected — Path::starts_with is component-wise"
+            !is_protected(&root(), &protected(), "docs/memory-evil/x.md"),
+            "docs/memory-evil/x.md must NOT be protected — Path::starts_with is component-wise"
+        );
+    }
+
+    #[test]
+    fn old_memory_artifacts_path_no_longer_protected() {
+        // Regression guard: after ADR-0013, the old path must no longer be in the
+        // fixture-protected set.
+        assert!(
+            !is_protected(&root(), &protected(), "memory/artifacts/x.md"),
+            "memory/artifacts/x.md must NOT be protected under the new protected set"
         );
     }
 }
