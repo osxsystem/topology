@@ -136,22 +136,24 @@ echo "add a users table" | gatekeeper activate   # shows which skills route in
 
 ### Binary resolution order
 
-Both hooks (`security-scan.sh` and `skill-activation.sh`) resolve the binary through the same chain,
-in priority order:
+Both hooks resolve the binary through the same head of the chain, then diverge deliberately in the
+tail — the security scan prefers the repo build over `PATH` so a stale or unrelated `PATH` binary
+can never stand in for the veto, while skill routing (advisory) accepts `PATH` first:
 
 | Priority | Location | When to use |
 |---|---|---|
 | 1 | `$GATEKEEPER_BIN` (env override) | Explicit override; wins when set and executable |
 | 2 | `$ROOT/bin/gatekeeper` | Installer-placed prebuilt (explicit local choice) |
 | 3 | `$CLAUDE_PLUGIN_DATA/bin/gatekeeper` | Plugin-provisioned prebuilt (automatic fallback) |
-| 4 | `$ROOT/gatekeeper/target/release/gatekeeper` | Repo release build |
-| 5 | `$ROOT/gatekeeper/target/debug/gatekeeper` | Repo debug build |
-| 6 | `gatekeeper` on `PATH` | System-wide install |
+| 4–6 | `security-scan.sh`: repo release build → repo debug build → `PATH` | The veto trusts the repo build first |
+| 4–6 | `skill-activation.sh`: `PATH` → repo release build → repo debug build | Routing accepts a system-wide install first |
 
 **Fail policies differ by hook:**
 
 - `security-scan.sh` (PreToolUse): **fail-closed** — when no binary resolves, emits a `deny` JSON
-  decision. This is the security floor; it cannot be weakened silently.
+  decision. This is the security floor — a missing scanner never fails open. (The floor's overall
+  threat boundary is unchanged: mistakes, not a determined evader — see the security note in
+  `AGENTS.md`.)
 - `skill-activation.sh` (UserPromptSubmit): **fail-open** — when no binary resolves, prints an
   advisory message and exits 0. Skill routing is advisory; a session must still start.
 - `ensure-gatekeeper.sh` (SessionStart): **fail-open** — attempts to provision the binary; prints
