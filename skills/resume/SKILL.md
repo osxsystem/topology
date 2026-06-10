@@ -19,8 +19,9 @@ gatekeeper memory read --feature <slug>
 This prints the YAML frontmatter (machine contract) and the Markdown body (prose context).
 Read both. Note the recorded `status`, `branch`, `head_sha`, and `verified_by` fields.
 
-If the command exits non-zero (`memory/artifacts/<slug>.handoff.md` not found), stop: ask the
-user for the feature slug or have them write a fresh handoff with `gatekeeper memory write`.
+If the command exits non-zero (handoff file not found at `<artifacts_root>/memory/<slug>.handoff.md`),
+stop: ask the user for the feature slug or have them write a fresh handoff with
+`gatekeeper memory write`.
 
 ### 2. Verify actual git state
 

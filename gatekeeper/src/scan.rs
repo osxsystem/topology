@@ -500,8 +500,8 @@ fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
     protected.iter().any(|p| {
         let pr = resolve_against_root(root, p);
         // Exact match OR target is strictly beneath the protected directory.
-        // Path::starts_with is component-wise: `memory/artifacts` matches
-        // `memory/artifacts/x.md` but NOT `memory/artifacts-evil/x.md`.
+        // Path::starts_with is component-wise: `docs/memory` matches
+        // `docs/memory/x.md` but NOT `docs/memory-evil/x.md`.
         target == pr || target.starts_with(&pr)
     })
 }

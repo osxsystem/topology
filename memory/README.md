@@ -9,8 +9,17 @@ state of a feature in progress (the frontmatter) and the prose context a resumin
 (the body). It is the answer to: *what does a fresh session need to know to pick up where the
 last one left off?*
 
-Artifacts live under `memory/artifacts/` (gitignored, tool-write-protected). The seeds in this
-directory (`README.md`, `TEMPLATE.handoff.md`) are normal committed source — hand-editable.
+Artifacts live under **`<artifacts_root>/memory/`** — where the artifacts root anchors to the
+project, not the payload (ADR-0013):
+
+| Context | Artifacts root | Memory path |
+|---|---|---|
+| Framework repo (project == framework) | `docs/` | `docs/memory/` |
+| Governed project (project ≠ framework) | `.claude/topology/` | `.claude/topology/memory/` |
+
+The seeds in this directory (`README.md`, `TEMPLATE.handoff.md`) are normal committed source —
+hand-editable. They stay here because `TEMPLATE.handoff.md` is compiled into the binary via
+`include_str!` and is a build-time asset, not a runtime read.
 
 ## Frontmatter contract
 
@@ -30,28 +39,26 @@ verified_by: <slug>      # required (non-empty, existing docs/verify/*<slug>*.md
 
 The body sections follow: **Goal**, **State**, **Next steps**, **Key files**, **Decisions & gotchas**.
 
-## `memory/artifacts/` — gitignored and tool-guarded
+## `docs/memory/` — committed and tool-guarded
 
 Two layers guard generated artifacts; it is worth being precise about what each does:
 
-1. **Gitignored** — the line `/memory/artifacts/` in `.gitignore` keeps generated artifacts out of
-   the committed tree (only the seeds `README.md` / `TEMPLATE.handoff.md` are tracked). Because
-   nothing under `artifacts/` is ever staged, the *commit-time* integrity guard never applies to
-   it — the runtime hook below is what guards it.
+1. **Committed source** — `docs/memory/` is tracked by git (not gitignored) in the framework
+   repo, so handoffs are reviewable alongside specs, plans, and reviews. In a governed project
+   they land under `.claude/topology/memory/` in the project repo.
 
 2. **PreToolUse guard** — `is_protected` (`gatekeeper/src/scan.rs`) uses directory-prefix matching
-   (`Path::starts_with`), and `memory/artifacts` sits in `[integrity] protected_paths`
-   (`security/rules.toml`). So the `PreToolUse` hook answers a `Write`/`Edit`/`MultiEdit` aimed at
-   the directory with an **`ask`** (human approval required — not a silent allow, and not a hard
-   `deny`), and **denies** a `Bash` command whose text matches the tamper rule (a literal `>`/`>>`
-   redirect into `memory/artifacts/`).
+   (`Path::starts_with`), and both `docs/memory` and `.claude/topology/memory` sit in
+   `[integrity] protected_paths` (`security/rules.toml`). So the `PreToolUse` hook answers a
+   `Write`/`Edit`/`MultiEdit` aimed at the directory with an **`ask`** (human approval required —
+   not a silent allow, and not a hard `deny`), and **denies** a `Bash` command whose text matches
+   the tamper rule (a literal `>`/`>>` redirect into `docs/memory/` or `.claude/topology/memory/`).
 
 **Residual (stated honestly):** the Bash guard is a regex heuristic, not a shell parser. It denies
-a literal `echo … > memory/artifacts/x.md`, but an indirectly-built path (variable, heredoc) or a
-non-redirect mutation (`cp`, `tee`, `mv`) is not matched and slips through. Honest guarantee: the
+a literal `echo … > docs/memory/x.md`, but an indirectly-built path (variable, heredoc) or a
+non-redirect mutation that uses the old path name is not matched. Honest guarantee: the
 file-editing tools cannot write the directory without a human approving the prompt, and obvious
-redirects are blocked — but a determined shell command still can. Documented residual (verify-note
-criterion 11), not a silent gap.
+redirects are blocked — but a determined shell command still can. Documented residual, not a silent gap.
 
 ## The only update path: `gatekeeper memory write`
 
@@ -73,10 +80,10 @@ gatekeeper memory read --feature <slug>
 gatekeeper memory list
 ```
 
-Do **not** edit files under `memory/artifacts/` by hand — the frontmatter fields are set by
-flags, not by the body. The `gatekeeper memory write` path also runs a secret-refusal scan over
-the *rendered* artifact (frontmatter + body) before anything hits disk, catching secret-shaped
-values in branch names or feature slugs as well as in the body.
+Do **not** edit handoff files by hand — the frontmatter fields are set by flags, not by the body.
+The `gatekeeper memory write` path also runs a secret-refusal scan over the *rendered* artifact
+(frontmatter + body) before anything hits disk, catching secret-shaped values in branch names or
+feature slugs as well as in the body.
 
 ## Resume skill
 

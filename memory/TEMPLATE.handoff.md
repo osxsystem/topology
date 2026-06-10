@@ -25,7 +25,7 @@ end state?
 ## Key files
 - `gatekeeper/src/memory.rs` — the memory protocol implementation; `render`, `parse_frontmatter`, `cmd_memory`
 - `gatekeeper/src/scan.rs:461` — `is_protected` with directory-prefix matching
-- `security/rules.toml` — `[integrity] protected_paths` entry for `memory/artifacts`
+- `security/rules.toml` — `[integrity] protected_paths` entries for `docs/memory` and `.claude/topology/memory`
 - `memory/README.md` — protocol documentation (this directory)
 
 ## Decisions & gotchas
@@ -33,8 +33,10 @@ end state?
   flags only, never by the body. The body is free-form Markdown prose for the resuming agent.
 - `status: done` is refused unless `--verified-by` resolves to an existing `docs/verify/*<slug>*.md`.
   Never self-assert done; always tie it to verify evidence.
-- `memory/artifacts/` is gitignored; Write/Edit/MultiEdit into it require human approval (an `ask`),
-  and literal `>` redirects are denied by a tamper rule. Obfuscated shell writes (built paths,
-  `cp`/`tee`/`mv`) remain a documented residual (criterion 11), not a silent gap.
+- Handoff artifacts land at `<artifacts_root>/memory/<slug>.handoff.md`: `docs/memory/` in the
+  framework repo; `.claude/topology/memory/` in a governed project (ADR-0013). Write/Edit/MultiEdit
+  into these directories require human approval (an `ask`), and shell write vectors are denied by
+  a tamper rule. Obfuscated shell writes (built paths, `cp`/`tee`/`mv` via variables) remain a
+  documented residual, not a silent gap.
 - Branch and head_sha degrade to empty strings off a git repo — deliberate policy so a handoff can be
   written anywhere (differs from review.rs, which errors when git is absent).

@@ -13,7 +13,7 @@ _Avoid_: using "session" for the directory of files that survive context windows
 **Artifact**:
 A file produced by a workflow stage that outlives the session — a research note, design spec, plan,
 critic report, or a memory handoff/compaction. "Artifact" is the canonical word; the memory protocol
-stores its generated artifacts under `memory/artifacts/`.
+stores its generated artifacts under `<artifacts_root>/memory/` (ADR-0013).
 _Avoid_: output, document, "session file".
 
 **Handoff artifact**:
