@@ -294,6 +294,10 @@ pub fn gate_review(
         Some(b) => b,
         None => {
             println!("FAIL review gate: cannot resolve merge-base of '{branch}' and HEAD");
+            println!(
+                "  (default base is 'main'; if this repo's default branch differs, pass \
+                 --base <branch>, e.g. --base master)"
+            );
             return 1;
         }
     };
@@ -334,6 +338,22 @@ pub fn gate_review(
     match matches.len() {
         0 => {
             println!("FAIL review gate: no review artifact names current HEAD {head}");
+            println!(
+                "  expected: a file at {}/<anything>-{feature}.md",
+                dir.display()
+            );
+            println!("  whose first three lines are exactly:");
+            println!("    VERDICT: pass            (or: VERDICT: fail)");
+            println!("    HEAD: {head}");
+            println!("    BASE: <40-hex merge-base sha>");
+            println!("  followed by '## Blocking findings' (body exactly 'None.' for a pass) and");
+            println!(
+                "  '## Criteria checked' with '### Spec/plan' and '### Standards' subsections."
+            );
+            println!(
+                "  Leave the artifact uncommitted when running this gate — committing it moves \
+                 HEAD."
+            );
             1
         }
         1 => {

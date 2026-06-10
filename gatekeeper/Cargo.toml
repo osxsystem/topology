@@ -1,6 +1,6 @@
 [package]
 name = "gatekeeper"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["osxsystem <osxsystem2014@gmail.com>"]
 edition = "2021"
 description = "Topology gate-enforcement engine: routes skills and checks methodology gates."
