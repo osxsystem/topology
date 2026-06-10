@@ -35,6 +35,10 @@ test-payload:
 test-fetch:
     bash scripts/test-fetch-version.sh
 
+# Offline end-to-end: build payload, serve via file://, install, assert gatekeeper works.
+test-e2e:
+    bash scripts/test-payload-e2e.sh
+
 # ShellCheck across hooks and scripts.
 shell:
     shellcheck hooks/*.sh scripts/*.sh
