@@ -4,6 +4,12 @@
 # decision on stdout (deny/ask) or stays silent (allow). Fail-closed: a missing/erroring binary
 # emits a deny. No jq; the binary owns all JSON parsing.
 #
+# CWD CONTRACT: the binary MUST run from the SESSION cwd (the project directory), not from the
+# payload root. Claude Code invokes hooks with cwd = the project/session directory, and the
+# binary derives project_root() and artifacts_root() from its process cwd. If we cd away to
+# the payload root the protected-path guard for .claude/topology/memory never fires on governed
+# projects. The framework/payload root travels via TOPOLOGY_ROOT env, never via cd.
+#
 # Binary resolution order:
 #   1. $GATEKEEPER_BIN          (explicit override, wins when set and executable)
 #   2. $ROOT/bin/gatekeeper     (installer-placed prebuilt)
@@ -40,7 +46,7 @@ else
   deny "Topology: security scanner unavailable - run ./scripts/install.sh"
 fi
 
-if out="$(cd "$ROOT" && "$GK" scan --hook 2>/dev/null)"; then
+if out="$(TOPOLOGY_ROOT="${TOPOLOGY_ROOT:-$ROOT}" "$GK" scan --hook 2>/dev/null)"; then
   [[ -n "$out" ]] && printf '%s\n' "$out"
   exit 0
 else

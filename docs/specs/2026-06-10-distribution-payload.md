@@ -39,6 +39,7 @@ Tarball contents (flat — unpacks into the target directory, no wrapping top-le
 | `security/rules.toml` | scan rules |
 | `scripts/fetch-gatekeeper.sh` | run post-unpack by the installer; reads the payload `VERSION` (no more `plugin.json`) |
 | `VERSION` | see format below |
+| `AGENTS.md` | root-marker sentinel: `is_marked_root()` requires `skills/` plus one of `ROOT_MARKERS = ["AGENTS.md", "gatekeeper", ".claude-plugin"]`; without it the unpacked payload cannot be resolved as the framework root |
 | `CONTRACT.md` | reserved slot — the rendered operating contract (Phase 10); absent until then |
 
 **Excluded** (the workshop): `gatekeeper/` source, `docs/`, `RESEARCH.md`, `METHODOLOGY.md`,

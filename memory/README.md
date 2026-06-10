@@ -48,11 +48,13 @@ Two layers guard generated artifacts; it is worth being precise about what each 
    they land under `.claude/topology/memory/` in the project repo.
 
 2. **PreToolUse guard** — `is_protected` (`gatekeeper/src/scan.rs`) uses directory-prefix matching
-   (`Path::starts_with`), and both `docs/memory` and `.claude/topology/memory` sit in
-   `[integrity] protected_paths` (`security/rules.toml`). So the `PreToolUse` hook answers a
-   `Write`/`Edit`/`MultiEdit` aimed at the directory with an **`ask`** (human approval required —
-   not a silent allow, and not a hard `deny`), and **denies** a `Bash` command whose text matches
-   the tamper rule (a literal `>`/`>>` redirect into `docs/memory/` or `.claude/topology/memory/`).
+   (`Path::starts_with`). The entry `"memory"` in `[integrity] protected_artifact_paths`
+   (`security/rules.toml`) is resolved against the artifacts root at runtime, so a single entry
+   covers both layouts: `docs/memory/` in the framework repo and `.claude/topology/memory/` in a
+   governed project (ADR-0013). The `PreToolUse` hook answers a `Write`/`Edit`/`MultiEdit` aimed
+   at the directory with an **`ask`** (human approval required — not a silent allow, and not a hard
+   `deny`), and **denies** a `Bash` command whose text matches the tamper rule (a literal `>`/`>>`
+   redirect into `docs/memory/` or `.claude/topology/memory/`).
 
 **Residual (stated honestly):** the Bash guard is a regex heuristic, not a shell parser. It denies
 a literal `echo … > docs/memory/x.md`, but an indirectly-built path (variable, heredoc) or a

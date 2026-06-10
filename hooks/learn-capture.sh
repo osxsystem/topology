@@ -13,6 +13,12 @@
 # To record a gate failure by hand instead (no hook needed):
 #   gatekeeper learn capture --trigger gate-failure --gate verify --date "$(date +%F)" \
 #     --summary "what went wrong and the lesson"
+#
+# CWD CONTRACT: the binary MUST run from the SESSION cwd (the project directory), not from the
+# payload root. The binary derives artifacts_root() from its process cwd; running from the payload
+# root would anchor the ledger under the payload's docs/ instead of the project's
+# .claude/topology/learn/ledger.md — the data-loss scenario ADR-0013 exists to prevent.
+# The framework/payload root travels via TOPOLOGY_ROOT env, never via cd.
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +46,6 @@ else
 fi
 
 # Never fail the Stop on a capture error.
-(cd "$ROOT" && "$GK" learn capture --trigger stop --date "$(date +%F)" --summary "$SUMMARY") \
+TOPOLOGY_ROOT="${TOPOLOGY_ROOT:-$ROOT}" "$GK" learn capture --trigger stop --date "$(date +%F)" --summary "$SUMMARY" \
   || echo "Topology: learn capture failed (gotcha not recorded)." >&2
 exit 0
