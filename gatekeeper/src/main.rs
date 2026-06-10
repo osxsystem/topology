@@ -147,6 +147,51 @@ fn framework_root() -> PathBuf {
     resolve_root(&start, env_override.as_deref())
 }
 
+/// Walk up from `start` to the nearest directory that contains `.git` (as a dir or file, so
+/// worktrees are handled). Falls back to `start` when no `.git` is found.
+pub(crate) fn resolve_project_root(start: &Path) -> PathBuf {
+    let mut dir = start.to_path_buf();
+    loop {
+        let git_entry = dir.join(".git");
+        if git_entry.is_dir() || git_entry.is_file() {
+            return dir;
+        }
+        if !dir.pop() {
+            return start.to_path_buf();
+        }
+    }
+}
+
+/// Locate the project root (nearest `.git` ancestor of cwd, or cwd).
+pub(crate) fn project_root() -> PathBuf {
+    let start = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_project_root(&start)
+}
+
+/// Compute the artifacts root given the project and framework roots.
+///
+/// Rule: when project == framework (the framework repo governs itself), artifacts live at
+/// `project/docs`; otherwise they live at `project/.claude/topology`. Comparison uses
+/// `canonicalize` when available, falling back to plain equality when the paths are not yet
+/// on disk.
+pub(crate) fn resolve_artifacts_root(project: &Path, framework: &Path) -> PathBuf {
+    let same = match (fs::canonicalize(project), fs::canonicalize(framework)) {
+        (Ok(p), Ok(f)) => p == f,
+        _ => project == framework,
+    };
+    if same {
+        project.join("docs")
+    } else {
+        project.join(".claude").join("topology")
+    }
+}
+
+/// The artifacts root for the current process: docs/ when project == framework, else
+/// .claude/topology/ relative to the project root.
+pub(crate) fn artifacts_root() -> PathBuf {
+    resolve_artifacts_root(&project_root(), &framework_root())
+}
+
 fn cmd_list() -> i32 {
     let skills_dir = framework_root().join("skills");
     let mut entries: Vec<PathBuf> = match fs::read_dir(&skills_dir) {
@@ -667,5 +712,108 @@ mod tests {
             fs::canonicalize(&result).unwrap(),
             "non-existent env override must be ignored; fallback to start"
         );
+    }
+
+    // ── resolve_project_root tests ────────────────────────────────────────────
+
+    #[test]
+    fn project_root_git_dir_found() {
+        // A .git directory at 'base' → returns base.
+        let base = env::temp_dir().join("topology_prj_root_dir");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+
+        let result = resolve_project_root(&base);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            ".git dir should be found"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_git_file_found() {
+        // A .git FILE (worktree) at 'base' → returns base.
+        let base = env::temp_dir().join("topology_prj_root_file");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join(".git"), "gitdir: /some/path\n").unwrap();
+
+        let result = resolve_project_root(&base);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            ".git file (worktree) should be found"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_no_git_returns_start() {
+        // No .git anywhere in the chain → returns start.
+        let base = env::temp_dir().join("topology_prj_root_none");
+        let _ = fs::remove_dir_all(&base);
+        let start = base.join("deeply").join("nested");
+        fs::create_dir_all(&start).unwrap();
+
+        let result = resolve_project_root(&start);
+        assert_eq!(
+            fs::canonicalize(&start).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "no .git → fallback to start"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn project_root_walks_up_to_git() {
+        // .git is at 'base', start is a nested subdir → walks up.
+        let base = env::temp_dir().join("topology_prj_root_walk");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".git")).unwrap();
+        let start = base.join("src").join("deeply").join("nested");
+        fs::create_dir_all(&start).unwrap();
+
+        let result = resolve_project_root(&start);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "nested start must walk up to the .git root"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── resolve_artifacts_root tests ─────────────────────────────────────────
+
+    #[test]
+    fn artifacts_root_equal_roots_yields_docs() {
+        // project == framework → project/docs
+        let base = env::temp_dir().join("topology_artifacts_equal");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let result = resolve_artifacts_root(&base, &base);
+        assert_eq!(result, base.join("docs"), "equal roots → docs/");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn artifacts_root_differing_roots_yields_claude_topology() {
+        // project != framework → project/.claude/topology
+        let base = env::temp_dir().join("topology_artifacts_diff");
+        let _ = fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let framework = base.join("framework");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&framework).unwrap();
+
+        let result = resolve_artifacts_root(&project, &framework);
+        assert_eq!(
+            result,
+            project.join(".claude").join("topology"),
+            "differing roots → .claude/topology/"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 }
