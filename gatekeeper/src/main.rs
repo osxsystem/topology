@@ -16,7 +16,7 @@
 //!   gatekeeper instinct list                List always-on instincts (id + priority).
 //!   gatekeeper instinct render [--harness H] [--budget N]   Render the always-on preamble subset.
 //!   gatekeeper adapt --harness <h> [--check]   Generate harness <h>'s native config from the source.
-//!   gatekeeper learn capture --summary <s>  Append a structured gotcha to docs/learn/ledger.md.
+//!   gatekeeper learn capture --summary <s>  Append a structured gotcha to <artifacts_root>/learn/ledger.md.
 //!   gatekeeper learn list                   List ledger entries (id + occurrences + proposed kind).
 //!   gatekeeper learn promote --id <id>      Scaffold an operator from a gotcha; diff + confirm to write.
 //!   gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>   Write a handoff artifact (body on stdin).
@@ -63,7 +63,7 @@ fn main() {
         Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
-        Some("learn") => learn::cmd_learn(&args[1..], &framework_root()),
+        Some("learn") => learn::cmd_learn(&args[1..], &artifacts_root(), &framework_root()),
         Some("memory") => memory::cmd_memory(&args[1..], &artifacts_root(), &framework_root()),
         Some("doctor") => doctor::cmd_doctor(&framework_root()),
         Some("--version") | Some("-V") => {

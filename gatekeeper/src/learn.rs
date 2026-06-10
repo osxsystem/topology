@@ -1,13 +1,19 @@
 //! Continuous learning — capture gotchas into an append-only ledger, then promote recurring ones into
 //! standing operators (an instinct, a skill, or a security rule), with a human approving every promotion.
 //!
-//! `docs/learn/ledger.md` is the ledger. `capture` only ever APPENDS a `## <id>` block; it never
-//! rewrites one, so a recurrence is just the same id captured again — surfaced as an occurrence count by
-//! `learn list`. `promote` is the gated half: it scaffolds the operator, validates it against that
-//! operator's OWN loader (the instinct parser / `scan::load_rules` / the frontmatter `gatekeeper list`
-//! reads), prints a diff, and writes only on an explicit `y` (or `--yes`). Promotion never edits the
-//! ledger; provenance lives on the operator as `source: ledger:<id>`. No new deps: the parser is
-//! hand-rolled on `std`, dates arrive via `--date` (no clock), and promotions are add-only (no diff lib).
+//! The ledger lives at `<artifacts_root>/learn/ledger.md`.  In the framework repo the artifacts root is
+//! `docs/`, so the path is `docs/learn/ledger.md` (unchanged from the pre-ADR-0013 value).  In a governed
+//! project the artifacts root is `.claude/topology/`, so the ledger lands at
+//! `.claude/topology/learn/ledger.md` — inside the project, not inside the payload.  See ADR-0013.
+//!
+//! `capture` only ever APPENDS a `## <id>` block; it never rewrites one, so a recurrence is just the same
+//! id captured again — surfaced as an occurrence count by `learn list`. `promote` is the gated half: it
+//! scaffolds the operator, validates it against that operator's OWN loader (the instinct parser /
+//! `scan::load_rules` / the frontmatter `gatekeeper list` reads), prints a diff, and writes only on an
+//! explicit `y` (or `--yes`). `promote` is only available in the framework repo; in a governed project it
+//! refuses with a pointer to the fork story (ADR-0013 §3). Promotion never edits the ledger; provenance
+//! lives on the operator as `source: ledger:<id>`. No new deps: the parser is hand-rolled on `std`, dates
+//! arrive via `--date` (no clock), and promotions are add-only (no diff lib).
 //! See docs/specs/2026-06-08-continuous-learning.md.
 
 use std::collections::BTreeMap;
@@ -19,8 +25,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::instinct::{validate_id, validate_instinct_str};
 use crate::scan;
 
-/// The ledger's path, relative to the framework root.
-const LEDGER_REL: &str = "docs/learn/ledger.md";
+/// The ledger's path, relative to the artifacts root.
+/// Resolves to `docs/learn/ledger.md` in the framework repo (artifacts_root = docs/) and to
+/// `.claude/topology/learn/ledger.md` in a governed project — see ADR-0013.
+const LEDGER_REL: &str = "learn/ledger.md";
 
 // ---------- model ----------
 
@@ -262,11 +270,18 @@ fn slugify(s: &str) -> Option<String> {
 // ---------- dispatch ----------
 
 /// Entry point for `gatekeeper learn ...`. Returns the process exit code (0 / 2).
-pub fn cmd_learn(args: &[String], root: &Path) -> i32 {
+///
+/// `artifacts_root` — the mutable-state root for this invocation (`docs/` in the framework repo,
+/// `.claude/topology/` in a governed project); the ledger lives at
+/// `<artifacts_root>/learn/ledger.md`.
+///
+/// `framework_root` — the payload root; used by `promote` to detect whether it is running inside
+/// the framework repo (where promotion is allowed) or in a governed project (where it refuses).
+pub fn cmd_learn(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
     match args.first().map(String::as_str) {
-        Some("capture") => cmd_capture(&args[1..], root),
-        Some("list") => cmd_list(root),
-        Some("promote") => cmd_promote(&args[1..], root),
+        Some("capture") => cmd_capture(&args[1..], artifacts_root),
+        Some("list") => cmd_list(artifacts_root),
+        Some("promote") => cmd_promote(&args[1..], artifacts_root, framework_root),
         _ => {
             eprintln!("gatekeeper learn: expected `capture`, `list`, or `promote`");
             2
@@ -522,7 +537,8 @@ impl Plan {
     }
 }
 
-fn cmd_promote(args: &[String], root: &Path) -> i32 {
+fn cmd_promote(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
+    let root = framework_root;
     let mut id: Option<String> = None;
     let mut kind_override: Option<Kind> = None;
     let mut priority = "medium".to_string();
@@ -590,13 +606,13 @@ fn cmd_promote(args: &[String], root: &Path) -> i32 {
         return promote_usage("--id <ledger-entry-id> is required");
     };
 
-    let path = root.join(LEDGER_REL);
-    let raw = match fs::read_to_string(&path) {
+    let ledger_path = artifacts_root.join(LEDGER_REL);
+    let raw = match fs::read_to_string(&ledger_path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!(
                 "gatekeeper learn promote: cannot read {}: {e}",
-                path.display()
+                ledger_path.display()
             );
             return 2;
         }
@@ -610,7 +626,10 @@ fn cmd_promote(args: &[String], root: &Path) -> i32 {
     };
     let matching: Vec<&Entry> = entries.iter().filter(|e| e.id == id).collect();
     let Some(entry) = matching.last().copied() else {
-        eprintln!("gatekeeper learn promote: no ledger entry '{id}' in {LEDGER_REL}");
+        eprintln!(
+            "gatekeeper learn promote: no ledger entry '{id}' in {}",
+            ledger_path.display()
+        );
         return 2;
     };
     let occurrences = matching.len();
