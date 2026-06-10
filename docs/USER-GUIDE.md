@@ -26,31 +26,33 @@ Two moving parts you interact with:
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Rust toolchain** (`cargo`) | builds the `gatekeeper` binary | install from <https://rustup.rs> |
 | **Git** | the gates read history; the pre-commit hook guards commits | a real `.git` repo |
-| **macOS (Apple Silicon / arm64)** | the released binary target | builds from source elsewhere, but the shipped binary is macOS-arm64 |
 | **An AI client** | runs the hooks | Claude Code, Codex, Cursor, or OpenCode |
+| **Rust toolchain** (`cargo`) *(optional)* | builds `gatekeeper` from source | only needed without a prebuilt binary; install from <https://rustup.rs> |
 | **RTK** *(optional)* | token-saving shell proxy | see [docs/learn/rtk-proxy.md](learn/rtk-proxy.md) |
 
 ---
 
 ## Installation
 
-### Option A — Manual install (works with any client)
-
-From the repository root:
+### Option A — One-command install (no Rust required)
 
 ```bash
-./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/osxsystem/topology/main/scripts/install.sh | bash
 ```
 
 This one command:
 
-1. **Builds** `gatekeeper` in release mode → `gatekeeper/target/release/gatekeeper`.
-2. **Links** `CLAUDE.md → AGENTS.md` so Claude Code reads the same operating contract as every other harness.
-3. **Marks** the hook and helper scripts executable.
-4. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` into `.git/hooks/` — re-run install to update it).
-5. **Prints the hook config** to paste into your client (see next step).
+1. **Clones** the repo into `${TOPOLOGY_HOME:-$HOME/.topology}` (or updates it if already present).
+2. **Downloads** the prebuilt `gatekeeper` binary for your platform, verifies its SHA-256 checksum,
+   smoke-tests `--version`, and places it at `$ROOT/bin/gatekeeper`.
+3. **Falls back** to `cargo build --release` if no prebuilt binary is available for your platform.
+4. **Links** `CLAUDE.md → AGENTS.md` so Claude Code reads the same operating contract as every other harness.
+5. **Marks** the hook and helper scripts executable.
+6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` into `.git/hooks/` — re-run install to update it).
+7. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check.
+
+If you already have a checkout, run `./scripts/install.sh` from inside it (the curl pipe detects this automatically). Pass `--build-from-source` to skip the prebuilt download and always build from source.
 
 Then wire the prompt + security hooks into your **project-local** `.claude/settings.json` (the
 installer prints this block — paste it into `.claude/settings.json` *inside the repo*, **not**
@@ -79,23 +81,33 @@ installer prints this block — paste it into `.claude/settings.json` *inside th
 **Put `gatekeeper` on your `PATH`** (optional but recommended, so you can call it from anywhere):
 
 ```bash
-sudo ln -sf "$PWD/gatekeeper/target/release/gatekeeper" /usr/local/bin/gatekeeper
+sudo ln -sf "$HOME/.topology/bin/gatekeeper" /usr/local/bin/gatekeeper
 ```
 
-### Option B — As a Claude Code plugin
+### Option B — As a Claude Code plugin (binary self-provisions)
 
-Topology also ships as a Claude Code plugin. The binary is **not bundled** in the plugin — build it
-first (Option A's `install.sh`), then add the marketplace and install:
+Topology also ships as a Claude Code plugin. The binary **self-provisions on the first session** via
+the `SessionStart` hook — no separate build step required:
 
 ```bash
-./scripts/install.sh                          # builds gatekeeper + wires hooks
 /plugin marketplace add osxsystem/topology    # run inside Claude Code
 /plugin install topology@topology
 ```
 
-The plugin wires the same two hooks (`UserPromptSubmit` → skill routing, `PreToolUse` → security
-scan) via `${CLAUDE_PLUGIN_ROOT}`. The hooks resolve which binary to use in this order:
-`$GATEKEEPER_BIN` → `PATH` → the repo build.
+The plugin wires three hooks via `${CLAUDE_PLUGIN_ROOT}`:
+
+- `SessionStart` → `ensure-gatekeeper.sh`: silently exits if any binary resolves; otherwise calls
+  `fetch-gatekeeper.sh` to download and verify the prebuilt binary into
+  `${CLAUDE_PLUGIN_DATA}/bin/gatekeeper`, and reports the installed path. Fail-open: on download
+  failure it prints an advisory (naming `scripts/install.sh` and `cargo build` as remedies) and
+  exits 0 so the session still starts.
+- `UserPromptSubmit` → `skill-activation.sh`: skill routing (advisory, exits 0 with message if no
+  binary).
+- `PreToolUse` → `security-scan.sh`: security veto (fail-closed: denies when no binary resolves).
+
+Plugin installs register the `skills/` directory natively via Claude Code's auto-discovery — there
+is no `"skills"` field in `plugin.json`. Adding such a field would risk double-registration
+(documented in ADR-0011).
 
 ### Option C — Generate native config for another harness
 
@@ -122,14 +134,39 @@ echo "add a users table" | gatekeeper activate   # shows which skills route in
 `$GATEKEEPER_BIN` → `PATH` → repo-build resolution). The hooks themselves stay silent on success, so
 `doctor` is your window into them.
 
+### Binary resolution order
+
+Both hooks (`security-scan.sh` and `skill-activation.sh`) resolve the binary through the same chain,
+in priority order:
+
+| Priority | Location | When to use |
+|---|---|---|
+| 1 | `$GATEKEEPER_BIN` (env override) | Explicit override; wins when set and executable |
+| 2 | `$ROOT/bin/gatekeeper` | Installer-placed prebuilt (explicit local choice) |
+| 3 | `$CLAUDE_PLUGIN_DATA/bin/gatekeeper` | Plugin-provisioned prebuilt (automatic fallback) |
+| 4 | `$ROOT/gatekeeper/target/release/gatekeeper` | Repo release build |
+| 5 | `$ROOT/gatekeeper/target/debug/gatekeeper` | Repo debug build |
+| 6 | `gatekeeper` on `PATH` | System-wide install |
+
+**Fail policies differ by hook:**
+
+- `security-scan.sh` (PreToolUse): **fail-closed** — when no binary resolves, emits a `deny` JSON
+  decision. This is the security floor; it cannot be weakened silently.
+- `skill-activation.sh` (UserPromptSubmit): **fail-open** — when no binary resolves, prints an
+  advisory message and exits 0. Skill routing is advisory; a session must still start.
+- `ensure-gatekeeper.sh` (SessionStart): **fail-open** — attempts to provision the binary; prints
+  an advisory on failure and exits 0. The security floor is unaffected because `security-scan.sh`
+  keeps denying while the binary is absent.
+
 ### Environment variables
 
-Two optional variables control how `gatekeeper` resolves things:
-
-| Variable | Controls | Resolution order |
-|---|---|---|
-| `$GATEKEEPER_BIN` | which binary the hooks run | `$GATEKEEPER_BIN` → `PATH` → repo build |
-| `$TOPOLOGY_ROOT` | which directory is the **framework root** — where `skills/`, `security/rules.toml`, the instincts, and the gate `docs/` live | `$TOPOLOGY_ROOT` → nearest ancestor that has `skills/` **and** a Topology marker (`AGENTS.md` \| `gatekeeper/` \| `.claude-plugin/`) → the current directory |
+| Variable | Controls |
+|---|---|
+| `$GATEKEEPER_BIN` | Which binary the hooks run (wins over all other resolution steps when set and executable) |
+| `$TOPOLOGY_ROOT` | Framework root directory — where `skills/`, `security/rules.toml`, instincts, and gate docs live |
+| `$TOPOLOGY_HOME` | Clone destination for piped installs (default `$HOME/.topology`) |
+| `$TOPOLOGY_RELEASE_BASE_URL` | URL prefix for prebuilt binary downloads (supports `file://` for offline testing; default: the GitHub releases URL) |
+| `$TOPOLOGY_VERSION` | Override the pinned version read from `plugin.json` (for testing or pinning a specific release) |
 
 `$TOPOLOGY_ROOT` is the explicit way to pin the framework root when you run `gatekeeper` **from
 outside the repo** — a CI job, or another project's directory:

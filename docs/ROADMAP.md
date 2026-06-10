@@ -173,6 +173,8 @@ round-trips (write → fresh session → resume); the `code-review` subagent ret
 release ships a single std-only macOS-arm64 binary (it dynamically links `libSystem`).
 **Evidence:** [`docs/verify/2026-06-09-packaging-distribution.md`](verify/2026-06-09-packaging-distribution.md) — all 12 acceptance criteria checked, quality gates green (213 passed / 2 ignored, no dependency change), `claude plugin validate .` passed.
 
+**Addendum (2026-06-10):** Prebuilt-binary distribution (four-target release matrix, installer download, plugin self-provisioning) delivered as a follow-on. Decision: [ADR-0011](adr/0011-prebuilt-binary-distribution.md). Verify: [`docs/verify/2026-06-10-one-command-install.md`](verify/2026-06-10-one-command-install.md).
+
 **Depends on.** Phases 1–5.
 
 ---
