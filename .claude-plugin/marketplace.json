@@ -9,7 +9,7 @@
     {
       "name": "topology",
       "source": "./",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "description": "Topology gate-enforcement engine: routes skills and checks methodology gates.",
       "repository": "https://github.com/osxsystem/topology",
       "homepage": "https://github.com/osxsystem/topology",
