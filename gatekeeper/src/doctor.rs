@@ -219,16 +219,22 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     }
 
     // ── .git/hooks/pre-commit ────────────────────────────────────────────────
-    // Only checked when .git/ is present. A PATH/plugin install has no .git → n/a.
-    let git_dir = root.join(".git");
+    // The hook must guard the repo the developer COMMITS to — the project root. In the
+    // framework repo project == framework, so this matches the old behavior; in a governed
+    // project, checking the vendored clone's own .git would report "ok" while the
+    // developer's commits go entirely unscanned. Only checked when .git/ is present (a
+    // PATH/plugin install with no repo → n/a).
+    let commit_repo = crate::project_root();
+    let git_dir = commit_repo.join(".git");
     if git_dir.is_dir() {
         let pc = git_dir.join("hooks").join("pre-commit");
         if pc.is_file() && is_executable(&pc) {
-            println!(".git/hooks/pre-commit: ok");
+            println!(".git/hooks/pre-commit: ok ({})", pc.display());
         } else {
             println!(
-                ".git/hooks/pre-commit: FAIL: not installed (run scripts/install.sh or \
-                 gatekeeper adapt --harness claude)"
+                ".git/hooks/pre-commit: FAIL: not installed in {} (run scripts/install.sh or \
+                 gatekeeper adapt --harness claude)",
+                commit_repo.display()
             );
             failures += 1;
         }

@@ -346,7 +346,7 @@ fn read_stdin_bytes(cap: usize) -> Result<Vec<u8>, String> {
 /// artifacts root for the current project (<project>/docs when project == framework, else
 /// <project>/.claude/topology). Returns the process exit code (0 clean / 1 veto / 2 usage or
 /// load error). Rules load first so a broken rules file fails closed (exit 2) on every subcommand.
-pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path) -> i32 {
+pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path, project_root: &Path) -> i32 {
     let rules_path = root.join("security").join("rules.toml");
     let rules = match load_rules(&rules_path) {
         Ok(r) => r,
@@ -372,7 +372,9 @@ pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path) -> i32 {
             &cwd,
             args.get(1).map(String::as_str),
         ),
-        Some("--staged") => scan_staged(&rules, root, artifacts_root, STAGED_BLOB_CAP),
+        Some("--staged") => {
+            scan_staged(&rules, root, project_root, artifacts_root, STAGED_BLOB_CAP)
+        }
         Some("--content") => scan_content_cmd(&rules),
         _ => {
             eprintln!(
@@ -718,14 +720,26 @@ fn head_protected_paths(root: &Path) -> (Vec<String>, Vec<String>) {
     }
 }
 
-fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) -> i32 {
+/// `fw_root` anchors framework-relative protected entries (and is where rules.toml lives);
+/// `git_root` is the repo whose staged index is scanned — the PROJECT repo for governed
+/// projects, identical to `fw_root` when the framework repo governs itself. All git
+/// operations and repo-relative path resolution use `git_root`; without this split, a
+/// governed project's pre-commit would silently scan the (clean) framework clone instead
+/// of the commit actually being made.
+fn scan_staged(
+    rules: &Rules,
+    fw_root: &Path,
+    git_root: &Path,
+    artifacts_root: &Path,
+    cap: usize,
+) -> i32 {
     let mut blocked = false;
 
     // (1) Scan enumeration: ACMRT — content of each added/copied/modified/renamed/type-changed
     // staged blob. T matters: a symlink→regular-file (or gitlink→file) type change introduces a
     // new content blob that would otherwise escape the "every staged blob is scanned" guarantee.
     match git_paths_z(
-        root,
+        git_root,
         &[
             "diff",
             "--cached",
@@ -738,11 +752,11 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
             for path in paths {
                 // Submodule gitlinks (mode 160000) are commit pointers, not content — skip (not
                 // recursed); the pointed-to commit may not even be in this repo's object store.
-                if git_index_mode(root, &path).as_deref() == Some("160000") {
+                if git_index_mode(git_root, &path).as_deref() == Some("160000") {
                     continue;
                 }
                 // Size FIRST (a cheap header read), so an oversize blob never streams into memory.
-                let size = match git_blob_size(root, &path) {
+                let size = match git_blob_size(git_root, &path) {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("BLOCK staged-size: {e}");
@@ -752,20 +766,20 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
                 };
                 if size > cap {
                     // Oversize: never read content; the OID allowlist check is content-free too.
-                    if !is_blob_allowlisted(root, &path, &rules.allow_blobs) {
+                    if !is_blob_allowlisted(git_root, &path, &rules.allow_blobs) {
                         eprintln!("BLOCK unscannable-blob: {path} (over {cap}-byte cap); allowlist via [[allow_blob]] path + blob_oid");
                         blocked = true;
                     }
                     continue;
                 }
                 // Size is within the cap, so reading the content is now bounded.
-                match git_raw(root, &["show", &format!(":{path}")]) {
+                match git_raw(git_root, &["show", &format!(":{path}")]) {
                     Ok(blob) => {
                         // Whole-blob NUL sniff (not just a prefix window): a binary whose first NUL
                         // lands late must still be treated as unscannable and block by default.
                         if blob.contains(&0) {
                             // Binary/undecodable: block unless allowlisted by path + OID.
-                            if !is_blob_allowlisted(root, &path, &rules.allow_blobs) {
+                            if !is_blob_allowlisted(git_root, &path, &rules.allow_blobs) {
                                 eprintln!("BLOCK unscannable-blob: {path} (binary/undecodable); allowlist via [[allow_blob]] path + blob_oid");
                                 blocked = true;
                             }
@@ -803,7 +817,7 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
     // from HEAD's `protected_paths` continue to resolve against the framework root, and entries from
     // HEAD's `protected_artifact_paths` resolve against the artifacts root.  This preserves correct
     // resolution semantics across the transition from the old single-set layout.
-    let (head_fw, head_art) = head_protected_paths(root);
+    let (head_fw, head_art) = head_protected_paths(git_root);
     let mut protected_fw_union: Vec<String> = rules.protected.clone();
     for p in head_fw {
         if !protected_fw_union.contains(&p) {
@@ -817,7 +831,7 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
         }
     }
     match git_name_status_z(
-        root,
+        git_root,
         &[
             "diff",
             "--cached",
@@ -831,14 +845,14 @@ fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) ->
             for (status, paths) in entries {
                 for p in &paths {
                     // In the staged lane `git diff --cached` emits paths relative to the repo
-                    // root (= framework root = `root`), so target_base = root.  The artifact
-                    // entries are still resolved against artifacts_root (e.g. <root>/docs), which
-                    // is a DIFFERENT base — this is exactly the split that prevents the
+                    // being committed, so target_base = git_root.  Framework entries resolve
+                    // against fw_root and artifact entries against artifacts_root — each base is
+                    // DIFFERENT in a governed project; this split is exactly what prevents the
                     // double-prefix bug: without it `docs/memory/x.handoff.md` would resolve to
                     // `<root>/docs/docs/memory/x.handoff.md` and miss the "memory" entry.
                     if is_protected_any(
-                        root,
-                        root,
+                        git_root,
+                        fw_root,
                         &protected_fw_union,
                         artifacts_root,
                         &protected_art_union,
@@ -1187,7 +1201,7 @@ mod staged_unit {
         let artifacts_root = root.clone();
         let rules = parse_rules("schema_version = 1").unwrap();
         assert_eq!(
-            scan_staged(&rules, &root, &artifacts_root, 8),
+            scan_staged(&rules, &root, &root, &artifacts_root, 8),
             1,
             "20-byte blob over an 8-byte cap blocks"
         );
@@ -1201,7 +1215,13 @@ blob_oid = "{oid}"
 "#
         );
         assert_eq!(
-            scan_staged(&parse_rules(&toml).unwrap(), &root, &artifacts_root, 8),
+            scan_staged(
+                &parse_rules(&toml).unwrap(),
+                &root,
+                &root,
+                &artifacts_root,
+                8
+            ),
             0,
             "allowlisted by blob_oid passes"
         );
@@ -1260,7 +1280,7 @@ blob_oid = "{oid}"
         )
         .unwrap();
         assert_eq!(
-            scan_staged(&rules, &root, &artifacts_root, STAGED_BLOB_CAP),
+            scan_staged(&rules, &root, &root, &artifacts_root, STAGED_BLOB_CAP),
             1,
             "staging docs/memory/x.handoff.md must be blocked (protected_artifact_paths)"
         );
@@ -1284,11 +1304,87 @@ blob_oid = "{oid}"
         )
         .unwrap();
         assert_eq!(
-            scan_staged(&rules, &root, &artifacts_root, STAGED_BLOB_CAP),
+            scan_staged(&rules, &root, &root, &artifacts_root, STAGED_BLOB_CAP),
             0,
             "staging memory/README.md at the framework root must NOT be blocked"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Governed-project staged lane ─────────────────────────────────────────
+    //
+    // Live-test S5.1/S5.2 regression: in a governed project the pre-commit scan must target
+    // the PROJECT repo's index (git_root), not the framework clone's. Before the fw/git root
+    // split, `scan --staged` ran its git ops against the framework root — the (clean)
+    // vendored clone — so a staged AWS key in the project committed without a single BLOCK.
+
+    /// Scratch governed pair: a framework dir (rules only, not a repo) and a separate
+    /// project git repo. Returns (fw_root, project_root, rules).
+    fn governed_pair(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, Rules) {
+        let base =
+            std::env::temp_dir().join(format!("topo_staged_gov_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let fw = base.join("fw");
+        std::fs::create_dir_all(fw.join("security")).unwrap();
+        let rules_toml = "schema_version = 1\n\
+            [[rule]]\nid = \"aws-access-key-id\"\nkind = \"content\"\nseverity = \"block\"\n\
+            description = \"AWS access key id\"\npattern = '\\b(AKIA|ASIA)[0-9A-Z]{16}\\b'\n\
+            [integrity]\nprotected_artifact_paths = [\"memory\"]\n";
+        std::fs::write(fw.join("security").join("rules.toml"), rules_toml).unwrap();
+        let project = base.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        git_raw(&project, &["init", "-q", "-b", "main"]).unwrap();
+        git_raw(&project, &["config", "user.email", "t@t.t"]).unwrap();
+        git_raw(&project, &["config", "user.name", "t"]).unwrap();
+        std::fs::write(project.join("README.md"), "notes app\n").unwrap();
+        git_raw(&project, &["add", "."]).unwrap();
+        git_raw(&project, &["commit", "-q", "-m", "init"]).unwrap();
+        let rules = parse_rules(rules_toml).unwrap();
+        (fw, project, rules)
+    }
+
+    #[test]
+    fn staged_governed_secret_in_project_repo_is_blocked() {
+        let (fw, project, rules) = governed_pair("secret");
+        let artifacts_root = project.join(".claude").join("topology");
+        let key = format!("AKIA{}", "XYZ123ABCDEF4567"); // built by concat; 20 chars total
+        std::fs::write(
+            project.join("config.js"),
+            format!("const KEY = \"{key}\";\n"),
+        )
+        .unwrap();
+        git_raw(&project, &["add", "config.js"]).unwrap();
+        assert_eq!(
+            scan_staged(&rules, &fw, &project, &artifacts_root, STAGED_BLOB_CAP),
+            1,
+            "a staged AWS key in the governed project repo must be blocked"
+        );
+        let _ = std::fs::remove_dir_all(project.parent().unwrap());
+    }
+
+    #[test]
+    fn staged_governed_handoff_in_project_is_blocked_and_clean_file_passes() {
+        let (fw, project, rules) = governed_pair("handoff");
+        let artifacts_root = project.join(".claude").join("topology");
+        // A clean source file alone passes.
+        std::fs::write(project.join("app.js"), "console.log(1);\n").unwrap();
+        git_raw(&project, &["add", "app.js"]).unwrap();
+        assert_eq!(
+            scan_staged(&rules, &fw, &project, &artifacts_root, STAGED_BLOB_CAP),
+            0,
+            "a clean staged source file in the governed project must pass"
+        );
+        // Staging the governed handoff trips the artifacts-anchored protected set.
+        let mem = artifacts_root.join("memory");
+        std::fs::create_dir_all(&mem).unwrap();
+        std::fs::write(mem.join("x.handoff.md"), "body\n").unwrap();
+        git_raw(&project, &["add", ".claude/topology/memory/x.handoff.md"]).unwrap();
+        assert_eq!(
+            scan_staged(&rules, &fw, &project, &artifacts_root, STAGED_BLOB_CAP),
+            1,
+            "a staged governed handoff must be blocked (artifacts-anchored protection)"
+        );
+        let _ = std::fs::remove_dir_all(project.parent().unwrap());
     }
 }
 
@@ -1347,7 +1443,7 @@ mod perf_report {
             let t = Instant::now();
             // artifacts_root is irrelevant for this test (no protected_artifact_paths in the
             // minimal rules); reuse root as a valid dummy path.
-            let _ = scan_staged(&r, &root, &root, STAGED_BLOB_CAP);
+            let _ = scan_staged(&r, &root, &root, &root, STAGED_BLOB_CAP);
             println!("staged N={n}: {} ms", t.elapsed().as_millis());
             let _ = std::fs::remove_dir_all(&root);
         }

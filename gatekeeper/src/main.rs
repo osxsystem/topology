@@ -60,7 +60,12 @@ fn main() {
         Some("list") => cmd_list(),
         Some("activate") => cmd_activate(),
         Some("check") => cmd_check(&args[1..]),
-        Some("scan") => scan::cmd_scan(&args[1..], &framework_root(), &artifacts_root()),
+        Some("scan") => scan::cmd_scan(
+            &args[1..],
+            &framework_root(),
+            &artifacts_root(),
+            &project_root(),
+        ),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &artifacts_root(), &framework_root()),
@@ -138,6 +143,14 @@ fn resolve_root(start: &Path, env_override: Option<&Path>) -> PathBuf {
     loop {
         if is_marked_root(&dir) {
             return dir;
+        }
+        // Vendored install: `install.sh --project <path>` places the framework at
+        // <project>/.topology. Recognize it during the walk-up so a plain `gatekeeper <cmd>`
+        // from anywhere inside the project finds the framework without TOPOLOGY_ROOT. A dir
+        // that is itself a marked root wins over its own .topology (checked above first).
+        let vendored = dir.join(".topology");
+        if is_marked_root(&vendored) {
+            return vendored;
         }
         if !dir.pop() {
             return start.to_path_buf();
@@ -310,7 +323,7 @@ fn cmd_check(args: &[String]) -> i32 {
         return 2;
     };
     match gate {
-        "research" => gate_doc_exists("research", &feature_arg(args)),
+        "research" => gate_doc_exists("research", "research", &feature_arg(args)),
         "design" => {
             let f = feature_arg(args);
             if f.is_empty() {
@@ -329,11 +342,11 @@ fn cmd_check(args: &[String]) -> i32 {
                     );
                     1
                 }
-                Some(_) => gate_doc_exists("specs", &f),
+                Some(_) => gate_doc_exists("design", "specs", &f),
             }
         }
         "plan" => gate_plan(&feature_arg(args)),
-        "verify" => gate_doc_exists("verify", &feature_arg(args)),
+        "verify" => gate_doc_exists("verify", "verify", &feature_arg(args)),
         "finish" => gate_finish(args),
         "review" => review::gate_review(
             &project_root(),
@@ -491,19 +504,25 @@ pub(crate) fn find_doc(sub: &str, feature: &str) -> Option<PathBuf> {
     None
 }
 
-fn gate_doc_exists(sub: &str, feature: &str) -> i32 {
+/// `label` is the gate name as the user invoked it; `sub` is the artifact directory it reads.
+/// They differ for the design gate (invoked as `design`, artifacts in `specs/`) — reporting
+/// under the invoked name keeps the failure actionable without a name/directory mismatch.
+fn gate_doc_exists(label: &str, sub: &str, feature: &str) -> i32 {
     if feature.is_empty() {
         eprintln!("gatekeeper: --feature <slug> is required");
         return 2;
     }
     match find_doc(sub, feature) {
         Some(p) => {
-            println!("PASS {sub} gate: {}", p.display());
+            println!("PASS {label} gate: {}", p.display());
             0
         }
         None => {
             let dir = artifacts_root().join(sub);
-            println!("FAIL {sub} gate: no {}/*{feature}*.md found", dir.display());
+            println!(
+                "FAIL {label} gate: no {}/*{feature}*.md found",
+                dir.display()
+            );
             1
         }
     }
@@ -561,6 +580,9 @@ fn gate_finish(args: &[String]) -> i32 {
     let cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
     if cmd.is_empty() {
         eprintln!("gatekeeper check finish -- <command...>  (command required)");
+        eprintln!("  The finish gate runs your full test command and passes when it exits 0:");
+        eprintln!("    gatekeeper check finish -- npm test");
+        eprintln!("    gatekeeper check finish -- cargo test");
         return 2;
     }
     let status = Command::new(cmd[0]).args(&cmd[1..]).status();
@@ -724,6 +746,54 @@ mod tests {
             fs::canonicalize(&result).unwrap(),
             "non-existent env override must be ignored; fallback to start"
         );
+    }
+
+    #[test]
+    fn resolve_root_finds_vendored_topology() {
+        // A governed project carries the framework at <project>/.topology (install.sh
+        // --project). Walk-up from anywhere inside the project must find it without
+        // TOPOLOGY_ROOT — this was the live-test S1.3 failure: doctor from the project
+        // root probed the project itself and reported 3 failures.
+        let base = env::temp_dir().join("topology_vendored_root");
+        let _ = fs::remove_dir_all(&base);
+        let vendored = base.join(".topology");
+        fs::create_dir_all(vendored.join("skills")).unwrap();
+        fs::write(vendored.join("AGENTS.md"), "marker\n").unwrap();
+        let nested = base.join("src").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+
+        for start in [&base, &nested] {
+            let result = resolve_root(start, None);
+            assert_eq!(
+                fs::canonicalize(&vendored).unwrap(),
+                fs::canonicalize(&result).unwrap(),
+                "walk-up from {} must find the vendored .topology",
+                start.display()
+            );
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_root_prefers_marked_dir_over_its_own_vendored_topology() {
+        // A directory that is itself a marked root wins over a .topology inside it —
+        // the framework repo must keep resolving to itself even if a stray .topology
+        // clone appears in its tree.
+        let base = env::temp_dir().join("topology_vendored_precedence");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("skills")).unwrap();
+        fs::write(base.join("AGENTS.md"), "marker\n").unwrap();
+        let vendored = base.join(".topology");
+        fs::create_dir_all(vendored.join("skills")).unwrap();
+        fs::write(vendored.join("AGENTS.md"), "marker\n").unwrap();
+
+        let result = resolve_root(&base, None);
+        assert_eq!(
+            fs::canonicalize(&base).unwrap(),
+            fs::canonicalize(&result).unwrap(),
+            "a marked dir must win over its own vendored .topology"
+        );
+        let _ = fs::remove_dir_all(&base);
     }
 
     // ── resolve_project_root tests ────────────────────────────────────────────

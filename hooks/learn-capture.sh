@@ -33,8 +33,11 @@ if [[ -z "$SUMMARY" ]]; then
   exit 0
 fi
 
-# Prefer an installed binary, else the release build, else the debug build.
-if command -v gatekeeper >/dev/null 2>&1; then
+# Prefer the installer-placed prebuilt (matches security-scan.sh's order), then PATH, then
+# the repo release/debug builds.
+if [[ -x "$ROOT/bin/gatekeeper" ]]; then
+  GK="$ROOT/bin/gatekeeper"
+elif command -v gatekeeper >/dev/null 2>&1; then
   GK="$(command -v gatekeeper)"
 elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
   GK="$ROOT/gatekeeper/target/release/gatekeeper"

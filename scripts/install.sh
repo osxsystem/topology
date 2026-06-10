@@ -268,14 +268,21 @@ echo "    done"
 # ─── 7. Git pre-commit hook ───────────────────────────────────────────────────
 
 echo "==> Installing the git pre-commit hook"
-if [[ -d "$ROOT/.git" ]]; then
+# The hook must guard the repo the developer COMMITS to. For a --project install that is the
+# project repo, NOT the vendored framework clone at <project>/.topology — installing into the
+# clone's own .git would print success while the project's commits go entirely unscanned.
+HOOK_REPO="$ROOT"
+if [[ -n "$PROJECT_PATH" ]]; then
+  HOOK_REPO="$PROJECT_PATH"
+fi
+if [[ -d "$HOOK_REPO/.git" ]]; then
   # COPY, do not symlink: the active hook must not be the same mutable worktree file it guards.
-  cp "$ROOT/hooks/pre-commit.sh" "$ROOT/.git/hooks/pre-commit"
-  chmod +x "$ROOT/.git/hooks/pre-commit"
-  note "$ROOT/.git/hooks/pre-commit"
-  echo "    copied hooks/pre-commit.sh -> .git/hooks/pre-commit (stable copy; re-run install to update)"
+  cp "$ROOT/hooks/pre-commit.sh" "$HOOK_REPO/.git/hooks/pre-commit"
+  chmod +x "$HOOK_REPO/.git/hooks/pre-commit"
+  note "$HOOK_REPO/.git/hooks/pre-commit"
+  echo "    copied hooks/pre-commit.sh -> $HOOK_REPO/.git/hooks/pre-commit (stable copy; re-run install to update)"
 else
-  echo "    (no .git dir here; wire hooks/pre-commit.sh into your VCS manually)"
+  echo "    (no .git dir at $HOOK_REPO; wire hooks/pre-commit.sh into your VCS manually)"
 fi
 
 # ─── 8. Harness wiring ───────────────────────────────────────────────────────
@@ -462,4 +469,12 @@ echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"
 
 echo ""
 echo "==> Health check"
-"$BIN" doctor
+# Run doctor from the PROJECT directory for a --project install: that is the cwd every later
+# gatekeeper invocation will use, so probing from inside the framework checkout validates the
+# wrong layout (and masks broken project wiring). TOPOLOGY_ROOT is passed explicitly so the
+# check also holds for binaries that predate vendored-root autodetection.
+if [[ -n "$PROJECT_PATH" ]]; then
+  (cd "$PROJECT_PATH" && TOPOLOGY_ROOT="$ROOT" "$BIN" doctor)
+else
+  "$BIN" doctor
+fi
