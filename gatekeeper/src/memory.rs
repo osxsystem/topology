@@ -1,4 +1,9 @@
-//! Memory protocol — write, read, and list handoff artifacts under `memory/artifacts/`.
+//! Memory protocol — write, read, and list handoff artifacts under `<artifacts_root>/memory/`.
+//!
+//! The artifacts root is `docs/` in the framework repo (project == framework) and
+//! `.claude/topology/` in a governed project — see `resolve_artifacts_root` in `main.rs`
+//! and ADR-0013. The `framework_root` is only used to locate `security/rules.toml`, a
+//! read-only payload asset that must stay in the framework directory.
 //!
 //! Artifacts are YAML-frontmatter + Markdown files. The frontmatter is the machine
 //! contract; the body is free-form Markdown for the resuming agent. The rendered file
@@ -144,7 +149,108 @@ fn parse_args(args: &[String]) -> (Option<String>, Option<String>, Option<String
 
 // ---------- subcommands ----------
 
-fn cmd_write(args: &[String], root: &Path) -> i32 {
+/// Core write logic — separated from stdin reading so tests can inject a body string directly.
+///
+/// All validation, git-metadata collection, secret scanning, and disk I/O live here.
+/// `cmd_write` is a thin wrapper that reads stdin and delegates to this function.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn do_write(
+    slug: &str,
+    date: &str,
+    status: &str,
+    verified_by: &str,
+    body_str: &str,
+    artifacts_root: &Path,
+    framework_root: &Path,
+    project_root: &Path,
+) -> i32 {
+    // Reject a body that opens a second frontmatter block.
+    // A body that itself starts with `---` would create a double-frontmatter artifact.
+    {
+        let trimmed = body_str.trim_start_matches('\n');
+        if trimmed.starts_with("---") {
+            // Allow if it is only in a comment, but a bare `---` at start of body is rejected.
+            eprintln!(
+                "gatekeeper memory write: body must not open a second '---' frontmatter block"
+            );
+            return 2;
+        }
+    }
+
+    // Build the rendered artifact.
+    // Use project_root for git_info — the project root always exists (it is the process's cwd
+    // anchor). The artifacts_root (.claude/topology in a governed project) may not exist yet on
+    // the first write, so `git -C <artifacts_root>` would fail and degrade to empty strings.
+    // The "degrades to empty strings off a repo" policy still applies when project_root is not
+    // inside a git repo — that is deliberate.
+    let (branch, sha) = git_info(project_root);
+    let rendered = render(slug, date, &branch, &sha, status, verified_by, body_str);
+
+    // Scan the RENDERED bytes for secrets (catches branch/feature names too).
+    // `security/rules.toml` is a read-only payload asset — always resolved against the
+    // framework root, never the (possibly project-local) artifacts root.
+    let rules_path = framework_root.join("security").join("rules.toml");
+    match load_rules(&rules_path) {
+        Ok(rules) => {
+            if let Err(hint) = scan_bytes_for_secrets(&rules, rendered.as_bytes()) {
+                eprintln!("gatekeeper memory write: secret refusal — {hint}");
+                return 1;
+            }
+        }
+        Err(e) => {
+            eprintln!("gatekeeper memory write: cannot load rules: {e}");
+            return 2;
+        }
+    }
+
+    // If status == "done", require verified_by to resolve to an existing docs/verify/*<slug>*.md.
+    if status == "done" {
+        let vb = verified_by.trim();
+        if vb.is_empty() {
+            eprintln!(
+                "gatekeeper memory write: status 'done' requires --verified-by resolving to docs/verify/*{slug}*.md"
+            );
+            return 1;
+        }
+        // Use find_doc to locate docs/verify/<something-containing-slug>.md.
+        match crate::find_doc("verify", slug) {
+            Some(_) => {}
+            None => {
+                eprintln!(
+                    "gatekeeper memory write: status 'done' requires docs/verify/*{slug}*.md to exist"
+                );
+                return 1;
+            }
+        }
+    }
+
+    // Create the memory directory under the artifacts root and write the file.
+    let memory_dir = artifacts_root.join("memory");
+    if let Err(e) = fs::create_dir_all(&memory_dir) {
+        eprintln!(
+            "gatekeeper memory write: cannot create {}/: {e}",
+            memory_dir.display()
+        );
+        return 1;
+    }
+    let out_path = memory_dir.join(format!("{slug}.handoff.md"));
+    if let Err(e) = fs::write(&out_path, rendered.as_bytes()) {
+        eprintln!(
+            "gatekeeper memory write: cannot write {}: {e}",
+            out_path.display()
+        );
+        return 1;
+    }
+    println!("wrote {}/{slug}.handoff.md", memory_dir.display());
+    0
+}
+
+fn cmd_write(
+    args: &[String],
+    artifacts_root: &Path,
+    framework_root: &Path,
+    project_root: &Path,
+) -> i32 {
     let (feature_opt, date_opt, status_opt) = parse_args(args);
 
     let slug = match feature_opt {
@@ -195,86 +301,19 @@ fn cmd_write(args: &[String], root: &Path) -> i32 {
     }
     let body_str = String::from_utf8_lossy(&body).into_owned();
 
-    // Reject a body that opens a second frontmatter block.
-    // A body that itself starts with `---` would create a double-frontmatter artifact.
-    {
-        let trimmed = body_str.trim_start_matches('\n');
-        if trimmed.starts_with("---") {
-            // Allow if it is only in a comment, but a bare `---` at start of body is rejected.
-            eprintln!(
-                "gatekeeper memory write: body must not open a second '---' frontmatter block"
-            );
-            return 2;
-        }
-    }
-
-    // Build the rendered artifact.
-    let (branch, sha) = git_info(root);
-    let rendered = render(
+    do_write(
         &slug,
         &date,
-        &branch,
-        &sha,
         &status,
         &verified_by,
         &body_str,
-    );
-
-    // Scan the RENDERED bytes for secrets (catches branch/feature names too).
-    let rules_path = root.join("security").join("rules.toml");
-    match load_rules(&rules_path) {
-        Ok(rules) => {
-            if let Err(hint) = scan_bytes_for_secrets(&rules, rendered.as_bytes()) {
-                eprintln!("gatekeeper memory write: secret refusal — {hint}");
-                return 1;
-            }
-        }
-        Err(e) => {
-            eprintln!("gatekeeper memory write: cannot load rules: {e}");
-            return 2;
-        }
-    }
-
-    // If status == "done", require verified_by to resolve to an existing docs/verify/*<slug>*.md.
-    if status == "done" {
-        let vb = verified_by.trim();
-        if vb.is_empty() {
-            eprintln!(
-                "gatekeeper memory write: status 'done' requires --verified-by resolving to docs/verify/*{slug}*.md"
-            );
-            return 1;
-        }
-        // Use find_doc to locate docs/verify/<something-containing-slug>.md.
-        match crate::find_doc("verify", &slug) {
-            Some(_) => {}
-            None => {
-                eprintln!(
-                    "gatekeeper memory write: status 'done' requires docs/verify/*{slug}*.md to exist"
-                );
-                return 1;
-            }
-        }
-    }
-
-    // Create artifacts directory and write the file.
-    let artifacts_dir = root.join("memory").join("artifacts");
-    if let Err(e) = fs::create_dir_all(&artifacts_dir) {
-        eprintln!("gatekeeper memory write: cannot create memory/artifacts/: {e}");
-        return 1;
-    }
-    let out_path = artifacts_dir.join(format!("{slug}.handoff.md"));
-    if let Err(e) = fs::write(&out_path, rendered.as_bytes()) {
-        eprintln!(
-            "gatekeeper memory write: cannot write {}: {e}",
-            out_path.display()
-        );
-        return 1;
-    }
-    println!("wrote memory/artifacts/{slug}.handoff.md");
-    0
+        artifacts_root,
+        framework_root,
+        project_root,
+    )
 }
 
-fn cmd_read(args: &[String], root: &Path) -> i32 {
+fn cmd_read(args: &[String], artifacts_root: &Path) -> i32 {
     let (feature_opt, _, _) = parse_args(args);
     let slug = match feature_opt {
         Some(s) if !s.is_empty() => s,
@@ -283,9 +322,8 @@ fn cmd_read(args: &[String], root: &Path) -> i32 {
             return 2;
         }
     };
-    let path = root
+    let path = artifacts_root
         .join("memory")
-        .join("artifacts")
         .join(format!("{slug}.handoff.md"));
     match fs::read_to_string(&path) {
         Ok(content) => {
@@ -293,18 +331,21 @@ fn cmd_read(args: &[String], root: &Path) -> i32 {
             0
         }
         Err(_) => {
-            eprintln!("gatekeeper memory read: memory/artifacts/{slug}.handoff.md not found");
+            eprintln!(
+                "gatekeeper memory read: {}/{slug}.handoff.md not found",
+                artifacts_root.join("memory").display()
+            );
             1
         }
     }
 }
 
-fn cmd_list(root: &Path) -> i32 {
-    let artifacts_dir = root.join("memory").join("artifacts");
+fn cmd_list(artifacts_root: &Path) -> i32 {
+    let artifacts_dir = artifacts_root.join("memory");
     let rd = match fs::read_dir(&artifacts_dir) {
         Ok(rd) => rd,
         Err(_) => {
-            // No artifacts directory: silently succeed with no output.
+            // No memory directory: silently succeed with no output.
             return 0;
         }
     };
@@ -328,15 +369,28 @@ fn cmd_list(root: &Path) -> i32 {
 
 // ---------- public entry point ----------
 
-pub fn cmd_memory(args: &[String], root: &Path) -> i32 {
+/// Dispatch a `memory` subcommand.
+///
+/// * `artifacts_root` — where handoff files are written/read (`<artifacts_root>/memory/<slug>.handoff.md`).
+///   Equals `docs/` in the framework repo; `.claude/topology/` in a governed project.
+/// * `framework_root` — used only to locate `security/rules.toml` (a read-only payload asset).
+/// * `project_root` — the nearest `.git` ancestor of cwd (or cwd). Used for git metadata on
+///   write: the artifacts_root may not exist yet on the first write, so git_info runs against
+///   project_root which is always present.
+pub fn cmd_memory(
+    args: &[String],
+    artifacts_root: &Path,
+    framework_root: &Path,
+    project_root: &Path,
+) -> i32 {
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!("gatekeeper memory: missing subcommand (write|read|list)");
         return 2;
     };
     match sub {
-        "write" => cmd_write(args, root),
-        "read" => cmd_read(args, root),
-        "list" => cmd_list(root),
+        "write" => cmd_write(args, artifacts_root, framework_root, project_root),
+        "read" => cmd_read(args, artifacts_root),
+        "list" => cmd_list(artifacts_root),
         other => {
             eprintln!("gatekeeper memory: unknown subcommand '{other}' (expected write|read|list)");
             2
@@ -471,5 +525,156 @@ mod tests {
             !status.is_empty(),
             "TEMPLATE.handoff.md frontmatter must have a non-empty 'status' field"
         );
+    }
+
+    // ---------- artifacts-root path construction tests (ADR-0013) ----------
+    //
+    // These unit tests verify the path relationship between artifacts_root and the
+    // memory directory without touching the filesystem beyond tempdir creation.
+
+    #[test]
+    fn handoff_path_equal_roots_is_under_docs_memory() {
+        // When project == framework (in-repo), resolve_artifacts_root returns project/docs.
+        // The memory dir must be project/docs/memory, NOT project/memory/artifacts.
+        use std::env;
+        use std::fs;
+        let base = env::temp_dir().join("topo_mem_path_equal");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        // Call the real production function with equal roots.
+        let artifacts = crate::resolve_artifacts_root(&base, &base);
+        let memory_dir = artifacts.join("memory");
+        let handoff = memory_dir.join("my-slug.handoff.md");
+
+        assert!(
+            handoff.starts_with(base.join("docs").join("memory")),
+            "in-repo handoff must be under docs/memory"
+        );
+        assert!(
+            !handoff.starts_with(base.join("memory").join("artifacts")),
+            "in-repo handoff must NOT be under memory/artifacts"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn handoff_path_differing_roots_is_under_claude_topology_memory() {
+        // When project != framework (governed), resolve_artifacts_root returns project/.claude/topology.
+        // The memory dir must be project/.claude/topology/memory.
+        use std::env;
+        use std::fs;
+        let base = env::temp_dir().join("topo_mem_path_diff");
+        let _ = fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let framework = base.join("framework");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&framework).unwrap();
+
+        // Call the real production function with differing roots.
+        let artifacts = crate::resolve_artifacts_root(&project, &framework);
+        let memory_dir = artifacts.join("memory");
+        let handoff = memory_dir.join("my-slug.handoff.md");
+
+        assert!(
+            handoff.starts_with(project.join(".claude").join("topology").join("memory")),
+            "governed handoff must be under .claude/topology/memory"
+        );
+        assert!(
+            !handoff.starts_with(project.join("memory").join("artifacts")),
+            "governed handoff must NOT be under memory/artifacts"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Regression test: first governed handoff write must have non-empty branch and head_sha.
+    ///
+    /// Reproduces the bug where git_info(artifacts_root) was called before the artifacts_root
+    /// directory existed, causing `git -C <nonexistent>` to fail and leave empty frontmatter.
+    /// The fix: git_info(project_root) — project_root always exists.
+    #[test]
+    fn first_write_has_non_empty_branch_and_sha() {
+        use std::env;
+        use std::fs;
+        use std::process::Command as Cmd;
+
+        // Build a minimal git repo in a temp dir.
+        let base = env::temp_dir().join(format!("topo_mem_first_write_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        // git init + one commit so HEAD and branch are defined.
+        let git_ok = |args: &[&str]| {
+            Cmd::new("git")
+                .arg("-C")
+                .arg(&base)
+                .args(args)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !git_ok(&["init", "-q", "-b", "main"]) {
+            // Older git may not support -b; fall back.
+            git_ok(&["init", "-q"]);
+        }
+        git_ok(&["config", "user.email", "t@t.t"]);
+        git_ok(&["config", "user.name", "t"]);
+        fs::write(base.join("seed.txt"), "seed\n").unwrap();
+        git_ok(&["add", "."]);
+        git_ok(&["commit", "-q", "-m", "init"]);
+
+        // Simulate the governed layout: artifacts_root = base/.claude/topology (does NOT exist yet).
+        // project_root = base (the git repo root, exists).
+        let project_root = base.clone();
+        let artifacts_root = base.join(".claude").join("topology");
+        // Deliberately do NOT create artifacts_root — that is the bug trigger.
+        assert!(
+            !artifacts_root.exists(),
+            "artifacts_root must not pre-exist"
+        );
+
+        // Use the framework root from the real repo so security/rules.toml is loadable.
+        let framework_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let code = do_write(
+            "my-feature",
+            "2026-06-10",
+            "in-progress",
+            "",
+            "## Context\nFirst write.\n",
+            &artifacts_root,
+            &framework_root,
+            &project_root,
+        );
+        assert_eq!(code, 0, "do_write must succeed on first governed write");
+
+        // Verify the artifact was written.
+        let artifact_path = artifacts_root.join("memory").join("my-feature.handoff.md");
+        assert!(artifact_path.exists(), "handoff file must be created");
+
+        // Parse the written file and assert non-empty branch and head_sha.
+        let content = fs::read_to_string(&artifact_path).unwrap();
+        let mut branch_val = String::new();
+        let mut sha_val = String::new();
+        for line in content.lines() {
+            if let Some(rest) = line.strip_prefix("branch:") {
+                branch_val = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("head_sha:") {
+                sha_val = rest.trim().to_string();
+            }
+        }
+        assert!(
+            !branch_val.is_empty(),
+            "branch: must be non-empty on first write; got empty — git_info used wrong root"
+        );
+        assert!(
+            !sha_val.is_empty(),
+            "head_sha: must be non-empty on first write; got empty — git_info used wrong root"
+        );
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

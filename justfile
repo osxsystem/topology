@@ -27,6 +27,18 @@ test:
 deny:
     cargo deny --manifest-path gatekeeper/Cargo.toml check
 
+# Smoke-test the payload builder (builds into a tempdir, asserts manifest + VERSION).
+test-payload:
+    bash scripts/test-build-payload.sh
+
+# Test fetch-gatekeeper.sh version resolution precedence (no network).
+test-fetch:
+    bash scripts/test-fetch-version.sh
+
+# Offline end-to-end: build payload, serve via file://, install, assert gatekeeper works.
+test-e2e:
+    bash scripts/test-payload-e2e.sh
+
 # ShellCheck across hooks and scripts.
 shell:
     shellcheck hooks/*.sh scripts/*.sh

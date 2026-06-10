@@ -112,7 +112,7 @@ When governing an external project (topology vendored at `<project>/.topology`, 
 | `skills/`, `instincts/`, `security/rules.toml`, hook scripts | framework root (`~/.topology` or vendored copy) |
 | Gate artifacts (`research/ specs/ plans/ verify/ reviews/`) | project root — under `.claude/topology/` in governed projects, `docs/` in the framework repo itself |
 | `adapt`-generated configs (`.claude/settings.json`, etc.) | project root |
-| `learn` ledger, `memory` artifacts | framework root |
+| `learn` ledger, `memory` artifacts | artifacts root (`.claude/topology/` in governed projects; `docs/` in the framework repo) |
 
 **One-time migration** (if you have existing artifacts in `docs/` of a governed project):
 

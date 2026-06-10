@@ -8,10 +8,69 @@
 use std::fs;
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::instinct;
 use crate::learn;
 use crate::scan;
 use crate::version;
+
+// ── VERSION file types ───────────────────────────────────────────────────────
+
+/// Parsed contents of the `VERSION` file at the framework root.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct VersionFile {
+    pub version: String,
+    pub rules_schema: u32,
+}
+
+/// Result of attempting to parse the `VERSION` file at `root/VERSION`.
+#[derive(Debug, PartialEq)]
+pub enum VersionProbe {
+    /// File present and parsed successfully.
+    Present(VersionFile),
+    /// File absent (dev checkout) — informational, not a failure.
+    Absent,
+    /// File present but could not be parsed.
+    ParseError(String),
+    /// File present, parsed, but `version` field is missing.
+    MissingField(String),
+}
+
+/// Parse the `VERSION` file at `path`.
+///
+/// The file uses line-anchored TOML (two fields: `version = "x.y.z"` and
+/// `rules_schema = N`) parseable by both the `toml` crate and the bash
+/// `grep -m1` idiom.
+pub fn parse_version_file(path: &Path) -> VersionProbe {
+    let raw = match fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return VersionProbe::Absent,
+        Err(e) => return VersionProbe::ParseError(e.to_string()),
+    };
+    match toml::from_str::<VersionFile>(&raw) {
+        Ok(v) => VersionProbe::Present(v),
+        Err(e) => {
+            // Distinguish "missing field" from other parse errors for better messages.
+            let msg = e.to_string();
+            if msg.contains("missing field") {
+                VersionProbe::MissingField(msg)
+            } else {
+                VersionProbe::ParseError(msg)
+            }
+        }
+    }
+}
+
+/// Returns `true` when the payload version in `vf` does not match the running binary version.
+///
+/// Extracted from the `cmd_doctor` match arm so the skew decision is independently testable:
+/// the test can call this function with both a matching and a mismatched `VersionFile` and
+/// assert the return value — which means a regression in the comparison logic would fail the
+/// test rather than just asserting values the test itself constructed.
+pub fn version_skew(vf: &VersionFile) -> bool {
+    vf.version != version::tool()
+}
 
 /// Run all doctor probes and print a report. Returns 0 (all ok) or 1 (any FAIL).
 pub fn cmd_doctor(root: &Path) -> i32 {
@@ -38,6 +97,39 @@ pub fn cmd_doctor(root: &Path) -> i32 {
         version::tool(),
         version::rules_schema()
     );
+
+    // ── VERSION file ─────────────────────────────────────────────────────────
+    // Reports payload version + rules_schema; FAILs on binary↔payload version skew.
+    // Absent VERSION (dev checkout) is informational only.
+    let version_path = root.join("VERSION");
+    match parse_version_file(&version_path) {
+        VersionProbe::Present(ref vf) => {
+            if version_skew(vf) {
+                println!(
+                    "VERSION: FAIL: payload version {} does not match binary version {}",
+                    vf.version,
+                    version::tool()
+                );
+                failures += 1;
+            } else {
+                println!(
+                    "VERSION: payload {} (rules schema v{})",
+                    vf.version, vf.rules_schema
+                );
+            }
+        }
+        VersionProbe::Absent => {
+            println!("VERSION: not present (dev checkout)");
+        }
+        VersionProbe::ParseError(ref e) => {
+            println!("VERSION: FAIL: parse error: {e}");
+            failures += 1;
+        }
+        VersionProbe::MissingField(ref e) => {
+            println!("VERSION: FAIL: missing field: {e}");
+            failures += 1;
+        }
+    }
 
     // $GATEKEEPER_BIN override (new this phase — neither hook reads it yet; doctor surfaces it).
     let gk_bin_env = std::env::var("GATEKEEPER_BIN").ok();
@@ -303,4 +395,111 @@ fn probe_hooks(dir: &Path) -> usize {
         }
     }
     fails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+
+    // ── parse_version_file unit tests ─────────────────────────────────────────
+
+    #[test]
+    fn version_file_well_formed_parses() {
+        let base = env::temp_dir().join("topology_doctor_vf_ok");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("VERSION");
+        fs::write(&path, "version = \"0.4.0\"\nrules_schema = 1\n").unwrap();
+
+        let probe = parse_version_file(&path);
+        assert_eq!(
+            probe,
+            VersionProbe::Present(VersionFile {
+                version: "0.4.0".to_string(),
+                rules_schema: 1,
+            }),
+            "well-formed VERSION must parse to Present"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_file_missing_field_returns_missing_field() {
+        let base = env::temp_dir().join("topology_doctor_vf_missing");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("VERSION");
+        // Missing rules_schema field
+        fs::write(&path, "version = \"0.4.0\"\n").unwrap();
+
+        let probe = parse_version_file(&path);
+        assert!(
+            matches!(probe, VersionProbe::MissingField(_)),
+            "VERSION with missing field must return MissingField, got: {probe:?}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_file_absent_returns_absent() {
+        let base = env::temp_dir().join("topology_doctor_vf_absent");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("VERSION"); // does not exist
+
+        let probe = parse_version_file(&path);
+        assert_eq!(
+            probe,
+            VersionProbe::Absent,
+            "absent VERSION file must return Absent"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn version_file_skew_vs_match() {
+        // Call the production `version_skew()` function for both cases so this test
+        // goes red if the skew comparison is broken (previously the test only asserted
+        // values it had just constructed, never exercising the production code path).
+        let my_ver = version::tool();
+
+        // Case: matching version — version_skew must return false (no skew → no failure).
+        let matching = VersionFile {
+            version: my_ver.to_string(),
+            rules_schema: 1,
+        };
+        assert!(
+            !version_skew(&matching),
+            "version_skew must return false when payload version matches binary version"
+        );
+
+        // Case: mismatched version — version_skew must return true (skew → failure).
+        let skewed = VersionFile {
+            version: "99.99.99".to_string(),
+            rules_schema: 1,
+        };
+        assert!(
+            version_skew(&skewed),
+            "version_skew must return true when payload version differs from binary version"
+        );
+    }
+
+    #[test]
+    fn version_file_parse_error_on_bad_toml() {
+        let base = env::temp_dir().join("topology_doctor_vf_bad");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("VERSION");
+        // Malformed TOML
+        fs::write(&path, "not valid = toml [[[\n").unwrap();
+
+        let probe = parse_version_file(&path);
+        assert!(
+            matches!(probe, VersionProbe::ParseError(_)),
+            "malformed TOML must return ParseError, got: {probe:?}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
 }

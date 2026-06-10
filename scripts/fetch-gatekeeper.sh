@@ -8,7 +8,7 @@
 #
 # Test seams:
 #   TOPOLOGY_RELEASE_BASE_URL  override the URL prefix (supports file:// for offline tests)
-#   TOPOLOGY_VERSION           override the pinned version read from plugin.json
+#   TOPOLOGY_VERSION           override the version (bypasses VERSION file / Cargo.toml read)
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -49,18 +49,26 @@ case "$OS/$ARCH" in
     ;;
 esac
 
-# Resolve version: env override, else extract from plugin.json (line-anchored, no jq).
+# Resolve version: env override → VERSION file at root → gatekeeper/Cargo.toml (dev checkout).
 if [[ -n "${TOPOLOGY_VERSION:-}" ]]; then
   VERSION="$TOPOLOGY_VERSION"
 else
-  PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
-  if [[ ! -f "$PLUGIN_JSON" ]]; then
-    echo "fetch-gatekeeper: cannot find $PLUGIN_JSON to read pinned version" >&2
-    exit 1
-  fi
-  VERSION="$(grep -m1 '"version"' "$PLUGIN_JSON" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
-  if [[ -z "$VERSION" ]]; then
-    echo "fetch-gatekeeper: failed to parse version from $PLUGIN_JSON" >&2
+  VERSION_FILE="$REPO_ROOT/VERSION"
+  CARGO_TOML="$REPO_ROOT/gatekeeper/Cargo.toml"
+  if [[ -f "$VERSION_FILE" ]]; then
+    VERSION="$(grep -m1 '^version' "$VERSION_FILE" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
+    if [[ -z "$VERSION" ]]; then
+      echo "fetch-gatekeeper: failed to parse version from $VERSION_FILE" >&2
+      exit 1
+    fi
+  elif [[ -f "$CARGO_TOML" ]]; then
+    VERSION="$(grep -m1 '^version' "$CARGO_TOML" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
+    if [[ -z "$VERSION" ]]; then
+      echo "fetch-gatekeeper: failed to parse version from $CARGO_TOML" >&2
+      exit 1
+    fi
+  else
+    echo "fetch-gatekeeper: cannot determine version — no VERSION file and no gatekeeper/Cargo.toml" >&2
     exit 1
   fi
 fi
