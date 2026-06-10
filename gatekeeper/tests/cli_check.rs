@@ -322,3 +322,158 @@ fn check_docs_roadmap_verify_pointer_missing_exits_1() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+// ── AC-2: External-project artifacts under .claude/topology/ ──────────────
+//
+// A scratch git repo with TOPOLOGY_ROOT pointing at a separate scratch framework
+// dir exercises the differing-roots path.
+
+/// Build a minimal framework dir: skills/ + AGENTS.md (marks it as a topology root).
+fn scratch_framework(tag: &str) -> PathBuf {
+    let fw =
+        std::env::temp_dir().join(format!("topo_check_fw_{tag}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&fw);
+    fs::create_dir_all(fw.join("skills")).unwrap();
+    fs::write(fw.join("AGENTS.md"), "").unwrap();
+    fw
+}
+
+/// Build a scratch git project dir: git init, no topology root markers.
+fn scratch_project(tag: &str) -> PathBuf {
+    let proj =
+        std::env::temp_dir().join(format!("topo_check_proj_{tag}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&proj);
+    fs::create_dir_all(&proj).unwrap();
+    // init a git repo so project_root() resolves here
+    std::process::Command::new("git")
+        .args(["-C", proj.to_str().unwrap(), "init", "-q", "-b", "main"])
+        .status()
+        .unwrap();
+    proj
+}
+
+/// Run gatekeeper from `cwd` with TOPOLOGY_ROOT overridden to `fw`.
+fn run_with_topology_root(cwd: &Path, fw: &Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
+        .current_dir(cwd)
+        .env("TOPOLOGY_ROOT", fw)
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn external_project_design_fails_naming_claude_topology() {
+    // AC-2: FAIL output names .claude/topology/ (not docs/).
+    let fw = scratch_framework("ext_design_fail");
+    let proj = scratch_project("ext_design_fail");
+
+    let (code, out) = run_with_topology_root(
+        &proj,
+        &fw,
+        &["check", "design", "--feature", "installer-v2"],
+    );
+    assert_eq!(code, 1, "should fail when artifacts absent; out:\n{out}");
+    // FAIL message must name .claude/topology/, not docs/
+    assert!(
+        out.contains(".claude/topology/"),
+        "FAIL must name .claude/topology/; got:\n{out}"
+    );
+    assert!(
+        !out.contains("no docs/research"),
+        "must NOT name docs/research; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
+#[test]
+fn external_project_design_passes_after_artifacts_placed_in_claude_topology() {
+    // AC-2: placing research + spec under .claude/topology/ → PASS.
+    let fw = scratch_framework("ext_design_pass");
+    let proj = scratch_project("ext_design_pass");
+
+    // Place research note under .claude/topology/research/
+    let research_dir = proj.join(".claude").join("topology").join("research");
+    fs::create_dir_all(&research_dir).unwrap();
+    fs::write(
+        research_dir.join("2026-06-10-installer-v2.md"),
+        "# Research\n\nFindings.\n",
+    )
+    .unwrap();
+
+    // Without spec → design still fails (but names .claude/topology/).
+    let (code, out) = run_with_topology_root(
+        &proj,
+        &fw,
+        &["check", "design", "--feature", "installer-v2"],
+    );
+    assert_eq!(code, 1, "no spec yet → fail; out:\n{out}");
+    assert!(
+        out.contains(".claude/topology/"),
+        "FAIL must still name .claude/topology/; got:\n{out}"
+    );
+
+    // Place spec under .claude/topology/specs/ → PASS.
+    let specs_dir = proj.join(".claude").join("topology").join("specs");
+    fs::create_dir_all(&specs_dir).unwrap();
+    fs::write(
+        specs_dir.join("2026-06-10-installer-v2.md"),
+        "# Spec\n\nReady.\n",
+    )
+    .unwrap();
+
+    let (code, out) = run_with_topology_root(
+        &proj,
+        &fw,
+        &["check", "design", "--feature", "installer-v2"],
+    );
+    assert_eq!(
+        code, 0,
+        "design should PASS after both artifacts placed; out:\n{out}"
+    );
+    assert!(
+        out.contains("PASS"),
+        "output should say PASS; got:\n{out}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
+#[test]
+fn external_project_docs_root_not_found() {
+    // AC-2: files under the project's root docs/ are NOT found (old location genuinely moved).
+    let fw = scratch_framework("ext_docs_ignored");
+    let proj = scratch_project("ext_docs_ignored");
+
+    // Place research + spec under the project's root docs/ (the old location).
+    let research_dir = proj.join("docs").join("research");
+    let specs_dir = proj.join("docs").join("specs");
+    fs::create_dir_all(&research_dir).unwrap();
+    fs::create_dir_all(&specs_dir).unwrap();
+    fs::write(
+        research_dir.join("2026-06-10-installer-v2.md"),
+        "# Research\n",
+    )
+    .unwrap();
+    fs::write(specs_dir.join("2026-06-10-installer-v2.md"), "# Spec\n").unwrap();
+
+    // Gate should still FAIL: artifacts in project's root docs/ are not found.
+    let (code, _out) = run_with_topology_root(
+        &proj,
+        &fw,
+        &["check", "design", "--feature", "installer-v2"],
+    );
+    assert_eq!(
+        code, 1,
+        "artifacts in project docs/ must NOT be found when roots differ"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}

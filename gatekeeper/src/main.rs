@@ -317,7 +317,8 @@ fn cmd_check(args: &[String]) -> i32 {
             }
             match find_doc("research", &f) {
                 None => {
-                    println!("FAIL design gate: research-first — no docs/research/*{f}*.md");
+                    let dir = artifacts_root().join("research");
+                    println!("FAIL design gate: research-first — no {}/*{f}*.md", dir.display());
                     1
                 }
                 Some(_) => gate_doc_exists("specs", &f),
@@ -464,12 +465,12 @@ fn base_arg(args: &[String]) -> Option<String> {
     None
 }
 
-/// Find a markdown doc under docs/<sub>/ whose filename contains the feature slug.
+/// Find a markdown doc under <artifacts_root>/<sub>/ whose filename contains the feature slug.
 pub(crate) fn find_doc(sub: &str, feature: &str) -> Option<PathBuf> {
     if feature.is_empty() {
         return None;
     }
-    let dir = framework_root().join("docs").join(sub);
+    let dir = artifacts_root().join(sub);
     let rd = fs::read_dir(dir).ok()?;
     for e in rd.flatten() {
         let p = e.path();
@@ -492,7 +493,8 @@ fn gate_doc_exists(sub: &str, feature: &str) -> i32 {
             0
         }
         None => {
-            println!("FAIL {sub} gate: no docs/{sub}/*{feature}*.md found");
+            let dir = artifacts_root().join(sub);
+            println!("FAIL {sub} gate: no {}/*{feature}*.md found", dir.display());
             1
         }
     }
@@ -504,7 +506,8 @@ fn gate_plan(feature: &str) -> i32 {
         return 2;
     }
     let Some(p) = find_doc("plans", feature) else {
-        println!("FAIL plan gate: no docs/plans/*{feature}*.md found");
+        let dir = artifacts_root().join("plans");
+        println!("FAIL plan gate: no {}/*{feature}*.md found", dir.display());
         return 1;
     };
     let text = fs::read_to_string(&p).unwrap_or_default();
