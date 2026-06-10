@@ -7,15 +7,28 @@
 #   "hooks": { "UserPromptSubmit": "/abs/path/to/topology/hooks/skill-activation.sh" }
 #
 # Falls back gracefully if the gatekeeper binary isn't built yet.
+#
+# Binary resolution order:
+#   1. $GATEKEEPER_BIN          (explicit override, wins when set and executable)
+#   2. $ROOT/bin/gatekeeper     (installer-placed prebuilt)
+#   3. $CLAUDE_PLUGIN_DATA/bin/gatekeeper  (plugin-provisioned prebuilt)
+#   4. gatekeeper on PATH
+#   5. $ROOT/gatekeeper/target/release/gatekeeper  (repo release build)
+#   6. $ROOT/gatekeeper/target/debug/gatekeeper    (repo debug build)
+#   7. advisory message + exit 0 (fail-open)
 set -euo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$HOOK_DIR")}"
 
-# $GATEKEEPER_BIN (an explicit override) wins when set and executable; otherwise prefer an
-# installed binary, else the release build, else the debug build.
+# Resolution order: explicit override → installer bin/ → plugin data bin/ →
+# PATH → repo release build → repo debug build → advisory + exit 0 (fail-open).
 if [[ -n "${GATEKEEPER_BIN:-}" && -x "${GATEKEEPER_BIN:-}" ]]; then
   GK="$GATEKEEPER_BIN"
+elif [[ -x "$ROOT/bin/gatekeeper" ]]; then
+  GK="$ROOT/bin/gatekeeper"
+elif [[ -n "${CLAUDE_PLUGIN_DATA:-}" && -x "$CLAUDE_PLUGIN_DATA/bin/gatekeeper" ]]; then
+  GK="$CLAUDE_PLUGIN_DATA/bin/gatekeeper"
 elif command -v gatekeeper >/dev/null 2>&1; then
   GK="$(command -v gatekeeper)"
 elif [[ -x "$ROOT/gatekeeper/target/release/gatekeeper" ]]; then
