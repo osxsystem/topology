@@ -96,6 +96,11 @@ struct AllowBlob {
 struct Integrity {
     #[serde(default)]
     protected_paths: Vec<String>,
+    // Introduced in the protected-path split (ADR-0013): entries resolved against the artifacts
+    // root at runtime instead of the framework root.  Older committed rules.toml files that lack
+    // this key still parse cleanly via the serde default.
+    #[serde(default)]
+    protected_artifact_paths: Vec<String>,
 }
 
 // ---------- compiled model ----------
@@ -129,7 +134,12 @@ pub struct Rules {
     command_set: RegexSet,
     allows: Vec<CompiledAllow>,
     allow_blobs: Vec<AllowBlob>,
+    /// Paths protected under the FRAMEWORK root (e.g. security/rules.toml, gatekeeper/src/…).
     protected: Vec<String>,
+    /// Paths protected under the ARTIFACTS root (e.g. "memory" → <artifacts_root>/memory/).
+    /// Split from `protected` so governed-project handoffs resolve against the project root, not
+    /// the framework root.  See the protected-path bypass fix (ADR-0013).
+    protected_artifacts: Vec<String>,
 }
 
 /// Read and fully validate the rules file at `path`.
@@ -219,6 +229,7 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
         allows,
         allow_blobs: parsed.allow_blob,
         protected: parsed.integrity.protected_paths,
+        protected_artifacts: parsed.integrity.protected_artifact_paths,
     })
 }
 
@@ -331,10 +342,11 @@ fn read_stdin_bytes(cap: usize) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// Entry point for `gatekeeper scan ...`. `root` is the framework root. Returns the process exit
-/// code (0 clean / 1 veto / 2 usage or load error). Rules load first so a broken rules file
-/// fails closed (exit 2) on every subcommand.
-pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
+/// Entry point for `gatekeeper scan ...`. `root` is the framework root; `artifacts_root` is the
+/// artifacts root for the current project (<project>/docs when project == framework, else
+/// <project>/.claude/topology). Returns the process exit code (0 clean / 1 veto / 2 usage or
+/// load error). Rules load first so a broken rules file fails closed (exit 2) on every subcommand.
+pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path) -> i32 {
     let rules_path = root.join("security").join("rules.toml");
     let rules = match load_rules(&rules_path) {
         Ok(r) => r,
@@ -344,10 +356,15 @@ pub fn cmd_scan(args: &[String], root: &Path) -> i32 {
         }
     };
     match args.first().map(String::as_str) {
-        Some("--hook") => scan_hook(&rules, root),
+        Some("--hook") => scan_hook(&rules, root, artifacts_root),
         Some("--cmd") => scan_cmd_cmd(&rules),
-        Some("--check-path") => scan_check_path(&rules, root, args.get(1).map(String::as_str)),
-        Some("--staged") => scan_staged(&rules, root, STAGED_BLOB_CAP),
+        Some("--check-path") => scan_check_path(
+            &rules,
+            root,
+            artifacts_root,
+            args.get(1).map(String::as_str),
+        ),
+        Some("--staged") => scan_staged(&rules, root, artifacts_root, STAGED_BLOB_CAP),
         Some("--content") => scan_content_cmd(&rules),
         _ => {
             eprintln!(
@@ -506,9 +523,34 @@ fn is_protected(root: &Path, protected: &[String], path: &str) -> bool {
     })
 }
 
-fn scan_check_path(rules: &Rules, root: &Path, path: Option<&str>) -> i32 {
+/// Check protection against BOTH the framework-anchored set and the artifacts-anchored set.
+/// A path is protected if it matches either; the two sets resolve against distinct roots so that
+/// governed-project handoffs (artifacts_root = <project>/.claude/topology) are not silently
+/// bypassed when root = framework_root (a different directory).
+fn is_protected_any(
+    framework_root: &Path,
+    framework_protected: &[String],
+    artifacts_root: &Path,
+    artifact_protected: &[String],
+    path: &str,
+) -> bool {
+    is_protected(framework_root, framework_protected, path)
+        || is_protected(artifacts_root, artifact_protected, path)
+}
+
+fn scan_check_path(rules: &Rules, root: &Path, artifacts_root: &Path, path: Option<&str>) -> i32 {
     match path {
-        Some(p) if is_protected(root, &rules.protected, p) => 1,
+        Some(p)
+            if is_protected_any(
+                root,
+                &rules.protected,
+                artifacts_root,
+                &rules.protected_artifacts,
+                p,
+            ) =>
+        {
+            1
+        }
         Some(_) => 0,
         None => {
             eprintln!("gatekeeper scan --check-path <path>  (path required)");
@@ -607,21 +649,27 @@ fn git_index_mode(root: &Path, path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// protected_paths from the COMMITTED rules.toml (HEAD), so the commit-time integrity guard cannot
-/// be disarmed by a staged edit to rules.toml in the same commit. Empty if HEAD lacks the file or
-/// it does not parse (the working-tree set still applies; this only ever ADDS protection).
-fn head_protected_paths(root: &Path) -> Vec<String> {
+/// Both protected sets from the COMMITTED rules.toml (HEAD), so the commit-time integrity guard
+/// cannot be disarmed by a staged edit to rules.toml in the same commit.  Returns
+/// `(framework_protected, artifact_protected)`; each is empty if HEAD lacks the file or it does
+/// not parse (the working-tree set still applies; this only ever ADDS protection).
+///
+/// Note: older HEAD commits carry `docs/memory`/`.claude/topology/memory` in `protected_paths`,
+/// not in `protected_artifact_paths`.  Those entries still resolve against the framework root via
+/// the framework-anchored union, which is correct for the framework-repo case and benign (if
+/// slightly over-wide) for governed projects during the transition period.
+fn head_protected_paths(root: &Path) -> (Vec<String>, Vec<String>) {
     match git_raw(root, &["show", "HEAD:security/rules.toml"]) {
         Ok(bytes) => std::str::from_utf8(&bytes)
             .ok()
             .and_then(|s| parse_rules(s).ok())
-            .map(|r| r.protected)
+            .map(|r| (r.protected, r.protected_artifacts))
             .unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Err(_) => (Vec::new(), Vec::new()),
     }
 }
 
-fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
+fn scan_staged(rules: &Rules, root: &Path, artifacts_root: &Path, cap: usize) -> i32 {
     let mut blocked = false;
 
     // (1) Scan enumeration: ACMRT — content of each added/copied/modified/renamed/type-changed
@@ -699,12 +747,24 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
     }
 
     // (2) Integrity enumeration: ACDMRT — broader; both rename sides vs protected_paths. Honor the
-    // working-tree AND the committed (HEAD) protected set, so a commit cannot remove a path from
-    // protected_paths to slip its own weakening of rules.toml past this guard.
-    let mut protected_union: Vec<String> = rules.protected.clone();
-    for p in head_protected_paths(root) {
-        if !protected_union.contains(&p) {
-            protected_union.push(p);
+    // working-tree AND the committed (HEAD) protected sets, so a commit cannot remove a path from
+    // either set to slip its own weakening of rules.toml past this guard.
+    //
+    // The two sets (framework-anchored and artifacts-anchored) are unioned independently: entries
+    // from HEAD's `protected_paths` continue to resolve against the framework root, and entries from
+    // HEAD's `protected_artifact_paths` resolve against the artifacts root.  This preserves correct
+    // resolution semantics across the transition from the old single-set layout.
+    let (head_fw, head_art) = head_protected_paths(root);
+    let mut protected_fw_union: Vec<String> = rules.protected.clone();
+    for p in head_fw {
+        if !protected_fw_union.contains(&p) {
+            protected_fw_union.push(p);
+        }
+    }
+    let mut protected_art_union: Vec<String> = rules.protected_artifacts.clone();
+    for p in head_art {
+        if !protected_art_union.contains(&p) {
+            protected_art_union.push(p);
         }
     }
     match git_name_status_z(
@@ -721,7 +781,13 @@ fn scan_staged(rules: &Rules, root: &Path, cap: usize) -> i32 {
         Ok(entries) => {
             for (status, paths) in entries {
                 for p in &paths {
-                    if is_protected(root, &protected_union, p) {
+                    if is_protected_any(
+                        root,
+                        &protected_fw_union,
+                        artifacts_root,
+                        &protected_art_union,
+                        p,
+                    ) {
                         eprintln!("BLOCK protected-path: staged change ({status}) to {p}");
                         blocked = true;
                     }
@@ -889,13 +955,26 @@ fn reconstruct(file_path: &str, ti: &ToolInput, cap: usize) -> Option<String> {
     Some(text)
 }
 
-fn hook_path_protected(protected: &[String], file_path: &str, root: &Path) -> bool {
-    // resolve_against_root handles both absolute hook paths and `..` aliases that climb out of and
-    // back into the repo, so a parent-and-return spelling cannot dodge the protected-file gate.
-    is_protected(root, protected, file_path)
+/// Returns true if `file_path` matches any framework-anchored OR artifacts-anchored protected entry.
+/// resolve_against_root handles both absolute hook paths and `..` aliases that climb out of and
+/// back into the repo, so a parent-and-return spelling cannot dodge the protected-file gate.
+fn hook_path_protected(
+    framework_protected: &[String],
+    artifact_protected: &[String],
+    file_path: &str,
+    framework_root: &Path,
+    artifacts_root: &Path,
+) -> bool {
+    is_protected_any(
+        framework_root,
+        framework_protected,
+        artifacts_root,
+        artifact_protected,
+        file_path,
+    )
 }
 
-fn scan_hook(rules: &Rules, root: &Path) -> i32 {
+fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path) -> i32 {
     let data = match read_stdin_bytes(HOOK_INPUT_CAP) {
         Ok(d) => d,
         Err(e) => {
@@ -948,7 +1027,13 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 eprintln!("gatekeeper scan --hook: Write event missing 'file_path'");
                 return 2;
             };
-            if hook_path_protected(&rules.protected, &fp, root) {
+            if hook_path_protected(
+                &rules.protected,
+                &rules.protected_artifacts,
+                &fp,
+                root,
+                artifacts_root,
+            ) {
                 return emit_ask(&fp);
             }
             let Some(content) = event.tool_input.content else {
@@ -968,7 +1053,13 @@ fn scan_hook(rules: &Rules, root: &Path) -> i32 {
                 eprintln!("gatekeeper scan --hook: Edit event missing 'file_path'");
                 return 2;
             };
-            if hook_path_protected(&rules.protected, &fp, root) {
+            if hook_path_protected(
+                &rules.protected,
+                &rules.protected_artifacts,
+                &fp,
+                root,
+                artifacts_root,
+            ) {
                 return emit_ask(&fp);
             }
             // A recognized Edit/MultiEdit with no MEANINGFUL edit operation is malformed:
@@ -1028,9 +1119,11 @@ mod staged_unit {
         git_raw(&root, &["config", "user.name", "t"]).unwrap();
         std::fs::write(root.join("big.txt"), "0123456789ABCDEFGHIJ").unwrap(); // 20 bytes
         git_raw(&root, &["add", "big.txt"]).unwrap();
+        // artifacts_root is irrelevant for this test (no protected_artifact_paths), so reuse root.
+        let artifacts_root = root.clone();
         let rules = parse_rules("schema_version = 1").unwrap();
         assert_eq!(
-            scan_staged(&rules, &root, 8),
+            scan_staged(&rules, &root, &artifacts_root, 8),
             1,
             "20-byte blob over an 8-byte cap blocks"
         );
@@ -1044,7 +1137,7 @@ blob_oid = "{oid}"
 "#
         );
         assert_eq!(
-            scan_staged(&parse_rules(&toml).unwrap(), &root, 8),
+            scan_staged(&parse_rules(&toml).unwrap(), &root, &artifacts_root, 8),
             0,
             "allowlisted by blob_oid passes"
         );
@@ -1105,7 +1198,9 @@ mod perf_report {
             git_raw(&root, &["add", "."]).unwrap();
             let r = parse_rules("schema_version = 1").unwrap();
             let t = Instant::now();
-            let _ = scan_staged(&r, &root, STAGED_BLOB_CAP);
+            // artifacts_root is irrelevant for this test (no protected_artifact_paths in the
+            // minimal rules); reuse root as a valid dummy path.
+            let _ = scan_staged(&r, &root, &root, STAGED_BLOB_CAP);
             println!("staged N={n}: {} ms", t.elapsed().as_millis());
             let _ = std::fs::remove_dir_all(&root);
         }
@@ -1318,48 +1413,109 @@ mod load_tests {
 mod is_protected_tests {
     use super::*;
 
-    fn root() -> std::path::PathBuf {
-        // Use a stable fake root (no filesystem access needed — all lexical).
-        std::path::PathBuf::from("/repo/root")
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Stable fake framework root (no filesystem access needed — all lexical).
+    fn fw_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("/framework/root")
     }
 
-    fn protected() -> Vec<String> {
+    /// Framework-anchored protected set (exact-match entries; no artifact paths).
+    fn fw_protected() -> Vec<String> {
         vec![
-            // Exact-match entries (existing behaviour must be preserved).
             "security/rules.toml".to_string(),
             "gatekeeper/src/scan.rs".to_string(),
-            // Directory-prefix entries for handoff artifacts (ADR-0013):
-            //   docs/memory   — framework repo (project == framework)
-            //   .claude/topology/memory — governed project (project != framework)
-            "docs/memory".to_string(),
-            ".claude/topology/memory".to_string(),
         ]
     }
 
-    // ---- PROTECTED (must return true) ----
+    /// Artifact-anchored protected set: single entry "memory", resolved at runtime against the
+    /// artifacts root.  This covers both layouts without hard-coding either full path.
+    fn artifact_protected() -> Vec<String> {
+        vec!["memory".to_string()]
+    }
+
+    // ── Framework-repo case (equal roots): artifacts_root = fw_root/docs ─────
+
+    /// In the framework repo the artifacts root is <framework_root>/docs, so the artifact entry
+    /// "memory" resolves to <framework_root>/docs/memory, which is the docs/memory/ path.
+    fn fw_artifacts_root() -> std::path::PathBuf {
+        fw_root().join("docs")
+    }
+
+    // ── Governed-project case: distinct project and framework roots ───────────
+
+    /// A project root that is clearly separate from the framework root.
+    fn project_root() -> std::path::PathBuf {
+        std::path::PathBuf::from("/some/project")
+    }
+
+    /// In a governed project the artifacts root is <project>/.claude/topology, so the artifact
+    /// entry "memory" resolves to <project>/.claude/topology/memory.
+    fn project_artifacts_root() -> std::path::PathBuf {
+        project_root().join(".claude").join("topology")
+    }
+
+    // ── PROTECTED — framework-repo layout (docs/memory) ──────────────────────
+    //
+    // In the framework repo: artifacts_root = <fw_root>/docs, entry "memory" → docs/memory/.
+    // All paths here use ABSOLUTE forms (as the hook always delivers), resolved under fw_root.
 
     #[test]
     fn file_inside_docs_memory_is_protected() {
+        // Absolute path under fw_root/docs/memory — resolved against artifacts_root it matches the
+        // "memory" entry exactly by Path::starts_with.
+        let target = format!("{}/docs/memory/x.md", fw_root().display());
         assert!(
-            is_protected(&root(), &protected(), "docs/memory/x.md"),
+            is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
             "a file inside docs/memory/ must be protected (framework-repo path)"
         );
     }
 
     #[test]
-    fn file_inside_claude_topology_memory_is_protected() {
+    fn absolute_in_repo_path_to_docs_memory_file_is_protected() {
+        let abs = format!("{}/docs/memory/some.handoff.md", fw_root().display());
         assert!(
-            is_protected(&root(), &protected(), ".claude/topology/memory/x.md"),
-            "a file inside .claude/topology/memory/ must be protected (governed-project path)"
+            is_protected(&fw_artifacts_root(), &artifact_protected(), &abs),
+            "an absolute in-repo path into docs/memory/ must be protected"
         );
     }
 
     #[test]
-    fn absolute_in_repo_path_to_docs_memory_file_is_protected() {
-        let abs = format!("{}/docs/memory/some.handoff.md", root().display());
+    fn dotdot_alias_into_docs_memory_is_protected() {
+        // Absolute path with a .. component that resolves back to docs/memory/x.md.
+        // /framework/root/docs/memory/../memory/x.md → /framework/root/docs/memory/x.md
+        let target = format!("{}/docs/memory/../memory/x.md", fw_root().display());
         assert!(
-            is_protected(&root(), &protected(), &abs),
-            "an absolute in-repo path into docs/memory/ must be protected"
+            is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
+            "a .. alias that resolves into docs/memory/ must be protected"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_docs_memory_is_protected() {
+        // Absolute path with trailing slash; Path strips it, so it resolves to docs/memory.
+        let target = format!("{}/docs/memory/", fw_root().display());
+        assert!(
+            is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
+            "docs/memory/ (trailing slash) must be protected"
+        );
+    }
+
+    // ── PROTECTED — governed-project layout (.claude/topology/memory) ─────────
+    //
+    // These three tests use DISTINCT framework and artifacts roots (governed scenario) and assert
+    // protection via the artifact-anchored set.  Previously they were masked because both the
+    // target path and the protected entry were resolved against the SAME (framework) root — fixing
+    // the protected-path bypass bug (ADR-0013).
+
+    #[test]
+    fn file_inside_claude_topology_memory_is_protected() {
+        // Governed-project case: artifacts_root = <project>/.claude/topology, entry "memory".
+        // The target path is absolute under the PROJECT root, not the framework root.
+        let target = format!("{}/.claude/topology/memory/x.md", project_root().display());
+        assert!(
+            is_protected(&project_artifacts_root(), &artifact_protected(), &target),
+            "a file inside <project>/.claude/topology/memory/ must be protected (governed-project path)"
         );
     }
 
@@ -1367,57 +1523,88 @@ mod is_protected_tests {
     fn absolute_in_repo_path_to_claude_topology_memory_is_protected() {
         let abs = format!(
             "{}/.claude/topology/memory/some.handoff.md",
-            root().display()
+            project_root().display()
         );
         assert!(
-            is_protected(&root(), &protected(), &abs),
-            "an absolute in-repo path into .claude/topology/memory/ must be protected"
-        );
-    }
-
-    #[test]
-    fn dotdot_alias_into_docs_memory_is_protected() {
-        // docs/memory/../memory/x.md resolves to docs/memory/x.md.
-        assert!(
-            is_protected(&root(), &protected(), "docs/memory/../memory/x.md"),
-            "a .. alias that resolves into docs/memory/ must be protected"
-        );
-    }
-
-    #[test]
-    fn trailing_slash_docs_memory_is_protected() {
-        // docs/memory/ resolves to docs/memory (Path strips trailing slash).
-        assert!(
-            is_protected(&root(), &protected(), "docs/memory/"),
-            "docs/memory/ (trailing slash) must be protected"
+            is_protected(&project_artifacts_root(), &artifact_protected(), &abs),
+            "an absolute in-project path into .claude/topology/memory/ must be protected"
         );
     }
 
     #[test]
     fn trailing_slash_claude_topology_memory_is_protected() {
+        let target = format!("{}/.claude/topology/memory/", project_root().display());
         assert!(
-            is_protected(&root(), &protected(), ".claude/topology/memory/"),
-            ".claude/topology/memory/ (trailing slash) must be protected"
+            is_protected(&project_artifacts_root(), &artifact_protected(), &target),
+            "<project>/.claude/topology/memory/ (trailing slash) must be protected"
         );
     }
 
+    // ── REGRESSION: the old bypass bug ───────────────────────────────────────
+    //
+    // Before the fix, `is_protected` resolved both the target and the entry against a SINGLE root
+    // (the framework root).  A governed-project absolute path such as
+    // `<project>/.claude/topology/memory/x.md` was NOT matched when root = framework_root (a
+    // different directory), so the protection was silently bypassed.
+    //
+    // This test pins that exact scenario:
+    //   - framework root:  /framework/root
+    //   - project root:    /some/project
+    //   - target:          /some/project/.claude/topology/memory/x.md
+    //
+    // The artifact-anchored call IS protected; the framework-anchored call (old bug) is NOT.
+
+    #[test]
+    fn governed_project_memory_bypasses_framework_anchored_check() {
+        // Pin the old bug: resolving a governed-project path against the framework root alone
+        // must NOT match — this is the bypass that is_protected_any fixes.
+        let target = format!("{}/.claude/topology/memory/x.md", project_root().display());
+        // Framework-anchored with the old entry style: does NOT cover governed project.
+        let old_fw_entries = vec![".claude/topology/memory".to_string()];
+        assert!(
+            !is_protected(&fw_root(), &old_fw_entries, &target),
+            "framework-root-anchored check alone must NOT match a path under the project root \
+             (this is the bypass; is_protected_any fixes it)"
+        );
+        // Artifact-anchored DOES cover it.
+        assert!(
+            is_protected(&project_artifacts_root(), &artifact_protected(), &target),
+            "artifact-root-anchored check MUST match the governed-project path"
+        );
+        // And is_protected_any combines both correctly.
+        assert!(
+            is_protected_any(
+                &fw_root(),
+                &[],
+                &project_artifacts_root(),
+                &artifact_protected(),
+                &target,
+            ),
+            "is_protected_any must return true when the artifact-anchored check matches"
+        );
+    }
+
+    // ── PROTECTED — exact-match framework entries ─────────────────────────────
+
     #[test]
     fn exact_match_entry_still_protected() {
-        // Regression: exact-match entries must keep working after the prefix change.
+        // Regression: exact-match framework entries must keep working after the split.
         assert!(
-            is_protected(&root(), &protected(), "security/rules.toml"),
+            is_protected(&fw_root(), &fw_protected(), "security/rules.toml"),
             "existing exact-match protected paths must still be protected"
         );
     }
 
-    // ---- NOT PROTECTED (must return false) ----
+    // ── NOT PROTECTED ─────────────────────────────────────────────────────────
 
     #[test]
     fn template_file_in_memory_root_not_protected() {
-        // memory/TEMPLATE.handoff.md lives under memory/ (not docs/memory/ or .claude/topology/memory/).
+        // <fw_root>/memory/TEMPLATE.handoff.md is NOT under <fw_artifacts_root>/memory/
+        // (i.e. not under <fw_root>/docs/memory/), so it must not be protected.
+        let target = format!("{}/memory/TEMPLATE.handoff.md", fw_root().display());
         assert!(
-            !is_protected(&root(), &protected(), "memory/TEMPLATE.handoff.md"),
-            "memory/TEMPLATE.handoff.md must NOT be protected (it is not inside docs/memory/ or .claude/topology/memory/)"
+            !is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
+            "memory/TEMPLATE.handoff.md must NOT be protected (not inside docs/memory/ or .claude/topology/memory/)"
         );
     }
 
@@ -1425,18 +1612,20 @@ mod is_protected_tests {
     fn docs_memory_evil_sibling_not_protected() {
         // docs/memory-evil/ shares a string prefix with docs/memory but
         // Path::starts_with is component-wise and must reject it.
+        let target = format!("{}/docs/memory-evil/x.md", fw_root().display());
         assert!(
-            !is_protected(&root(), &protected(), "docs/memory-evil/x.md"),
+            !is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
             "docs/memory-evil/x.md must NOT be protected — Path::starts_with is component-wise"
         );
     }
 
     #[test]
     fn old_memory_artifacts_path_no_longer_protected() {
-        // Regression guard: after ADR-0013, the old path must no longer be in the
-        // fixture-protected set.
+        // Regression guard: after ADR-0013 the old path must not be in the artifact-protected set.
+        // <fw_root>/memory/artifacts/x.md is NOT under <fw_artifacts_root>/memory/ (docs/memory/).
+        let target = format!("{}/memory/artifacts/x.md", fw_root().display());
         assert!(
-            !is_protected(&root(), &protected(), "memory/artifacts/x.md"),
+            !is_protected(&fw_artifacts_root(), &artifact_protected(), &target),
             "memory/artifacts/x.md must NOT be protected under the new protected set"
         );
     }

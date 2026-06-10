@@ -161,10 +161,13 @@ protected_paths = [
   ".claude/settings.json",
   ".claude/settings.local.json",
   ".git/hooks/pre-commit",
-  # Directory-prefix entries for handoff artifacts (ADR-0013):
-  #   docs/memory              — framework-repo path (project == framework, artifacts_root = docs/)
-  #   .claude/topology/memory  — governed-project path (project != framework, artifacts_root = .claude/topology/)
-  # is_protected uses Path::starts_with (component-wise), so docs/memory-evil/ is NOT matched.
-  "docs/memory",
-  ".claude/topology/memory",
 ]
+
+# Directory-prefix entries for handoff artifacts (ADR-0013).
+# Resolved against the ARTIFACTS root at runtime, not the framework root, so the single entry
+# "memory" covers both layouts without over-protecting an unrelated docs/memory/ in a governed
+# project:
+#   framework repo (project == framework):  artifacts_root = <project>/docs     → docs/memory
+#   governed project (project != framework): artifacts_root = <project>/.claude/topology → .claude/topology/memory
+# is_protected uses Path::starts_with (component-wise), so memory-evil/ is NOT matched.
+protected_artifact_paths = ["memory"]

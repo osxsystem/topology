@@ -60,11 +60,16 @@ fn main() {
         Some("list") => cmd_list(),
         Some("activate") => cmd_activate(),
         Some("check") => cmd_check(&args[1..]),
-        Some("scan") => scan::cmd_scan(&args[1..], &framework_root()),
+        Some("scan") => scan::cmd_scan(&args[1..], &framework_root(), &artifacts_root()),
         Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
         Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
         Some("learn") => learn::cmd_learn(&args[1..], &artifacts_root(), &framework_root()),
-        Some("memory") => memory::cmd_memory(&args[1..], &artifacts_root(), &framework_root()),
+        Some("memory") => memory::cmd_memory(
+            &args[1..],
+            &artifacts_root(),
+            &framework_root(),
+            &project_root(),
+        ),
         Some("doctor") => doctor::cmd_doctor(&framework_root()),
         Some("--version") | Some("-V") => {
             println!(
