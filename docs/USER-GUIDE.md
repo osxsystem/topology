@@ -318,6 +318,7 @@ have passed.
 | research | `gatekeeper check research --feature <slug>` | a research note exists in `research/` |
 | design | `gatekeeper check design --feature <slug>` | the research note exists **and** an approved spec exists in `specs/` |
 | plan | `gatekeeper check plan --feature <slug>` | a plan exists in `plans/` with **no placeholder words** (`TBD`, "implement later", …) |
+| tdd | `gatekeeper check tdd --feature <slug> [--base <ref>]` | the commit range has at least one test-only commit strictly before the first production-touching commit (failing-test-first heuristic; passes automatically on docs/tests-only branches) |
 | verify | `gatekeeper check verify --feature <slug>` | a verification note exists in `verify/` |
 | review | `gatekeeper check review --feature <slug> [--base <ref>]` | a fresh critic's artifact passes for the clean `HEAD` (bound to merge-base, both rubric dimensions, no blockers) |
 | finish | `gatekeeper check finish -- <command...>` | the given test command exits `0` |
