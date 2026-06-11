@@ -115,7 +115,6 @@ fn hollow_a_approved_only_spec() {
 // ── (b) empty verify file ─────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "red until verify evidence replay lands (spec §3, task 6)"]
 fn hollow_b_empty_verify_file() {
     // The verify gate's future replay mode (spec §3) fails-closed on zero evidence
     // blocks: an artifact with no ``` evidence ``` fenced blocks fails.  Today the

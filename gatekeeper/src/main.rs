@@ -48,6 +48,7 @@ mod memory;
 mod review;
 mod scan;
 mod tdd;
+mod verify;
 mod version;
 
 const PLACEHOLDERS: &[&str] = &[
@@ -634,9 +635,20 @@ fn handle_check_design(args: &[String]) -> i32 {
         eprintln!("gatekeeper: --feature <slug> is required");
         return 2;
     }
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let arts = artifacts_root();
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check design: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+
     match find_doc("research", &f) {
         None => {
-            let dir = artifacts_root().join("research");
+            let dir = arts.join("research");
             println!(
                 "FAIL design gate: research-first — no {}/*{f}*.md",
                 dir.display()
@@ -668,7 +680,47 @@ fn handle_check_verify(args: &[String]) -> i32 {
     ) {
         return code;
     }
-    gate_doc_exists("verify", "verify", &feature_arg_from(args))
+    gate_verify(&feature_arg_from(args))
+}
+
+/// The verify gate with evidence-replay support (spec §3).
+fn gate_verify(feature: &str) -> i32 {
+    if feature.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+
+    let arts = artifacts_root();
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check verify: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+
+    // File-existence check (presence-mode baseline).
+    let artifact_path = match find_doc("verify", feature) {
+        Some(p) => p,
+        None => {
+            let dir = arts.join("verify");
+            println!(
+                "FAIL verify gate: no {}/*{feature}*.md found",
+                dir.display()
+            );
+            return 1;
+        }
+    };
+
+    let proj = project_root();
+    verify::run_verify_gate(&artifact_path, &proj, &cfg)
 }
 
 fn handle_check_tdd(args: &[String]) -> i32 {
@@ -712,7 +764,23 @@ fn handle_check_finish(args: &[String]) -> i32 {
     {
         return code;
     }
-    let cfg = config::ProjectConfig::load(&artifacts_root());
+
+    let arts = artifacts_root();
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check finish: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+
     // Reconstruct the full args slice that gate_finish expects (args after "check", including
     // the "--" separator).  The handler receives args AFTER "finish", so we pass them directly
     // to gate_finish.
