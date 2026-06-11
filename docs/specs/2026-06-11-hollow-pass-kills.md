@@ -1,6 +1,6 @@
 # Spec — hollow-pass kills + drift-proof CLI surface (v0.5.0)
 
-**Status:** draft
+**Status:** approved
 
 Revision: 4 (2026-06-11) — rev-3 review polish: shadow-env no-op under enforced replay,
 first-match-wins runner patterns, SIGKILL group kill, token-boundary allowlist matching,
