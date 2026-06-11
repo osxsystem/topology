@@ -269,16 +269,10 @@ fn design_gate_spec_no_approval_marker_fails_with_not_approved() {
 #[test]
 fn design_gate_spec_with_draft_status_fails() {
     // `- **Status:** draft` is not approved.
-    let root = root_with_spec(
-        "appr_draft",
-        "# Spec\n\n- **Status:** draft\n\nBody.\n",
-    );
+    let root = root_with_spec("appr_draft", "# Spec\n\n- **Status:** draft\n\nBody.\n");
 
     let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
-    assert_eq!(
-        code, 1,
-        "spec with 'draft' Status should fail; out: {out}"
-    );
+    assert_eq!(code, 1, "spec with 'draft' Status should fail; out: {out}");
     assert!(
         out.contains("not approved"),
         "output should say 'not approved'; got: {out}"
@@ -289,40 +283,28 @@ fn design_gate_spec_with_draft_status_fails() {
 #[test]
 fn design_gate_spec_with_plain_status_approved_passes() {
     // Plain `Status: approved` form.
-    let root = root_with_spec(
-        "appr_plain",
-        "# Spec\n\nStatus: approved\n\nBody.\n",
-    );
+    let root = root_with_spec("appr_plain", "# Spec\n\nStatus: approved\n\nBody.\n");
 
     let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
     assert_eq!(
         code, 0,
         "spec with 'Status: approved' should pass; out: {out}"
     );
-    assert!(
-        out.contains("PASS"),
-        "output should say PASS; got: {out}"
-    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn design_gate_spec_with_bold_status_approved_passes() {
     // `**Status:** approved` Markdown bold form.
-    let root = root_with_spec(
-        "appr_bold",
-        "# Spec\n\n**Status:** approved\n\nBody.\n",
-    );
+    let root = root_with_spec("appr_bold", "# Spec\n\n**Status:** approved\n\nBody.\n");
 
     let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
     assert_eq!(
         code, 0,
         "spec with '**Status:** approved' should pass; out: {out}"
     );
-    assert!(
-        out.contains("PASS"),
-        "output should say PASS; got: {out}"
-    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -339,10 +321,7 @@ fn design_gate_spec_with_bullet_bold_status_approved_passes() {
         code, 0,
         "spec with '- **Status:** approved' should pass; out: {out}"
     );
-    assert!(
-        out.contains("PASS"),
-        "output should say PASS; got: {out}"
-    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -359,10 +338,7 @@ fn design_gate_spec_status_approved_case_insensitive_passes() {
         code, 0,
         "spec with 'Status:   Approved' should pass; out: {out}"
     );
-    assert!(
-        out.contains("PASS"),
-        "output should say PASS; got: {out}"
-    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
     let _ = fs::remove_dir_all(&root);
 }
 

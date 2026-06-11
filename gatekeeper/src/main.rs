@@ -545,10 +545,7 @@ pub(crate) fn spec_is_approved(text: &str) -> bool {
         // Strip all `*` (Markdown bold/italic markers), leading `-` bullets, the 🟢 emoji, and
         // surrounding whitespace.  This normalises every accepted form into `status: approved …`
         // without needing separate branches for each decoration variant.
-        let cleaned: String = line
-            .chars()
-            .filter(|&c| c != '*')
-            .collect::<String>();
+        let cleaned: String = line.chars().filter(|&c| c != '*').collect::<String>();
         let cleaned = cleaned.trim().trim_start_matches('-').trim();
         // Strip the 🟢 emoji if present (multi-byte: match the literal char).
         let cleaned = cleaned.trim_start_matches('🟢').trim();
