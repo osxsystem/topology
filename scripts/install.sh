@@ -647,6 +647,74 @@ for f in "${MANIFEST[@]}"; do
   echo "    $f"
 done
 
+# ─── 12a. Commit hint (local scope only) ─────────────────────────────────────
+# The installer writes governance files (.claude/settings.json, .gitignore, ...)
+# into the project repo but leaves them uncommitted. The review gate's cleanliness
+# check will fail with "uncommitted changes" until they are committed. Detect which
+# manifest files are untracked/modified in the project git repo and offer to commit
+# them (tty) or print a hint (non-tty / --yes).
+#
+# Derivation: walk MANIFEST; keep only files that (a) live inside PROJECT_PATH, (b)
+# are NOT inside the vendored payload (.topology/), and (c) appear as untracked (??)
+# or modified ([ M]) in `git status --porcelain`. That way the hint is always tied
+# to what this install actually did — no hardcoded file list.
+if [[ "$SCOPE" == "local" && -n "$PROJECT_PATH" ]]; then
+  UNCOMMITTED_WIRING=()
+  for f in "${MANIFEST[@]}"; do
+    # Strip any trailing annotation (e.g. " (.topology/ entry)").
+    raw_f="${f%% (*}"
+    # Must be inside the project and not inside .topology/.
+    [[ "$raw_f" == "$PROJECT_PATH/"* ]] || continue
+    rel="${raw_f#"$PROJECT_PATH/"}"
+    [[ "$rel" == .topology/* ]] && continue
+    # Must exist as a file (not a glob description like "hooks/*.sh").
+    [[ -f "$raw_f" ]] || continue
+    # Check git status in the project repo.
+    status_line="$(git -C "$PROJECT_PATH" status --porcelain -- "$rel" 2>/dev/null || true)"
+    [[ -z "$status_line" ]] && continue
+    UNCOMMITTED_WIRING+=("$rel")
+  done
+
+  if [[ ${#UNCOMMITTED_WIRING[@]} -gt 0 ]]; then
+    FILES_LIST="${UNCOMMITTED_WIRING[*]}"
+    if [[ $YES -eq 0 ]] && can_prompt; then
+      # Interactive — offer to commit; default NO so the user is never surprised.
+      echo ""
+      echo "==> Uncommitted governance files detected"
+      echo "    The installer created/modified the following files in your project repo"
+      echo "    but left them uncommitted. The review gate's cleanliness check will fail"
+      echo "    until they are committed."
+      for rel in "${UNCOMMITTED_WIRING[@]}"; do
+        echo "      $rel"
+      done
+      printf 'Commit them now with "chore: wire topology governance"? [y/N]: ' > /dev/tty
+      read -r _commit_ans < /dev/tty || _commit_ans=""
+      if [[ "$_commit_ans" == "y" || "$_commit_ans" == "Y" ]]; then
+        git -C "$PROJECT_PATH" add -- "${UNCOMMITTED_WIRING[@]}"
+        git -C "$PROJECT_PATH" commit -m "chore: wire topology governance"
+        echo "    committed."
+      else
+        echo ""
+        echo "    Hint: run this when ready:"
+        echo "      git add $FILES_LIST && git commit -m \"chore: wire topology governance\""
+      fi
+    else
+      # Non-interactive (piped install or --yes): print a clearly-worded hint.
+      # --yes keeps the default (no commit) and prints the hint.
+      echo ""
+      echo "==> Action needed: commit the governance wiring files"
+      echo "    The installer created/modified these files in your project repo:"
+      for rel in "${UNCOMMITTED_WIRING[@]}"; do
+        echo "      $rel"
+      done
+      echo "    Without committing them, the review gate will fail with"
+      echo "    \"uncommitted changes outside .claude/topology/reviews/\"."
+      echo "    Run:"
+      echo "      git add $FILES_LIST && git commit -m \"chore: wire topology governance\""
+    fi
+  fi
+fi
+
 echo ""
 echo "==> Optional: put gatekeeper on PATH"
 echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"

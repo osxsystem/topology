@@ -64,7 +64,7 @@ This one command:
 5. **Marks** the hook and helper scripts executable.
 6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` — re-run install to update it). For `--project` installs the copy goes into the **project's** `.git/hooks/`, the repo you actually commit to — not the vendored clone's.
 7. **Wires the harness** — for `--project` installs runs `gatekeeper adapt --harness <h>` from the project dir, generating `.claude/settings.json` (or the equivalent for other harnesses) with hook paths pointing at the framework. For global-only installs it prints the exact command to run inside any project.
-8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present.
+8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present. **Commit these wiring files** (`git add .claude/settings.json .gitignore && git commit -m "chore: wire topology governance"`) before your first review gate run — the gate's cleanliness check requires a clean working tree and will fail with "uncommitted changes" if the installer's own files are still untracked. The installer prints an exact hint (or offers interactively with a tty) at the end of its output.
 9. **Detects stale PATH binaries** — if a `gatekeeper` on PATH has a different version, with a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
 10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check — from the *project* directory for `--project` installs, so the check validates the layout your sessions will actually run in.
 
