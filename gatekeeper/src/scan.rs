@@ -1629,10 +1629,17 @@ mod aws_secret_key_tests {
         assert_eq!(val.len(), 40, "test value must be exactly 40 chars");
         let input = format!("AWS_SECRET_ACCESS_KEY={val}\n");
         let f = scan(&r, input.as_bytes());
-        assert_eq!(f.len(), 1, "AWS_SECRET_ACCESS_KEY with 40-char value must block");
+        assert_eq!(
+            f.len(),
+            1,
+            "AWS_SECRET_ACCESS_KEY with 40-char value must block"
+        );
         assert_eq!(report(&f), 1);
         // Redacted hint must not contain the raw secret.
-        assert!(!f[0].redacted.contains(&val), "redacted hint must not expose the value");
+        assert!(
+            !f[0].redacted.contains(&val),
+            "redacted hint must not expose the value"
+        );
     }
 
     #[test]
@@ -1706,7 +1713,10 @@ mod aws_secret_key_tests {
         let r = rules();
         let input = b"commit = 4f80200a4f4f20627a4519c1f4eddf8d6e1c5a99\n";
         let f = scan(&r, input);
-        assert!(f.is_empty(), "git SHA without secret-key context must not block");
+        assert!(
+            f.is_empty(),
+            "git SHA without secret-key context must not block"
+        );
     }
 
     #[test]
@@ -1743,7 +1753,10 @@ mod aws_secret_key_tests {
         assert_eq!(val.len(), 39);
         let input = format!("AWS_SECRET_ACCESS_KEY={val}\n");
         let f = scan(&r, input.as_bytes());
-        assert!(f.is_empty(), "39-char value must not block (below 40-char minimum)");
+        assert!(
+            f.is_empty(),
+            "39-char value must not block (below 40-char minimum)"
+        );
     }
 
     #[test]
@@ -1759,7 +1772,10 @@ mod aws_secret_key_tests {
             f[0].redacted.contains("…<len="),
             "redacted hint must contain length marker"
         );
-        assert!(!f[0].redacted.contains(&val), "redacted hint must not contain the raw value");
+        assert!(
+            !f[0].redacted.contains(&val),
+            "redacted hint must not contain the raw value"
+        );
     }
 }
 
