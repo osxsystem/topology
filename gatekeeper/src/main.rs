@@ -234,6 +234,7 @@ const USAGE_CHECK: &str = "\
 USAGE:\n  gatekeeper check research --feature <slug>\n  \
 gatekeeper check design  --feature <slug>\n  \
 gatekeeper check plan    --feature <slug>\n  \
+gatekeeper check tdd     --feature <slug> [--base <ref>]\n  \
 gatekeeper check verify  --feature <slug>\n  \
 gatekeeper check review  --feature <slug> [--base <ref>]\n  \
 gatekeeper check finish  -- <command...>\n  \
