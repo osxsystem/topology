@@ -30,6 +30,20 @@ and fires *before* the act — not advice you can rationalize past.
 4. For a known-safe large/binary asset, pin it in `[[allow_blob]]` by path + `blob_oid`
    (`git hash-object <file>`).
 
+## Documentation placeholder keys are allowlisted by design
+
+Certain well-known AWS documentation example credentials are explicitly allowlisted so that they
+do not trigger false positives. Testing the scanner with these placeholder values will exit 0 — that
+is intentional, not a sign the scanner is broken.
+
+| Placeholder | Rule | Why allowlisted |
+|---|---|---|
+| `AKIAIOSFODNN7EXAMPLE` | `aws-access-key-id` | Canonical example access key ID from AWS Getting Started docs |
+| `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` | `aws-secret-access-key` | Canonical example secret key from AWS Getting Started docs |
+
+To verify the scanner is working correctly, test with a **realistic-shaped** key — i.e. 40
+random-looking base64 chars in an assignment context — not these documentation placeholders.
+
 ## The bar
 
 The scanner is the floor that does not depend on your judgement. Weakening it (editing the rules,
