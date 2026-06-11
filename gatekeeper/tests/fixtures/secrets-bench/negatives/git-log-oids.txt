@@ -1,0 +1,15 @@
+# git log output: full 40-hex object ids must never flag
+commit 39710a0d4be3f0a92c8b5e17d2a6f4c1e8b09a35
+Author: osxsystem <osxsystem2014@gmail.com>
+Date:   Wed Jun 11 09:14:22 2026 +0200
+
+    fix: list tdd gate in check subcommand usage
+
+commit de4f298c61b7a8e94d05f3a2b19c4e6d8f721b04
+Author: osxsystem <osxsystem2014@gmail.com>
+Date:   Tue Jun 10 18:40:01 2026 +0200
+
+    chore: bump version to 0.4.0
+
+ad8be42f17c3209e5b6d84a1f0e92c7d35a18e60 docs: remove claude-code-autonomous-loop note
+29a33837b2e60f5a91c4d8e72ba0f613c5d94a28 Merge pull request #36 from osxsystem/feat/issue-29

@@ -1,0 +1,6 @@
+<!-- SVG path data: long alphanumeric-ish attribute values that are pure geometry -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200">
+  <path fill="#1a2b3c" d="M150.5 0 L75 200 L225.25 200 Z m0 12.5 c-4.4,0-8,3.6-8,8 s3.6,8 8,8
+    8-3.6,8-8 -3.6-8-8-8 z M37.2 104.86 Q55.1 80.6 84.9 92.41 T141.3 110.07 Z"/>
+  <path stroke="#e0e0e0" d="M10 80 C 40 10, 65 10, 95 80 S 150 150, 180 80 q 30 -70 60 0 t 40 0"/>
+</svg>

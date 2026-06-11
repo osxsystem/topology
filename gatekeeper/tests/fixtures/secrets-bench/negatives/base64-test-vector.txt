@@ -1,0 +1,7 @@
+# RFC 4648-style base64 test vectors: unlabeled long base64 runs of *public* text.
+# This file is the designated tripwire for the Phase 2 entropy rule — it must stay
+# clean via that rule's path-exclude/allowlist design, not by luck.
+input:  Man is distinguished, not only by his reason, but by this singular passion
+output: TWFuIGlzIGRpc3Rpbmd1aXNoZWQsIG5vdCBvbmx5IGJ5IGhpcyByZWFzb24sIGJ1dCBieSB0aGlz
+output: IHNpbmd1bGFyIHBhc3Npb24gZnJvbSBvdGhlciBhbmltYWxz
+short:  Zm9vYmFy
