@@ -7,7 +7,8 @@
 //!   gatekeeper check design  --feature S    Design gate: research note exists, then a spec doc exists.
 //!   gatekeeper check plan    --feature S    Plan gate: a placeholder-free plan exists.
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
-//!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
+//!   gatekeeper check tdd     --feature S [--base R]  TDD gate: failing-test-first history heuristic.
+//!   gatekeeper check review  --feature S [--base R]  Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
 //!   gatekeeper scan --hook                  Security-scan a PreToolUse event (stdin); emit the decision.
 //!   gatekeeper scan --cmd | --content       Security-scan a command / file image on stdin.
@@ -36,6 +37,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+use regex::Regex;
+
 mod adapt;
 mod config;
 mod doctor;
@@ -44,6 +47,7 @@ mod learn;
 mod memory;
 mod review;
 mod scan;
+mod tdd;
 mod version;
 
 const PLACEHOLDERS: &[&str] = &[
@@ -58,8 +62,8 @@ const PLACEHOLDERS: &[&str] = &[
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
-        Some("list") => cmd_list(),
-        Some("activate") => cmd_activate(),
+        Some("list") => cmd_list(&args[1..]),
+        Some("activate") => cmd_activate(&args[1..]),
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(
             &args[1..],
@@ -76,7 +80,13 @@ fn main() {
             &framework_root(),
             &project_root(),
         ),
-        Some("doctor") => doctor::cmd_doctor(&framework_root()),
+        Some("doctor") => {
+            if let Some(code) = check_help_or_unknown("doctor", &args[1..], &[], USAGE_DOCTOR) {
+                code
+            } else {
+                doctor::cmd_doctor(&framework_root())
+            }
+        }
         Some("--version") | Some("-V") => {
             println!(
                 "gatekeeper {} (rules schema v{})",
@@ -108,6 +118,7 @@ fn print_help() {
          gatekeeper check design --feature <slug>\n  \
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
+         gatekeeper check tdd    --feature <slug> [--base <ref>]\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n  \
          gatekeeper check docs\n  \
@@ -211,7 +222,85 @@ pub(crate) fn artifacts_root() -> PathBuf {
     resolve_artifacts_root(&project_root(), &framework_root())
 }
 
-fn cmd_list() -> i32 {
+// ── per-subcommand usage strings (subsets of print_help) ────────────────────
+
+const USAGE_ACTIVATE: &str = "\
+USAGE:\n  gatekeeper activate            (reads prompt on stdin)";
+
+const USAGE_LIST: &str = "\
+USAGE:\n  gatekeeper list";
+
+const USAGE_CHECK: &str = "\
+USAGE:\n  gatekeeper check research --feature <slug>\n  \
+gatekeeper check design  --feature <slug>\n  \
+gatekeeper check plan    --feature <slug>\n  \
+gatekeeper check verify  --feature <slug>\n  \
+gatekeeper check review  --feature <slug> [--base <ref>]\n  \
+gatekeeper check finish  -- <command...>\n  \
+gatekeeper check docs";
+
+pub(crate) const USAGE_SCAN: &str = "\
+USAGE:\n  gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
+gatekeeper scan --staged | --check-path <path>";
+
+pub(crate) const USAGE_INSTINCT: &str = "\
+USAGE:\n  gatekeeper instinct list\n  \
+gatekeeper instinct render [--harness <h>] [--budget <n>]";
+
+pub(crate) const USAGE_ADAPT: &str = "\
+USAGE:\n  gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]";
+
+pub(crate) const USAGE_LEARN: &str = "\
+USAGE:\n  gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
+gatekeeper learn list\n  \
+gatekeeper learn promote --id <id> [--kind <k>] [--yes]";
+
+pub(crate) const USAGE_MEMORY: &str = "\
+USAGE:\n  gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
+gatekeeper memory read  --feature <slug>\n  \
+gatekeeper memory list";
+
+const USAGE_DOCTOR: &str = "\
+USAGE:\n  gatekeeper doctor";
+
+/// Check for `--help` / `-h` OR an unrecognized flag in `args`.
+///
+/// * `--help` / `-h` → print usage to stdout, return `Some(0)`.
+/// * An arg that starts with `-` but is not in `known_flags` → print error + usage to stderr,
+///   return `Some(2)`.
+/// * Otherwise → return `None` (proceed normally).
+///
+/// `args` is the slice AFTER the subcommand name.  Flags consumed by the known set (the caller
+/// iterates those separately) are listed in `known_flags`.  Anything after `--` is ignored so
+/// that `check finish -- cmd --any-flag` passes through unmolested.
+pub(crate) fn check_help_or_unknown(
+    sub: &str,
+    args: &[String],
+    known_flags: &[&str],
+    usage: &str,
+) -> Option<i32> {
+    // Stop scanning at `--` — everything after it is a passthrough (e.g. finish gate).
+    let scan_args: &[String] = match args.iter().position(|a| a == "--") {
+        Some(pos) => &args[..pos],
+        None => args,
+    };
+    for arg in scan_args {
+        if arg == "--help" || arg == "-h" {
+            println!("{usage}");
+            return Some(0);
+        }
+        if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
+            eprintln!("gatekeeper {sub}: unknown flag '{arg}'\n{usage}");
+            return Some(2);
+        }
+    }
+    None
+}
+
+fn cmd_list(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("list", args, &[], USAGE_LIST) {
+        return code;
+    }
     let skills_dir = framework_root().join("skills");
     let mut entries: Vec<PathBuf> = match fs::read_dir(&skills_dir) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
@@ -254,12 +343,42 @@ fn read_description(skill_md: &Path) -> Option<String> {
     None
 }
 
-fn cmd_activate() -> i32 {
-    let mut prompt = String::new();
-    if std::io::stdin().read_to_string(&mut prompt).is_err() {
+/// Extract the user-facing prompt text from stdin.
+///
+/// Claude Code's `UserPromptSubmit` hook delivers a JSON object such as
+/// `{"prompt":"..."}` on stdin.  When we receive a JSON object that contains
+/// a top-level `"prompt"` string field we extract just that string so that
+/// keyword matching runs only against the user's words — not the envelope keys
+/// (which would cause the word "prompt" inside `{"prompt":"…"}` to route
+/// `finish-branch` on every single hook invocation).
+///
+/// Non-JSON input (plain text) is returned as `None` so the caller keeps the
+/// original without an extra allocation.  A JSON envelope returns `Some(text)`.
+fn extract_prompt_owned(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    // Fast bail-out: only attempt JSON parsing when the input starts with '{'
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(s) = val.get("prompt").and_then(|v| v.as_str()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
+}
+
+fn cmd_activate(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("activate", args, &[], USAGE_ACTIVATE) {
+        return code;
+    }
+    let mut raw = String::new();
+    if std::io::stdin().read_to_string(&mut raw).is_err() {
         eprintln!("gatekeeper: failed to read stdin");
         return 1;
     }
+    let extracted = extract_prompt_owned(&raw);
+    let prompt = extracted.as_deref().unwrap_or(&raw);
     let prompt_lc = prompt.to_lowercase();
 
     let rules_path = framework_root().join("hooks").join("skill-rules.json");
@@ -288,6 +407,31 @@ fn cmd_activate() -> i32 {
     0
 }
 
+/// Build a word-boundary regex for a keyword phrase (case-insensitive).
+///
+/// Each word in the phrase must appear as a whole word in the prompt.
+/// For a single-word keyword like "pr" this prevents it from matching inside
+/// "prompt", "approach", "print", etc.  Multi-word phrases are matched as a
+/// contiguous whole-word sequence.
+///
+/// Returns `None` if the keyword is empty or the regex cannot be compiled
+/// (should never happen for the simple ASCII keywords in skill-rules.json).
+fn keyword_regex(keyword: &str) -> Option<Regex> {
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return None;
+    }
+    // Escape each word individually and join with `\s+` to allow any whitespace.
+    let inner: String = kw
+        .split_whitespace()
+        .map(regex::escape)
+        .collect::<Vec<_>>()
+        .join(r"\s+");
+    // Wrap with word-boundary anchors.
+    let pattern = format!(r"(?i)\b{inner}\b");
+    Regex::new(&pattern).ok()
+}
+
 /// Given parsed skill-rules JSON and a lowercased prompt, return (skill, enforcement) matches.
 fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -308,7 +452,8 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
             let hit = kws
                 .iter()
                 .filter_map(|k| k.as_str())
-                .any(|k| prompt_lc.contains(&k.to_lowercase()));
+                .filter_map(keyword_regex)
+                .any(|re| re.is_match(prompt_lc));
             if hit {
                 out.push((name.clone(), enforcement));
             }
@@ -320,12 +465,29 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
 
 fn cmd_check(args: &[String]) -> i32 {
     let Some(gate) = args.first().map(String::as_str) else {
-        eprintln!("gatekeeper check: missing gate name");
+        eprintln!("gatekeeper check: missing gate name\n{USAGE_CHECK}");
         return 2;
     };
+    // Handle --help / -h at the check level (before gate dispatch).
+    if gate == "--help" || gate == "-h" {
+        println!("{USAGE_CHECK}");
+        return 0;
+    }
     match gate {
-        "research" => gate_doc_exists("research", "research", &feature_arg(args)),
+        "research" => {
+            if let Some(code) =
+                check_help_or_unknown("check research", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_doc_exists("research", "research", &feature_arg(args))
+        }
         "design" => {
+            if let Some(code) =
+                check_help_or_unknown("check design", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
             let f = feature_arg(args);
             if f.is_empty() {
                 // A missing --feature is a usage error (exit 2), like every other gate via
@@ -343,16 +505,59 @@ fn cmd_check(args: &[String]) -> i32 {
                     );
                     1
                 }
-                Some(_) => gate_doc_exists("design", "specs", &f),
+                Some(_) => gate_design_approved(&f),
             }
         }
-        "plan" => gate_plan(&feature_arg(args)),
-        "verify" => gate_doc_exists("verify", "verify", &feature_arg(args)),
+        "plan" => {
+            if let Some(code) =
+                check_help_or_unknown("check plan", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_plan(&feature_arg(args))
+        }
+        "verify" => {
+            if let Some(code) =
+                check_help_or_unknown("check verify", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_doc_exists("verify", "verify", &feature_arg(args))
+        }
+        "tdd" => {
+            if let Some(code) = check_help_or_unknown(
+                "check tdd",
+                &args[1..],
+                &["--feature", "--base"],
+                USAGE_CHECK,
+            ) {
+                return code;
+            }
+            // base precedence: --base flag > config.base_branch > gate default
+            let cfg = config::ProjectConfig::load(&artifacts_root());
+            let base = base_arg(args).or(cfg.base_branch);
+            tdd::gate_tdd(&project_root(), &feature_arg(args), base.as_deref())
+        }
         "finish" => {
+            // `finish` passes everything after `--` through to a child process;
+            // check_help_or_unknown already stops at `--`, so this is safe.
+            if let Some(code) =
+                check_help_or_unknown("check finish", &args[1..], &["--"], USAGE_CHECK)
+            {
+                return code;
+            }
             let cfg = config::ProjectConfig::load(&artifacts_root());
             gate_finish(args, &cfg)
         }
         "review" => {
+            if let Some(code) = check_help_or_unknown(
+                "check review",
+                &args[1..],
+                &["--feature", "--base"],
+                USAGE_CHECK,
+            ) {
+                return code;
+            }
             let arts = artifacts_root();
             let cfg = config::ProjectConfig::load(&arts);
             review::gate_review(
@@ -363,7 +568,12 @@ fn cmd_check(args: &[String]) -> i32 {
                 cfg.base_branch.as_deref(),
             )
         }
-        "docs" => check_docs(&framework_root()),
+        "docs" => {
+            if let Some(code) = check_help_or_unknown("check docs", &args[1..], &[], USAGE_CHECK) {
+                return code;
+            }
+            check_docs(&framework_root())
+        }
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2
@@ -535,6 +745,77 @@ fn gate_doc_exists(label: &str, sub: &str, feature: &str) -> i32 {
             1
         }
     }
+}
+
+/// Return true if the spec file contains an approval marker on any line.
+///
+/// Accepted forms (case-insensitive, flexible whitespace around `:` and value):
+///   `Status: approved`                   — plain, with optional trailing text (dates, notes)
+///   `**Status:** approved`               — Markdown bold field
+///   `- **Status:** approved`             — bullet list item (house style)
+///   `🟢 **Approved …`                    — emoji-prefixed bold approved (legacy form)
+///
+/// Algorithm per line:
+///   1. Fold to lowercase and strip Markdown decoration (`*`, `-` bullets, common emoji).
+///   2. Look for `status` followed by optional whitespace, a colon, optional whitespace, then
+///      a value starting with `approved`.
+pub(crate) fn spec_is_approved(text: &str) -> bool {
+    for line in text.lines() {
+        // Strip all `*` (Markdown bold/italic markers), leading `-` bullets, the 🟢 emoji, and
+        // surrounding whitespace.  This normalises every accepted form into `status: approved …`
+        // without needing separate branches for each decoration variant.
+        let cleaned: String = line.chars().filter(|&c| c != '*').collect::<String>();
+        let cleaned = cleaned.trim().trim_start_matches('-').trim();
+        // Strip the 🟢 emoji if present (multi-byte: match the literal char).
+        let cleaned = cleaned.trim_start_matches('🟢').trim();
+        let lc = cleaned.to_lowercase();
+        // Match `status` then optional whitespace then `:` then optional whitespace then `approved`.
+        if let Some(after_status) = lc.strip_prefix("status") {
+            let rest = after_status.trim_start();
+            if let Some(after_colon) = rest.strip_prefix(':') {
+                let value = after_colon.trim();
+                if value.starts_with("approved") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Design gate: after the research-first sequence-lock and file-existence checks, additionally
+/// require an explicit approval marker in the spec file.
+///
+/// The gate fails with a specific message when the spec exists but has no marker, teaching the
+/// human what to add.
+fn gate_design_approved(feature: &str) -> i32 {
+    if feature.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+    let Some(p) = find_doc("specs", feature) else {
+        let dir = artifacts_root().join("specs");
+        println!(
+            "FAIL design gate: no {}/*{feature}*.md found",
+            dir.display()
+        );
+        return 1;
+    };
+    let text = fs::read_to_string(&p).unwrap_or_default();
+    if !spec_is_approved(&text) {
+        println!(
+            "FAIL design gate: {} exists but is not approved",
+            p.display()
+        );
+        println!("  add a line 'Status: approved' once a human has signed off the design");
+        println!("  accepted forms (anywhere in the file, case-insensitive):");
+        println!("    Status: approved");
+        println!("    **Status:** approved");
+        println!("    - **Status:** approved");
+        return 1;
+    }
+    println!("PASS design gate: {}", p.display());
+    0
 }
 
 fn gate_plan(feature: &str) -> i32 {
@@ -936,5 +1217,137 @@ mod tests {
             "differing roots → .claude/topology/"
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── word-boundary keyword matching (issue #23, Part A) ───────────────────
+
+    fn finish_branch_rules() -> serde_json::Value {
+        serde_json::from_str(
+            r#"{ "skills": { "finish-branch": { "enforcement": "suggest",
+                "promptTriggers": { "keywords": ["merge", "pr", "pull request",
+                    "wrap up", "ship", "cleanup", "close out"] } } } }"#,
+        )
+        .unwrap()
+    }
+
+    /// "approach" must NOT route finish-branch (substring of "approach" is "pr")
+    #[test]
+    fn word_boundary_approach_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "approach").is_empty(),
+            "'approach' must not match keyword 'pr'"
+        );
+    }
+
+    /// "print the report" must NOT route finish-branch
+    #[test]
+    fn word_boundary_print_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "print the report").is_empty(),
+            "'print the report' must not match keyword 'pr'"
+        );
+    }
+
+    /// The bare word "prompt" that appears in the JSON envelope must NOT route finish-branch
+    #[test]
+    fn word_boundary_prompt_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "prompt").is_empty(),
+            "'prompt' must not match keyword 'pr'"
+        );
+    }
+
+    /// "open a pr" MUST still route finish-branch
+    #[test]
+    fn word_boundary_open_a_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        assert_eq!(
+            route(&rules, "open a pr"),
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "'open a pr' must match keyword 'pr'"
+        );
+    }
+
+    /// "raise a PR" (upper-case) MUST still route finish-branch
+    #[test]
+    fn word_boundary_raise_a_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        assert_eq!(
+            route(&rules, "raise a pr"),
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "'raise a PR' must match keyword 'pr'"
+        );
+    }
+
+    // ── JSON envelope extraction (issue #23, Part B) ─────────────────────────
+
+    /// Helper: extract and fall back to the original string (mirrors cmd_activate logic).
+    fn do_extract(raw: &str) -> String {
+        extract_prompt_owned(raw).unwrap_or_else(|| raw.to_owned())
+    }
+
+    /// Plain text is returned as-is (no JSON envelope detected).
+    #[test]
+    fn extract_prompt_plain_text_unchanged() {
+        assert_eq!(do_extract("implement the input"), "implement the input");
+    }
+
+    /// A JSON envelope {"prompt":"..."} returns only the string value.
+    #[test]
+    fn extract_prompt_unwraps_json_envelope() {
+        assert_eq!(do_extract(r#"{"prompt":"implement X"}"#), "implement X");
+    }
+
+    /// JSON envelope routes the same skills as bare text (no spurious finish-branch match).
+    #[test]
+    fn json_envelope_routes_same_as_plain_text() {
+        let rules = finish_branch_rules();
+        // Bare text: "implement the input" — no finish-branch keywords
+        let plain = route(&rules, &do_extract("implement the input").to_lowercase());
+        // JSON envelope wrapping the same text
+        let enveloped = route(
+            &rules,
+            &do_extract(r#"{"prompt":"implement the input"}"#).to_lowercase(),
+        );
+        assert_eq!(
+            plain, enveloped,
+            "JSON envelope must route identically to bare text"
+        );
+        assert!(
+            plain.is_empty(),
+            "'implement the input' must not route finish-branch"
+        );
+    }
+
+    /// JSON envelope with a PR prompt correctly routes finish-branch.
+    #[test]
+    fn json_envelope_with_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        let matched = route(
+            &rules,
+            &do_extract(r#"{"prompt":"open a pr for this change"}"#).to_lowercase(),
+        );
+        assert_eq!(
+            matched,
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "JSON envelope containing 'open a pr' must route finish-branch"
+        );
+    }
+
+    /// Non-JSON that starts with something other than '{' is returned unchanged.
+    #[test]
+    fn extract_prompt_non_json_returned_unchanged() {
+        let input = "just a plain string without braces";
+        assert_eq!(do_extract(input), input);
+    }
+
+    /// JSON object without a "prompt" field is returned as the raw string.
+    #[test]
+    fn extract_prompt_json_without_prompt_key_returns_raw() {
+        let input = r#"{"message":"hello"}"#;
+        assert_eq!(do_extract(input), input);
     }
 }

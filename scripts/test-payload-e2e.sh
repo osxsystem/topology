@@ -291,7 +291,8 @@ _make_fixture() {
 TMPDIR_FIXTURE_PIPED="$(mktemp -d)"
 cleanup_all() {
   rm -rf "$TMPDIR_STAGE" "$TMPDIR_WORK" "$TMPDIR_RELEASE" "$TMPDIR_TOPOLOGY" \
-         "$TMPDIR_FIXTURE_PIPED" "${TMPDIR_FIXTURE_CHECKOUT:-}" "${TMPDIR_FIXTURE_LEGACY:-}"
+         "$TMPDIR_FIXTURE_PIPED" "${TMPDIR_FIXTURE_CHECKOUT:-}" "${TMPDIR_FIXTURE_LEGACY:-}" \
+         "${TMPDIR_FIXTURE_HINT:-}"
 }
 trap cleanup_all EXIT
 
@@ -395,6 +396,49 @@ if [[ ! -d "$TMPDIR_FIXTURE_LEGACY/.topology/.git" ]]; then
   pass "legacy migration: new .topology has no .git"
 else
   fail "legacy migration: new .topology still has .git after migration"
+fi
+
+# ── Installer test E: commit hint on piped local install ──────────────────────
+# After a piped (non-tty) local install with --harness claude, the installer
+# should print a closing hint naming the uncommitted governance file(s) and the
+# exact git command to commit them. This asserts the fix for issue #28.
+#
+# Note: tty-simulation (interactive offer branch) is not tested here — the test
+# harness does not provide a pseudo-tty. The piped/non-interactive path is the
+# important one because it is what curl | bash users will see.
+TMPDIR_FIXTURE_HINT="$(mktemp -d)"
+
+_make_fixture "$TMPDIR_FIXTURE_HINT"
+
+INSTALL_HINT_OUT="$(
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --project "$TMPDIR_FIXTURE_HINT" --yes --harness claude \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || true
+
+# The hint must mention .claude/settings.json (the primary wiring file).
+if echo "$INSTALL_HINT_OUT" | grep -qF ".claude/settings.json"; then
+  pass "commit hint: output names .claude/settings.json"
+else
+  fail "commit hint: .claude/settings.json not mentioned in output (snippet: ${INSTALL_HINT_OUT:0:600})"
+fi
+
+# The hint must include the commit command.
+if echo "$INSTALL_HINT_OUT" | grep -qF 'git commit -m "chore: wire topology governance"'; then
+  pass "commit hint: output contains commit command"
+else
+  fail "commit hint: commit command not found in output (snippet: ${INSTALL_HINT_OUT:0:600})"
+fi
+
+# The hint must appear after the "Files created or modified:" manifest line
+# (i.e. in the closing section, not buried mid-output).
+manifest_pos="$(echo "$INSTALL_HINT_OUT" | grep -n "Files created or modified" | head -1 | cut -d: -f1)"
+hint_pos="$(echo "$INSTALL_HINT_OUT" | grep -n "chore: wire topology governance" | head -1 | cut -d: -f1)"
+if [[ -n "$manifest_pos" && -n "$hint_pos" && "$hint_pos" -gt "$manifest_pos" ]]; then
+  pass "commit hint: hint appears after the manifest (manifest line $manifest_pos, hint line $hint_pos)"
+else
+  fail "commit hint: hint position check failed (manifest_pos='$manifest_pos', hint_pos='$hint_pos')"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────

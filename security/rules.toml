@@ -9,6 +9,16 @@ description = "AWS access key id"
 pattern = '\b(AKIA|ASIA)[0-9A-Z]{16}\b'
 
 [[rule]]
+id = "aws-secret-access-key"
+kind = "content"
+severity = "block"
+# Matches a 'secret…key'-named assignment ('=' or ':', optional quote) followed by a
+# 40+-char base64-ish value. 40 is the canonical AWS secret length; longer values are
+# blocked conservatively, shorter ones are not matched.
+description = "AWS secret access key assignment"
+pattern = '(?i)\b(?:aws[_-])?secret[_-](?:access[_-])?key\s*[=:]\s*[\x22\x27]?[A-Za-z0-9/+=]{40,}'
+
+[[rule]]
 id = "private-key-block"
 kind = "content"
 severity = "block"
@@ -140,6 +150,11 @@ pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b
 rule = "aws-access-key-id"
 value = "AKIAIOSFODNN7EXAMPLE"
 reason = "canonical AWS documentation example key"
+
+[[allow]]
+rule = "aws-secret-access-key"
+pattern = '(?i)(?:aws[_-])?secret[_-](?:access[_-])?key\s*[=:]\s*[\x22\x27]?wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY[\x22\x27]?'
+reason = "canonical AWS documentation example secret key (from AWS docs getting-started examples)"
 
 # ---------- unscannable-blob allowlist (path + git object id; example only) ----------
 # [[allow_blob]]

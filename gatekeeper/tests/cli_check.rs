@@ -157,12 +157,16 @@ fn design_gate_passes_after_both_research_and_spec_exist() {
         "# Research\n\nFindings.\n",
     )
     .unwrap();
-    fs::write(specs_dir.join("2026-06-08-myslug.md"), "# Spec\n\nReady.\n").unwrap();
+    fs::write(
+        specs_dir.join("2026-06-08-myslug.md"),
+        "# Spec\n\n- **Status:** approved\n\nReady.\n",
+    )
+    .unwrap();
 
     let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
     assert_eq!(
         code, 0,
-        "design gate should pass when both research and spec exist; out: {out}"
+        "design gate should pass when both research and spec exist (with approval marker); out: {out}"
     );
     assert!(
         out.contains("PASS"),
@@ -208,6 +212,163 @@ fn design_gate_missing_feature_exits_2() {
     assert_eq!(
         code, 2,
         "missing --feature on the design gate should exit 2"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+// --- design gate: approval marker ---
+//
+// Issue #25: the gate must require an explicit `Status: approved` marker in the spec file.
+// Tests cover:
+//   - spec missing → existing FAIL (sequence check still takes precedence when research absent)
+//   - spec present without any Status marker → new "not approved" FAIL
+//   - spec present with `- **Status:** draft` (marker present but not approved) → FAIL
+//   - spec with plain `Status: approved` → PASS
+//   - spec with `**Status:** approved` → PASS
+//   - spec with `- **Status:** approved` (house style) → PASS
+//   - spec with `Status:   Approved` (flexible whitespace, mixed case) → PASS
+//   - research-first sequence lock still takes precedence (spec w/ marker but no research → FAIL)
+
+/// Helper: build a root with a research note AND a spec file with the given content.
+fn root_with_spec(tag: &str, spec_content: &str) -> PathBuf {
+    let root = scratch_root(tag);
+    let research_dir = root.join("docs").join("research");
+    let specs_dir = root.join("docs").join("specs");
+    fs::create_dir_all(&research_dir).unwrap();
+    fs::create_dir_all(&specs_dir).unwrap();
+    fs::write(
+        research_dir.join("2026-06-10-myslug.md"),
+        "# Research\n\nFindings.\n",
+    )
+    .unwrap();
+    fs::write(specs_dir.join("2026-06-10-myslug.md"), spec_content).unwrap();
+    root
+}
+
+#[test]
+fn design_gate_spec_no_approval_marker_fails_with_not_approved() {
+    // Spec exists but has no Status line at all → new "not approved" failure.
+    let root = root_with_spec("appr_none", "# Spec\n\nThis design is ready.\n");
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 1,
+        "spec without approval marker should fail; out: {out}"
+    );
+    assert!(
+        out.contains("not approved"),
+        "output should say 'not approved'; got: {out}"
+    );
+    assert!(
+        out.contains("Status: approved"),
+        "output should suggest 'Status: approved'; got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_spec_with_draft_status_fails() {
+    // `- **Status:** draft` is not approved.
+    let root = root_with_spec("appr_draft", "# Spec\n\n- **Status:** draft\n\nBody.\n");
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(code, 1, "spec with 'draft' Status should fail; out: {out}");
+    assert!(
+        out.contains("not approved"),
+        "output should say 'not approved'; got: {out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_spec_with_plain_status_approved_passes() {
+    // Plain `Status: approved` form.
+    let root = root_with_spec("appr_plain", "# Spec\n\nStatus: approved\n\nBody.\n");
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 0,
+        "spec with 'Status: approved' should pass; out: {out}"
+    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_spec_with_bold_status_approved_passes() {
+    // `**Status:** approved` Markdown bold form.
+    let root = root_with_spec("appr_bold", "# Spec\n\n**Status:** approved\n\nBody.\n");
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 0,
+        "spec with '**Status:** approved' should pass; out: {out}"
+    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_spec_with_bullet_bold_status_approved_passes() {
+    // `- **Status:** approved` house-style bullet form.
+    let root = root_with_spec(
+        "appr_bullet",
+        "# Spec\n\n- **Date:** 2026-06-10\n- **Status:** approved\n\nBody.\n",
+    );
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 0,
+        "spec with '- **Status:** approved' should pass; out: {out}"
+    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_spec_status_approved_case_insensitive_passes() {
+    // `Status:   Approved` — flexible whitespace + mixed case.
+    let root = root_with_spec(
+        "appr_case",
+        "# Spec\n\nStatus:   Approved (2026-06-10)\n\nBody.\n",
+    );
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 0,
+        "spec with 'Status:   Approved' should pass; out: {out}"
+    );
+    assert!(out.contains("PASS"), "output should say PASS; got: {out}");
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn design_gate_research_first_lock_takes_precedence_over_approval_check() {
+    // Spec has approval marker but research note is absent → must fail on research-first, not "not
+    // approved".  The sequence lock precedes the approval check.
+    let root = scratch_root("appr_lock");
+    let specs_dir = root.join("docs").join("specs");
+    fs::create_dir_all(&specs_dir).unwrap();
+    fs::create_dir_all(root.join("docs").join("research")).unwrap();
+    fs::write(
+        specs_dir.join("2026-06-10-myslug.md"),
+        "# Spec\n\n- **Status:** approved\n\nBody.\n",
+    )
+    .unwrap();
+    // No research note written.
+
+    let (code, out) = run(&root, &["check", "design", "--feature", "myslug"]);
+    assert_eq!(
+        code, 1,
+        "must fail when research note is absent even if spec is approved; out: {out}"
+    );
+    assert!(
+        out.contains("research-first"),
+        "output should say 'research-first' (sequence lock), not 'not approved'; got: {out}"
+    );
+    assert!(
+        !out.contains("not approved"),
+        "must not say 'not approved' when the real problem is no research note; got: {out}"
     );
     let _ = fs::remove_dir_all(&root);
 }
@@ -421,7 +582,7 @@ fn external_project_design_passes_after_artifacts_placed_in_claude_topology() {
     fs::create_dir_all(&specs_dir).unwrap();
     fs::write(
         specs_dir.join("2026-06-10-installer-v2.md"),
-        "# Spec\n\nReady.\n",
+        "# Spec\n\n- **Status:** approved\n\nReady.\n",
     )
     .unwrap();
 
@@ -432,7 +593,7 @@ fn external_project_design_passes_after_artifacts_placed_in_claude_topology() {
     );
     assert_eq!(
         code, 0,
-        "design should PASS after both artifacts placed; out:\n{out}"
+        "design should PASS after both artifacts placed (with approval marker); out:\n{out}"
     );
     assert!(out.contains("PASS"), "output should say PASS; got:\n{out}");
 

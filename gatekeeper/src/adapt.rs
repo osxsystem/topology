@@ -362,6 +362,11 @@ fn build_project_config(write_root: &Path) -> Option<GenFile> {
 /// - `write_root`: the project root — generated files are written relative to this directory.
 ///   When `read_root == write_root` (in-framework use) the behavior is identical to v1.
 pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
+    if let Some(code) =
+        crate::check_help_or_unknown("adapt", args, &["--harness", "--check"], crate::USAGE_ADAPT)
+    {
+        return code;
+    }
     let mut harness: Option<String> = None;
     let mut check = false;
     let mut i = 0;
@@ -381,9 +386,9 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 check = true;
                 i += 1;
             }
-            other => {
-                eprintln!("gatekeeper adapt: unknown flag '{other}'");
-                return 2;
+            // Unknown flags already rejected by check_help_or_unknown above.
+            _ => {
+                i += 1;
             }
         }
     }
