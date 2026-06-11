@@ -101,7 +101,10 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     // ── VERSION file ─────────────────────────────────────────────────────────
     // Reports payload version + rules_schema; FAILs on binary↔payload version skew.
     // Absent VERSION (dev checkout) is informational only.
+    // `is_payload_install` is used below to suppress the repo-build probe: a payload
+    // root has no gatekeeper/target/ tree, so "not found" would be misleading.
     let version_path = root.join("VERSION");
+    let is_payload_install = matches!(parse_version_file(&version_path), VersionProbe::Present(_));
     match parse_version_file(&version_path) {
         VersionProbe::Present(ref vf) => {
             if version_skew(vf) {
@@ -134,7 +137,7 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     // $GATEKEEPER_BIN override (new this phase — neither hook reads it yet; doctor surfaces it).
     let gk_bin_env = std::env::var("GATEKEEPER_BIN").ok();
     match &gk_bin_env {
-        None => println!("GATEKEEPER_BIN: not set"),
+        None => println!("GATEKEEPER_BIN: not set (optional override; informational)"),
         Some(p) => {
             let path = Path::new(p);
             if path.is_file() && is_executable(path) {
@@ -168,11 +171,17 @@ pub fn cmd_doctor(root: &Path) -> i32 {
         None => println!("PATH gatekeeper: not found (informational)"),
     }
 
-    // Repo build.
-    let repo_build = find_repo_build(root);
-    match &repo_build {
-        Some(p) => println!("repo build: {}", p.display()),
-        None => println!("repo build: not found (informational)"),
+    // Repo build: only meaningful for dev checkouts — a payload root has no
+    // gatekeeper/target/ tree, so printing "not found" would falsely imply something
+    // is missing. Suppress the lookup when VERSION confirms a payload install.
+    if is_payload_install {
+        println!("repo build: n/a (payload install)");
+    } else {
+        let repo_build = find_repo_build(root);
+        match &repo_build {
+            Some(p) => println!("repo build: {}", p.display()),
+            None => println!("repo build: not found (informational)"),
+        }
     }
 
     // The split: one line naming how the two hooks resolve.
