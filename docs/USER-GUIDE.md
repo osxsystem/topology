@@ -62,11 +62,11 @@ This one command:
 3. **Falls back** to `cargo build --release` if no prebuilt binary is available for your platform.
 4. **Links** `CLAUDE.md → AGENTS.md` so Claude Code reads the same operating contract as every other harness.
 5. **Marks** the hook and helper scripts executable.
-6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` into `.git/hooks/` — re-run install to update it).
+6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` — re-run install to update it). For `--project` installs the copy goes into the **project's** `.git/hooks/`, the repo you actually commit to — not the vendored clone's.
 7. **Wires the harness** — for `--project` installs runs `gatekeeper adapt --harness <h>` from the project dir, generating `.claude/settings.json` (or the equivalent for other harnesses) with hook paths pointing at the framework. For global-only installs it prints the exact command to run inside any project.
 8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present.
 9. **Detects stale PATH binaries** — if a `gatekeeper` on PATH has a different version, with a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
-10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check.
+10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check — from the *project* directory for `--project` installs, so the check validates the layout your sessions will actually run in.
 
 If you already have a checkout, run `./scripts/install.sh` from inside it (the curl pipe detects this automatically). Pass `--build-from-source` to skip the prebuilt download and always build from source.
 
@@ -94,7 +94,7 @@ For `--harness none`, the installer prints the hook config block — paste it in
 
 ### Gate artifact layout for governed projects
 
-When governing an external project (topology vendored at `<project>/.topology`, `TOPOLOGY_ROOT` set),
+When governing an external project (topology vendored at `<project>/.topology`),
 gate artifacts live under **`<project>/.claude/topology/`** — not in the project's root `docs/`.
 The framework repo itself keeps its root `docs/` layout unchanged.
 
@@ -105,6 +105,13 @@ The framework repo itself keeps its root `docs/` layout unchanged.
 | `plans/` | `.claude/topology/plans/` | `docs/plans/` |
 | `verify/` | `.claude/topology/verify/` | `docs/verify/` |
 | `reviews/` | `.claude/topology/reviews/` | `docs/reviews/` |
+| memory handoffs | `.claude/topology/memory/` | `docs/memory/` |
+| learn ledger | `.claude/topology/learn/ledger.md` | `docs/learn/ledger.md` |
+
+The last two rows are why upgrades are safe: the vendored framework is **read-only at runtime**
+(ADR-0013) — everything `gatekeeper` writes lands in the project's committed artifacts root, never
+inside `.topology/`, so replacing the payload on upgrade can't delete your handoffs or learned
+gotchas.
 
 **One-time migration** (if existing gate artifacts live in a governed project's root `docs/`):
 
@@ -217,7 +224,7 @@ can never stand in for the veto, while skill routing (advisory) accepts `PATH` f
 | `$TOPOLOGY_ROOT` | Framework root directory — where `skills/`, `security/rules.toml`, instincts, and gate docs live |
 | `$TOPOLOGY_HOME` | Clone destination for piped installs (default `$HOME/.topology`) |
 | `$TOPOLOGY_RELEASE_BASE_URL` | URL prefix for prebuilt binary downloads (supports `file://` for offline testing; default: the GitHub releases URL) |
-| `$TOPOLOGY_VERSION` | Override the pinned version read from `plugin.json` (for testing or pinning a specific release) |
+| `$TOPOLOGY_VERSION` | Override the version otherwise read from the `VERSION` file at the framework root (dev checkouts fall back to `gatekeeper/Cargo.toml`) — for testing or pinning a specific release |
 
 `$TOPOLOGY_ROOT` is the explicit way to pin the framework root when you run `gatekeeper` **from
 outside the repo** — a CI job, or another project's directory:
@@ -226,11 +233,19 @@ outside the repo** — a CI job, or another project's directory:
 TOPOLOGY_ROOT=/path/to/topology gatekeeper list
 ```
 
-Without it, resolution walks up from the current directory and only stops at a *marked* Topology
-root, so an unrelated `skills/` folder elsewhere on your machine (e.g. a stray `~/skills`) is never
-mistaken for the framework — it falls back to the current directory instead. The hooks already pin
-the root themselves (they `cd` into the repo before calling `gatekeeper`), so `$TOPOLOGY_ROOT` only
-matters for commands you run by hand.
+Without it, resolution walks up from the current directory and stops only at a *marked* Topology
+root **or a vendored `<dir>/.topology` that is one** — so in a governed project a plain
+`gatekeeper <cmd>` run from anywhere inside the project finds the vendored framework on its own,
+and an unrelated `skills/` folder elsewhere on your machine (e.g. a stray `~/skills`) is never
+mistaken for the framework — it falls back to the current directory instead.
+
+The hooks pass the framework root via `$TOPOLOGY_ROOT` in the environment and run the binary from
+the **session's working directory** (your project), never by `cd`-ing into the framework. That
+split matters: the project-relative state — gate artifacts, memory handoffs, the learn ledger,
+the protected-path guard over `.claude/topology/` — all anchor to where the binary *runs*, so a
+hook that ran from the framework root would write your project's state into the payload. In
+practice `$TOPOLOGY_ROOT` only matters for commands you run by hand from outside both the project
+and the framework.
 
 ---
 
@@ -255,12 +270,19 @@ rm -f CLAUDE.md
 # 5. Remove any generated per-harness config you don't want to keep
 rm -f .codex/config.toml opencode.json
 rm -rf .cursor/rules .opencode
+
+# 6. Remove the framework itself
+rm -rf ~/.topology              # global install (or $TOPOLOGY_HOME if you set it)
+rm -rf <project>/.topology      # local install — also drop the .topology/ line from .gitignore
 ```
 
-6. **Remove the hook config** you pasted into `.claude/settings.json` (delete the `UserPromptSubmit`
+Your gate artifacts under `.claude/topology/` (research, specs, plans, memory handoffs, the learn
+ledger) are project state, not framework files — keep or delete them as you see fit.
+
+7. **Remove the hook config** you pasted into `.claude/settings.json` (delete the `UserPromptSubmit`
    and `PreToolUse` entries you added).
 
-7. **If you installed the plugin**, remove it from inside Claude Code:
+8. **If you installed the plugin**, remove it from inside Claude Code:
 
    ```text
    /plugin uninstall topology@topology
@@ -293,10 +315,10 @@ have passed.
 
 | Gate | Command | Passes when |
 |---|---|---|
-| research | `gatekeeper check research --feature <slug>` | a research note exists in `docs/research/` |
-| design | `gatekeeper check design --feature <slug>` | the research note exists **and** an approved spec exists in `docs/specs/` |
-| plan | `gatekeeper check plan --feature <slug>` | a plan exists in `docs/plans/` with **no placeholder words** (`TBD`, "implement later", …) |
-| verify | `gatekeeper check verify --feature <slug>` | a verification note exists in `docs/verify/` |
+| research | `gatekeeper check research --feature <slug>` | a research note exists in `research/` |
+| design | `gatekeeper check design --feature <slug>` | the research note exists **and** an approved spec exists in `specs/` |
+| plan | `gatekeeper check plan --feature <slug>` | a plan exists in `plans/` with **no placeholder words** (`TBD`, "implement later", …) |
+| verify | `gatekeeper check verify --feature <slug>` | a verification note exists in `verify/` |
 | review | `gatekeeper check review --feature <slug> [--base <ref>]` | a fresh critic's artifact passes for the clean `HEAD` (bound to merge-base, both rubric dimensions, no blockers) |
 | finish | `gatekeeper check finish -- <command...>` | the given test command exits `0` |
 | docs | `gatekeeper check docs` | docs-coverage lint passes (skills frontmatter, ADR index, ROADMAP evidence paths) |
@@ -306,6 +328,9 @@ gatekeeper check design --feature add-users
 gatekeeper check plan   --feature add-users
 gatekeeper check finish -- cargo test
 ```
+
+The artifact directories live at the **artifacts root**: `docs/` in the framework repo,
+`.claude/topology/` in a governed project (see the layout table above).
 
 > The `review` gate **fails closed** if the working tree has uncommitted changes — it won't bless
 > code it can't pin to a clean commit. Commit first, then re-run.
@@ -319,7 +344,7 @@ Deterministically vetoes secrets and dangerous commands. Exit `0` = clean, `1` =
 | `gatekeeper scan --hook` | a `PreToolUse` event (JSON on stdin); emits the allow/ask/deny decision |
 | `gatekeeper scan --cmd` | a command read from stdin |
 | `gatekeeper scan --content` | a file's contents read from stdin |
-| `gatekeeper scan --staged` | the git index (used by the pre-commit hook) |
+| `gatekeeper scan --staged` | the git index of the repo you're committing (used by the pre-commit hook — in a governed project that's the *project's* index, not the vendored framework's) |
 | `gatekeeper scan --check-path <path>` | exit `1` iff `<path>` is a protected safety file |
 
 ```bash
@@ -350,13 +375,21 @@ Turn recurring failures into permanent operators.
 
 | Command | What it does |
 |---|---|
-| `gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]` | Append a structured gotcha to `docs/learn/ledger.md` |
+| `gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]` | Append a structured gotcha to the ledger at the artifacts root (`docs/learn/ledger.md` in the framework repo; `.claude/topology/learn/ledger.md` in a governed project) |
 | `gatekeeper learn list` | List ledger entries (id + occurrence count + proposed kind) |
 | `gatekeeper learn promote --id <id> [--kind <k>] [--yes]` | Scaffold an operator (instinct / skill / scan rule) from a gotcha — shows a diff and writes only on confirmation |
 
+> **`promote` is framework-only.** Its targets (`instincts/`, `skills/`, `security/rules.toml`)
+> live inside the framework payload, which upgrades replace wholesale — so in a governed project
+> `promote` refuses rather than write a file the next upgrade would delete. Your gotcha stays safe
+> in the project's ledger; promote it from your framework fork (ADR-0013). `capture` and `list`
+> work everywhere.
+
 ### Memory / handoffs — `gatekeeper memory`
 
-Carry context across sessions with handoff artifacts.
+Carry context across sessions with handoff artifacts. They live under `<artifacts root>/memory/`
+— `docs/memory/` in the framework repo, `.claude/topology/memory/` in a governed project — so
+they're committed project state, beside the gate artifacts they relate to.
 
 | Command | What it does |
 |---|---|
@@ -371,6 +404,11 @@ Carry context across sessions with handoff artifacts.
 | `gatekeeper doctor` | Read-only health check + which binary the hooks resolve |
 | `gatekeeper --version` (`-V`) | Print the tool version and rules-schema version |
 | `gatekeeper --help` (`-h`) | Print the full usage list |
+
+`doctor` also reads the `VERSION` file at the framework root: it reports the payload version and
+rules-schema version, and **fails** when the payload version doesn't match the binary's — the
+signal that an upgrade replaced one but not the other. An absent `VERSION` file (a dev checkout
+built from source) is informational only.
 
 ---
 
@@ -402,12 +440,19 @@ setup (`doctor`).
 
 Topology's published [roadmap](ROADMAP.md) — Phases 0 through 6 (blueprint, security scanning,
 code-review gate, instincts engine, continuous learning, cross-harness adapters, memory +
-research-first, and packaging + CI) — is **fully delivered**. What remains on the horizon:
+research-first, and packaging + CI) — is **fully delivered**, and Track 2 (Phases 7–12, the shift
+from "install = clone the dev repo" to "install = unpack a distribution payload") is underway:
+Phase 7 shipped the payload itself. What remains on the horizon:
 
+- **Track 2, Phases 8–12.** Each release already publishes `topology-payload.tar.gz` — a
+  platform-neutral tarball of just the operators (hooks, skills, instincts, scan rules, `VERSION`)
+  with no gatekeeper source, docs, or git history. Coming next: installer v3 consumes the payload
+  for both scopes (Phase 8), `adapt` v2 delivers full project integration including the operating
+  contract (Phase 9), the portable contract splits out of `AGENTS.md` (Phase 10), root resolution
+  hardens further (Phase 11), and the whole flow re-verifies end-to-end on the reference project
+  (Phase 12).
 - **Domain skills for a specific stack.** Deferred from Phase 5 — skills tuned to a particular
   language/framework ("house stack"), beyond today's methodology and meta skills.
-- **More platform binaries.** The released binary targets **macOS-arm64** today; Linux / other-arch
-  release artifacts are a natural next step (you can already build from source anywhere `cargo` runs).
 - **A growing operator library.** Instincts, skills, and scan rules are designed to expand reactively
   — the `learn` loop promotes recurring failures into new operators, so the rule set tightens where
   *your* project keeps getting burned.
