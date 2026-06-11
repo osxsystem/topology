@@ -333,7 +333,7 @@ fn keyword_regex(keyword: &str) -> Option<Regex> {
     // Escape each word individually and join with `\s+` to allow any whitespace.
     let inner: String = kw
         .split_whitespace()
-        .map(|w| regex::escape(w))
+        .map(regex::escape)
         .collect::<Vec<_>>()
         .join(r"\s+");
     // Wrap with word-boundary anchors.
@@ -361,7 +361,7 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
             let hit = kws
                 .iter()
                 .filter_map(|k| k.as_str())
-                .filter_map(|k| keyword_regex(k))
+                .filter_map(keyword_regex)
                 .any(|re| re.is_match(prompt_lc));
             if hit {
                 out.push((name.clone(), enforcement));
@@ -1021,8 +1021,7 @@ mod tests {
 
     /// Helper: extract and fall back to the original string (mirrors cmd_activate logic).
     fn do_extract(raw: &str) -> String {
-        extract_prompt_owned(raw)
-            .unwrap_or_else(|| raw.to_owned())
+        extract_prompt_owned(raw).unwrap_or_else(|| raw.to_owned())
     }
 
     /// Plain text is returned as-is (no JSON envelope detected).
@@ -1034,10 +1033,7 @@ mod tests {
     /// A JSON envelope {"prompt":"..."} returns only the string value.
     #[test]
     fn extract_prompt_unwraps_json_envelope() {
-        assert_eq!(
-            do_extract(r#"{"prompt":"implement X"}"#),
-            "implement X"
-        );
+        assert_eq!(do_extract(r#"{"prompt":"implement X"}"#), "implement X");
     }
 
     /// JSON envelope routes the same skills as bare text (no spurious finish-branch match).
