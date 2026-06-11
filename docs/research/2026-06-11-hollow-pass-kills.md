@@ -80,22 +80,27 @@ This note grounds the Phase 14 fixes on the current tree (verified 2026-06-11, p
 
 ## Verify-artifact replayability survey (all 12 docs/verify/ files read)
 
-- 12/12 use fenced code blocks; **9/12 prefix commands with `$ `**; 11/12 annotate expected
-  exit as `→ exit N`; 10/12 use `# …` lines for expected output. No language tag on most
-  blocks. Two artifacts (installer-v2, one-command-install) are narrative-only — no
-  mechanically replayable blocks at all.
+- 12/12 use fenced code blocks; roughly half consistently prefix commands with `$ `
+  (initial survey said 9/12; the rev-2 review re-measured 6/12 under a stricter reading —
+  either way it is a plurality practice, not a standard); 11/12 annotate expected exit as
+  `→ exit N`; 10/12 use `# …` lines for expected output. No language tag on most blocks. Two
+  artifacts (installer-v2, one-command-install) are narrative-only — no mechanically
+  replayable blocks at all.
 - **No format is prescribed anywhere**: `skills/verify-before-done/SKILL.md` demands "a command
   they can re-run and an output they can see" but defines no block syntax. The ` ```evidence `
   format codifies a 9/12 majority practice; it does not match all history.
-- Determinism: of ~83 commands across the 12 artifacts, ~58 (≈70%) replay green unchanged
-  (cargo/git/just from repo root); the failures cluster in network calls (GitHub API, curl),
-  hardcoded dates, `mktemp` absolute paths, pinned old versions, and tool-presence assumptions
-  (claude CLI, codex). **Filtered to the proposed allowlist prefixes (`cargo `, `just `,
-  `git `), the replay-green rate is ≈90-100%** — the allowlist is what makes the roadmap's
-  "≥90% replay green" KPI honest, because it excludes exactly the non-deterministic classes.
-- Implication: the KPI must be measured over *allowlisted commands extracted from existing
-  artifacts* (shadow run), not over whole artifacts — and replay-mode enforcement applies only
-  to artifacts written in the codified format from v0.5.0 on.
+- Determinism: of ~83 commands across the 12 artifacts, a majority *look* re-runnable
+  (cargo/git/just); the failures cluster in network calls (GitHub API, curl), hardcoded dates,
+  `mktemp` absolute paths, pinned old versions, and tool-presence assumptions (claude CLI,
+  codex). **Caution (rev-2 review, verified):** naive extraction lands far lower (~19-69%
+  depending on normalization) — there is no root `Cargo.toml`, so bare `cargo test …` fails
+  from the repo root (`--manifest-path gatekeeper/Cargo.toml` required), and inline
+  annotations (`→ exit 0`, trailing `# …`) shatter into bogus argv without a stripping pass.
+- Implication: no numeric KPI can honestly be asserted over history in advance. The spec
+  instead *measures and records* the legacy baseline (extraction + annotation-stripping
+  normalization, explicit shadow-replay trigger) and gates only the new-format artifacts this
+  phase itself produces; replay-mode enforcement applies only to artifacts written in the
+  codified format from v0.5.0 on.
 
 ## Spec substance floor (fixture a)
 
@@ -120,7 +125,9 @@ the scoreboard idiom: un-ignore as each fix lands.
 - **Fail-closed replay**: evidence blocks execute only allowlisted command prefixes; a
   non-allowlisted command fails the gate rather than being skipped silently (same posture as
   `security-scan.sh`).
-- **Shadow-first**: all three gate hardenings ship default-off (`presence` / `status-line` /
-  `require_test_count = false`); this repo's own subsequent branches run them via
-  `GATEKEEPER_SHADOW=1` (log-only) to collect the <2% false-block data that gates the v0.6.0
-  default flip (Phase 15 dependency).
+- **Shadow-first**: all gate hardenings ship default-off (`presence` / `status-line` /
+  `substance_floor = false` / `require_test_count = false`). Side-effect-free checks compute
+  on every run and emit machine-readable `SHADOW` JSONL when their key is off; replay
+  *execution* is never implicit — it requires the explicit `GATEKEEPER_SHADOW=replay`
+  trigger. This data feeds the <2% false-block bar that gates the v0.6.0 default flip
+  (Phase 15 dependency).
