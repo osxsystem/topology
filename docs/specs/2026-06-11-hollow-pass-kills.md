@@ -239,9 +239,15 @@ side-effect-free):
   the obstacle and the fix; under default config it logs `result:"skip"` instead.
 - Honest residual (in the fail message and USER-GUIDE): this defends against sycophantic
   self-approval, not a malicious operator forging authorship.
-- Dogfood note: this spec's approval commit is made by the human directly; the revision marker
-  is deliberately off the `Status:` line so later agent edits to the header cannot retarget
-  the check (rev-2 fragility).
+- Dogfood note (amended at recorded maintainer direction, in-session 2026-06-11): the
+  maintainer delegated the approval commit to the agent ("you have full control include git
+  push or commit"). It therefore carries the honest agent trailer and serves as the
+  **negative dogfood**: `human-commit` mode run against this spec's approval commit must
+  *fail* with the agent-trailer message — demonstrating the check detects exactly the
+  delegated-approval practice (Phase 13 precedent) it exists to reject. Positive-path
+  validation lives in the scratch-repo fixtures (acceptance 5). The revision marker stays
+  off the `Status:` line so later agent edits to the header cannot retarget the check
+  (rev-2 fragility).
 
 ## 5. Finish gate — zero-test floor (FM2, shadow)
 
@@ -318,9 +324,10 @@ side-effect-free):
    non-allowlisted, metachar-bearing, and env-assignment commands fail; a sleeping step
    times out, fails, and leaves no orphan process (Unix process-group kill).
 5. With `[design] approval = "human-commit"`: agent-trailer approval fails; clean human
-   commit passes; old-git / shallow / untracked / **dirty-spec** paths each fail closed with
-   their specific message. With `substance_floor = true`: fixture (a) rejected. This spec's
-   own approval commit passes the check (dogfood).
+   commit passes (scratch-repo fixture); old-git / shallow / untracked / **dirty-spec**
+   paths each fail closed with their specific message. With `substance_floor = true`:
+   fixture (a) rejected. This spec's own approval commit — agent-executed at recorded
+   maintainer direction, honest trailer — **fails** the check (negative dogfood, §4).
 6. With `require_test_count = true`: `test_command = "true"`, a recognized zero-count
    summary, and an unrecognized runner all fail — via config **and** via `-- <cmd>`;
    `pytest -q`-style summaries parse; `extra_count_patterns` admits a custom runner; the real
