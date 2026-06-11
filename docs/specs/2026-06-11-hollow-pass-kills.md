@@ -2,8 +2,10 @@
 
 **Status:** draft
 
-Revision: 3 (2026-06-11) — rev-2 review blockers 1–6 and questions Q1–Q7 resolved; see
-*Resolved decisions*. (The revision marker lives here, not on the `Status:` line, so a future
+Revision: 4 (2026-06-11) — rev-3 review polish: shadow-env no-op under enforced replay,
+first-match-wins runner patterns, SIGKILL group kill, token-boundary allowlist matching,
+widened malformed-directive shape; rev 3 resolved rev-2 blockers 1–6 and Q1–Q7 (see
+*Resolved decisions*). (The revision marker lives here, not on the `Status:` line, so a future
 rev bump cannot disturb the approval commit the human-commit check dogfoods.)
 
 ## Goal
@@ -60,8 +62,11 @@ SHADOW {"gate":"verify","check":"replay","configured":"default","artifact":"docs
 - **Execution trigger for measurement** (restores what rev 2 deleted): the env var
   `GATEKEEPER_SHADOW=replay` makes `check verify` actually execute replay — evidence blocks
   *and* legacy extraction (§3) — emitting per-command `SHADOW` lines with real pass/fail,
-  while the exit code remains presence-mode's. This is the explicit, documented mechanism
-  behind the baseline measurement (acceptance 7); it is never implied by a default run.
+  while the exit code remains presence-mode's. When `mode = "replay"` is already enforced,
+  the env var is a **no-op**: replay executes and its enforcing exit code stands — the env
+  var can never downgrade an enforcing project to presence exit codes (the invoking agent
+  controls its own environment). This is the explicit, documented mechanism behind the
+  baseline measurement (acceptance 7); it is never implied by a default run.
 - **Config strictness:** a *known* key with an invalid value fails the owning gate (exit 2,
   actionable message). A `config.toml` that fails TOML parsing **fails the three hardened
   gates** (`check verify` / `check design` / `check finish`, exit 2) — warn-and-default there
@@ -148,11 +153,14 @@ $ cargo test --manifest-path gatekeeper/Cargo.toml --test cli_hollow
   `# expect: <text>` — **literal substring** match (`<text>` trimmed) against the step's
   combined output; `# expect-re: <regex>` — a `regex`-crate pattern, compiled with `(?m)`.
 - **Malformed-directive rule (Q5):** inside an evidence block, any line matching
-  `^#\s*[\w-]+:` that is not a recognized directive, and any directive line not directly
-  following a step or another directive, makes the block **malformed** → gate fails in replay
-  mode. Silent demotion to comment is the same downgrade class config strictness rejects.
-  Lines not matching that shape are comments and ignored. A block with no `$ ` line is
-  malformed.
+  `^#\s*[\w-]+\s*:` that is not a recognized directive (the widened shape also catches
+  `# expect :`-style near-misses), and any directive line not directly following a step or
+  another directive, makes the block **malformed** → gate fails in replay mode. Silent
+  demotion to comment is the same downgrade class config strictness rejects. Lines not
+  matching that shape are comments and ignored; the USER-GUIDE evidence-grammar section warns
+  that `# <word>:`-shaped lines are **reserved** inside evidence blocks (an innocent
+  `# note: flaky on CI` fails the gate — deliberate fail-closed). A block with no `$ ` line
+  is malformed.
 - Every step must exit 0 **and** satisfy all its expect lines.
 
 **Execution model (argv, not shell):**
@@ -164,11 +172,16 @@ $ cargo test --manifest-path gatekeeper/Cargo.toml --test cli_hollow
   `Cargo.toml` — rev-2's own example violated this; fixed above).
 - Fail-closed rejections (each fails the gate in replay mode): raw text containing any of
   `` | & ; < > $ ` \ ( ) " ' `` ; commands prefixed by `NAME=value` environment assignments;
-  raw text not starting with an `allowed_command_prefixes` entry; a step exceeding
-  `replay_timeout_secs`.
+  a command whose leading argv tokens do not match an `allowed_command_prefixes` entry; a
+  step exceeding `replay_timeout_secs`.
+- **Allowlist matching is token-boundary, not raw-prefix:** each allowlist entry is split on
+  whitespace into tokens; a command is allowed iff its leading argv tokens equal some entry's
+  tokens exactly (`cargo test` matches `cargo test --manifest-path …` but **not**
+  `cargo testfoo`). Trailing whitespace in entries is irrelevant after tokenization.
 - **Timeout kill (Q1, Unix-only):** the child is spawned with std's stable
   `CommandExt::process_group(0)`; on timeout the group is killed by spawning
-  `kill -- -<pid>` as argv (std-only, no libc). On non-Unix targets only the direct child is
+  `kill -9 -- -<pid>` as argv (std-only, no libc; SIGKILL, not the default SIGTERM — a child
+  that ignores TERM would still orphan). On non-Unix targets only the direct child is
   killed — documented residual.
 - **Output capture:** stdout and stderr are drained by two reader threads and merged
   line-granular into one transcript (tee semantics where streaming applies, §5); expect
@@ -177,10 +190,10 @@ $ cargo test --manifest-path gatekeeper/Cargo.toml --test cli_hollow
   `(output truncated to last 1 MiB)`.
 
 **Config:** `[verify] mode = "presence" | "replay"` (**default `presence`**),
-`replay_timeout_secs = 300`, `allowed_command_prefixes = ["cargo test", "cargo run", "just ",
+`replay_timeout_secs = 300`, `allowed_command_prefixes = ["cargo test", "cargo run", "just",
 "git diff", "git log", "git show", "git status"]` — the default `git` entries are read-only
-subcommands (a bare `"git "` prefix would admit `git push`); projects widen the list
-deliberately.
+subcommands (a bare `"git"` entry would admit `git push`); projects widen the list
+deliberately. Matching is token-boundary (above).
 
 **Replay-mode semantics: fail-closed.** Zero evidence blocks = fail (kills fixture b); a
 malformed block = fail; no warn tier, no legacy carve-out in the gate.
@@ -235,13 +248,16 @@ side-effect-free):
 - Capture the test command's stdout+stderr while **streaming through** unchanged (two reader
   threads, line-granular tee — same merge semantics as §3). Retained capture tail-capped at
   1 MiB.
-- Parse runner summaries on the merged transcript, **summing across all matching lines**
-  (cargo prints one per test binary):
-  - cargo: `(?m)^test result: \w+\. (\d+) passed` → count = Σ captures
-  - pytest: `(?m)(\d+) passed[^\n]* in [0-9.]+s` — **no `===` fence anchor**, so `pytest -q`
+- Parse runner summaries on the merged transcript. Patterns are tried **in order,
+  first-match-wins**: the first pattern with ≥1 match determines the count (summing across
+  *its* matching lines — cargo prints one per test binary); later patterns are not consulted
+  (cargo's `… 5 passed; 0 failed; … finished in 0.00s` would otherwise also match the pytest
+  regex and double-count):
+  1. cargo: `(?m)^test result: \w+\. (\d+) passed` → count = Σ captures
+  2. pytest: `(?m)(\d+) passed[^\n]* in [0-9.]+s` — **no `===` fence anchor**, so `pytest -q`
     (the common CI invocation) parses too (Q2)
-  - **Nothing else in v0.5.0.** Go/jest deferred. Escape hatch:
-    `[finish] extra_count_patterns = ["<regex with one capture group>"]`.
+  3. `[finish] extra_count_patterns = ["<regex with one capture group>"]` — escape hatch,
+    tried in listed order. **Nothing else in v0.5.0.** Go/jest deferred.
 - Config: `[finish] require_test_count = true|false` (**default `false`**). When enforced:
   fail if the summed count is 0 **or** no pattern matched (fail-closed). Kills fixtures (e)
   and (g).
@@ -280,7 +296,7 @@ side-effect-free):
 | D5 | shadow mechanism | side-effect-free checks compute always + `SHADOW` JSONL; **execution requires explicit `GATEKEEPER_SHADOW=replay`** (§ shadow convention) — rev 2 deleted the trigger without replacement; restored scoped |
 | D6 | legacy artifacts in replay mode | fail (zero blocks = fail); measurement ≠ enforcement |
 | D7 | human-commit obstacles | fail closed when enforced (now incl. dirty/untracked spec, git < 2.15, unparsable probes); shadow logs `skip` |
-| D8 | evidence commands | argv, no shell; metachar rejection; `process_group(0)` + spawned `kill -- -<pid>` on timeout (Unix; non-Unix residual documented); read-only git allowlist defaults |
+| D8 | evidence commands | argv, no shell; metachar rejection; token-boundary allowlist (read-only git defaults); `process_group(0)` + spawned `kill -9 -- -<pid>` on timeout (Unix; non-Unix residual documented) |
 | D9 | floor covers `finish -- <cmd>` | yes, both paths |
 | D10 | Go test-count | deferred; cargo + pytest (`-q`-compatible) + `extra_count_patterns` |
 | D11 | invalid config | known-key bad value → owning gate exits 2; **unparsable config.toml → all three hardened gates exit 2**; unknown keys ignored, doctor flags |

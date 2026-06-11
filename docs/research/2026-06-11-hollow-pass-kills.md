@@ -88,7 +88,8 @@ This note grounds the Phase 14 fixes on the current tree (verified 2026-06-11, p
   replayable blocks at all.
 - **No format is prescribed anywhere**: `skills/verify-before-done/SKILL.md` demands "a command
   they can re-run and an output they can see" but defines no block syntax. The ` ```evidence `
-  format codifies a 9/12 majority practice; it does not match all history.
+  format codifies the existing `$ `-prefix plurality practice (6/12 under the strict
+  reading above); it does not match all history.
 - Determinism: of ~83 commands across the 12 artifacts, a majority *look* re-runnable
   (cargo/git/just); the failures cluster in network calls (GitHub API, curl), hardcoded dates,
   `mktemp` absolute paths, pinned old versions, and tool-presence assumptions (claude CLI,
