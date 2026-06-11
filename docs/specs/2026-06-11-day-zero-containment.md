@@ -1,6 +1,6 @@
 # Spec — day-zero containment (scan-rule patch, v0.4.1)
 
-**Status:** draft
+**Status:** approved
 
 ## Goal
 
