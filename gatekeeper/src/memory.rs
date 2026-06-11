@@ -388,9 +388,43 @@ pub fn cmd_memory(
         return 2;
     };
     match sub {
-        "write" => cmd_write(args, artifacts_root, framework_root, project_root),
-        "read" => cmd_read(args, artifacts_root),
-        "list" => cmd_list(artifacts_root),
+        "--help" | "-h" => {
+            println!("{}", crate::USAGE_MEMORY);
+            0
+        }
+        "write" => {
+            if let Some(code) = crate::check_help_or_unknown(
+                "memory write",
+                &args[1..],
+                &["--feature", "--date", "--status", "--verified-by"],
+                crate::USAGE_MEMORY,
+            ) {
+                return code;
+            }
+            cmd_write(args, artifacts_root, framework_root, project_root)
+        }
+        "read" => {
+            if let Some(code) = crate::check_help_or_unknown(
+                "memory read",
+                &args[1..],
+                &["--feature"],
+                crate::USAGE_MEMORY,
+            ) {
+                return code;
+            }
+            cmd_read(args, artifacts_root)
+        }
+        "list" => {
+            if let Some(code) = crate::check_help_or_unknown(
+                "memory list",
+                &args[1..],
+                &[],
+                crate::USAGE_MEMORY,
+            ) {
+                return code;
+            }
+            cmd_list(artifacts_root)
+        }
         other => {
             eprintln!("gatekeeper memory: unknown subcommand '{other}' (expected write|read|list)");
             2

@@ -320,7 +320,18 @@ pub fn instincts_for_adapt(root: &Path) -> Result<Vec<(String, String)>, String>
 /// Entry point for `gatekeeper instinct ...`. Returns the process exit code (0 / 2).
 pub fn cmd_instinct(args: &[String], root: &Path) -> i32 {
     match args.first().map(String::as_str) {
-        Some("list") => cmd_list_instincts(root),
+        Some("--help") | Some("-h") => {
+            println!("{}", crate::USAGE_INSTINCT);
+            0
+        }
+        Some("list") => {
+            if let Some(code) =
+                crate::check_help_or_unknown("instinct list", &args[1..], &[], crate::USAGE_INSTINCT)
+            {
+                return code;
+            }
+            cmd_list_instincts(root)
+        }
         Some("render") => cmd_render(&args[1..], root),
         _ => {
             eprintln!(
@@ -348,6 +359,15 @@ fn cmd_list_instincts(root: &Path) -> i32 {
 }
 
 fn cmd_render(args: &[String], root: &Path) -> i32 {
+    // --help / -h handled via the generic helper so the render unknown-flag path is consistent.
+    if let Some(code) = crate::check_help_or_unknown(
+        "instinct render",
+        args,
+        &["--harness", "--budget"],
+        crate::USAGE_INSTINCT,
+    ) {
+        return code;
+    }
     let mut harness = "claude".to_string();
     let mut budget: Option<usize> = None;
     let mut i = 0;
@@ -373,9 +393,10 @@ fn cmd_render(args: &[String], root: &Path) -> i32 {
                     return 2;
                 }
             },
-            other => {
-                eprintln!("gatekeeper instinct render: unknown flag '{other}'");
-                return 2;
+            // Unknown flags already rejected by check_help_or_unknown above; this arm is
+            // unreachable but satisfies the exhaustiveness check.
+            _ => {
+                i += 1;
             }
         }
     }
