@@ -7,7 +7,8 @@
 //!   gatekeeper check design  --feature S    Design gate: research note exists, then a spec doc exists.
 //!   gatekeeper check plan    --feature S    Plan gate: a placeholder-free plan exists.
 //!   gatekeeper check verify  --feature S    Verify gate: a verification note exists.
-//!   gatekeeper check review  --feature S    Review gate: a fresh critic's artifact passes.
+//!   gatekeeper check tdd     --feature S [--base R]  TDD gate: failing-test-first history heuristic.
+//!   gatekeeper check review  --feature S [--base R]  Review gate: a fresh critic's artifact passes.
 //!   gatekeeper check finish  -- <cmd...>    Finish gate: <cmd> exits 0.
 //!   gatekeeper scan --hook                  Security-scan a PreToolUse event (stdin); emit the decision.
 //!   gatekeeper scan --cmd | --content       Security-scan a command / file image on stdin.
@@ -43,6 +44,7 @@ mod learn;
 mod memory;
 mod review;
 mod scan;
+mod tdd;
 mod version;
 
 const PLACEHOLDERS: &[&str] = &[
@@ -107,6 +109,7 @@ fn print_help() {
          gatekeeper check design --feature <slug>\n  \
          gatekeeper check plan   --feature <slug>\n  \
          gatekeeper check verify --feature <slug>\n  \
+         gatekeeper check tdd    --feature <slug> [--base <ref>]\n  \
          gatekeeper check review --feature <slug> [--base <ref>]\n  \
          gatekeeper check finish -- <command...>\n  \
          gatekeeper check docs\n  \
@@ -347,6 +350,7 @@ fn cmd_check(args: &[String]) -> i32 {
         }
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", "verify", &feature_arg(args)),
+        "tdd" => tdd::gate_tdd(&project_root(), &feature_arg(args), base_arg(args).as_deref()),
         "finish" => gate_finish(args),
         "review" => review::gate_review(
             &project_root(),

@@ -57,7 +57,7 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 |------|-------------|
 | `design`  | an approved design doc exists at `docs/specs/<date>-<feature>.md` |
 | `plan`    | a placeholder-free plan exists at `docs/plans/<date>-<feature>.md` |
-| `tdd`     | the working tree has a committed failing-test-first history (heuristic) |
+| `tdd`     | the commit range has at least one test-only commit strictly before the first production-touching commit (failing-test-first heuristic; passes automatically on docs/tests-only branches) |
 | `verify`  | a verification note exists for the feature |
 | `review`  | a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to merge-base, both dimensions, no blockers) |
 | `finish`  | the full test suite passes (`gatekeeper check finish -- <cmd>`) |
