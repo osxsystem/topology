@@ -15,6 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gatekeeper
+
       - name: Assert tag == all three manifests
         run: |
           tag_ver="${GITHUB_REF_NAME#v}"
@@ -36,6 +42,9 @@ jobs:
             fail=1
           fi
           exit $fail
+
+      - name: README/USER-GUIDE↔help sync (cli_doc_sync)
+        run: cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync
 
   build:
     name: Build ${{ matrix.target }}

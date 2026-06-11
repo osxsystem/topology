@@ -33,6 +33,9 @@ jobs:
       - name: Docs-coverage lint (gatekeeper check docs)
         run: cargo run --manifest-path gatekeeper/Cargo.toml --quiet -- check docs
 
+      - name: README/USER-GUIDE↔help sync (cli_doc_sync)
+        run: cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync
+
   network:
     name: Network gates (deny, links) — non-blocking
     runs-on: ubuntu-latest
