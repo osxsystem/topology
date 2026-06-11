@@ -104,8 +104,9 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     // `is_payload_install` is used below to suppress the repo-build probe: a payload
     // root has no gatekeeper/target/ tree, so "not found" would be misleading.
     let version_path = root.join("VERSION");
-    let is_payload_install = matches!(parse_version_file(&version_path), VersionProbe::Present(_));
-    match parse_version_file(&version_path) {
+    let version_probe = parse_version_file(&version_path);
+    let is_payload_install = matches!(version_probe, VersionProbe::Present(_));
+    match version_probe {
         VersionProbe::Present(ref vf) => {
             if version_skew(vf) {
                 println!(

@@ -444,13 +444,14 @@ research-first, and packaging + CI) — is **fully delivered**, and Track 2 (Pha
 from "install = clone the dev repo" to "install = unpack a distribution payload") is underway:
 Phase 7 shipped the payload itself. What remains on the horizon:
 
-- **Track 2, Phases 9–12.** Each release publishes `topology-payload.tar.gz` — a platform-neutral
+- **Track 2, Phases 8–12.** Each release publishes `topology-payload.tar.gz` — a platform-neutral
   tarball of just the operators (hooks, skills, instincts, scan rules, `VERSION`) with no gatekeeper
-  source, docs, or git history — and local installs now unpack it instead of cloning (Phase 8,
-  shipped). Coming next: `adapt` v2 delivers full project integration including the operating
-  contract (Phase 9), the portable contract splits out of `AGENTS.md` (Phase 10), root resolution
-  hardens further (Phase 11), and the whole flow re-verifies end-to-end on the reference project
-  (Phase 12).
+  source, docs, or git history — and **local** installs now unpack it instead of cloning (the first
+  slice of Phase 8; global installs still use a checkout, and the rest of installer v3 — one install
+  channel, plugin retirement — is still to come). Then: `adapt` v2 delivers full project integration
+  including the operating contract (Phase 9), the portable contract splits out of `AGENTS.md`
+  (Phase 10), root resolution hardens further (Phase 11), and the whole flow re-verifies end-to-end
+  on the reference project (Phase 12).
 - **Domain skills for a specific stack.** Deferred from Phase 5 — skills tuned to a particular
   language/framework ("house stack"), beyond today's methodology and meta skills.
 - **A growing operator library.** Instincts, skills, and scan rules are designed to expand reactively

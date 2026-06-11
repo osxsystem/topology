@@ -148,7 +148,8 @@ fi
 # A payload-based local install has no Rust source, so --build-from-source requires
 # a real checkout (BASH_SOURCE resolves to a file). Fail now rather than after the
 # payload download so the user's directory is not left half-installed.
-if [[ "$SCOPE" == "local" && $BUILD_FROM_SOURCE -eq 1 && -z "${BASH_SOURCE[0]:-}" ]]; then
+if [[ "$SCOPE" == "local" && $BUILD_FROM_SOURCE -eq 1 ]] \
+   && ! [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   echo "error: --build-from-source with a piped install has no Rust source tree." >&2
   echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
   echo "    scripts/install.sh --project <path> --build-from-source" >&2
@@ -189,88 +190,89 @@ else
     tar -xzf "$tarball" -C "$ROOT"
   }
 
+  _rescue_legacy_clone() {
+    # Copies known in-tree project-state files to the canonical artifacts root so
+    # they survive the checkout deletion. Never overwrites an existing destination.
+    local ledger_src="$ROOT/docs/learn/ledger.md"
+    local ledger_dst="$PROJECT_PATH/.claude/topology/learn/ledger.md"
+    if [[ -f "$ledger_src" ]]; then
+      if [[ ! -f "$ledger_dst" ]]; then
+        mkdir -p "$(dirname "$ledger_dst")"
+        cp "$ledger_src" "$ledger_dst"
+        echo "    rescued: $ledger_src → $ledger_dst"
+      else
+        echo "    skipped (already exists): $ledger_dst"
+      fi
+    fi
+    # Memory handoffs — copy any *.handoff.md files from docs/memory/.
+    local memory_src="$ROOT/docs/memory"
+    local memory_dst="$PROJECT_PATH/.claude/topology/memory"
+    if [[ -d "$memory_src" ]]; then
+      local handoff
+      for handoff in "$memory_src"/*.handoff.md; do
+        [[ -e "$handoff" ]] || continue
+        local dst_file
+        dst_file="$memory_dst/$(basename "$handoff")"
+        if [[ ! -f "$dst_file" ]]; then
+          mkdir -p "$memory_dst"
+          cp "$handoff" "$dst_file"
+          echo "    rescued: $handoff → $dst_file"
+        else
+          echo "    skipped (already exists): $dst_file"
+        fi
+      done
+    fi
+  }
+
+  _handle_existing_root() {
+    # $ROOT already exists; decide whether and how to replace it. Callers invoke
+    # this only AFTER the replacement payload is in hand (built or downloaded +
+    # verified), so a failed acquisition never destroys a working install.
+    if [[ -f "$ROOT/VERSION" ]]; then
+      # Payload install: safe to replace in-place because project state is elsewhere.
+      echo "==> Upgrading existing payload at $ROOT"
+      rm -rf "$ROOT"
+    elif [[ -d "$ROOT/.git" ]]; then
+      # Legacy clone: attempt best-effort rescue of in-tree state before removing.
+      echo "==> Legacy clone detected at $ROOT; rescuing any in-tree state before replacing."
+      _rescue_legacy_clone
+      # Ask permission before deleting the checkout.
+      if [[ $YES -eq 1 ]] || ! can_prompt; then
+        echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes assumed)"
+        rm -rf "$ROOT"
+      else
+        answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
+        case "$answer" in
+          y|Y|yes|Yes) rm -rf "$ROOT" ;;
+          *)
+            echo "Aborted: legacy clone left intact at $ROOT." >&2
+            exit 1
+            ;;
+        esac
+      fi
+    else
+      echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
+      echo "  Cannot determine safe upgrade path; refusing to touch it." >&2
+      echo "  Remove $ROOT manually and re-run." >&2
+      exit 1
+    fi
+  }
+
   if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     # Dev-checkout mode: build the payload locally so the installed tree is always
     # in sync with the sources being tested (no version/checksum mismatches in CI).
     SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-    _handle_existing_root_checkout() {
-      # $ROOT already exists; decide whether and how to replace it.
-      if [[ -f "$ROOT/VERSION" ]]; then
-        # Payload install: safe to replace in-place because project state is elsewhere.
-        echo "==> Upgrading existing payload at $ROOT"
-        rm -rf "$ROOT"
-      elif [[ -d "$ROOT/.git" ]]; then
-        # Legacy clone: attempt best-effort rescue of in-tree state before removing.
-        echo "==> Legacy clone detected at $ROOT; rescuing any in-tree state before replacing."
-        _rescue_legacy_clone
-        # Ask permission before deleting the checkout.
-        if [[ $YES -eq 1 ]] || ! can_prompt; then
-          echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes assumed)"
-          rm -rf "$ROOT"
-        else
-          answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
-          case "$answer" in
-            y|Y|yes|Yes) rm -rf "$ROOT" ;;
-            *)
-              echo "Aborted: legacy clone left intact. Run scripts/install.sh without --project to keep using a checkout." >&2
-              exit 1
-              ;;
-          esac
-        fi
-      else
-        echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
-        echo "  Cannot determine safe upgrade path; refusing to touch it." >&2
-        echo "  Remove $ROOT manually and re-run." >&2
-        exit 1
-      fi
-    }
-
-    _rescue_legacy_clone() {
-      # Copies known in-tree project-state files to the canonical artifacts root so
-      # they survive the checkout deletion. Never overwrites an existing destination.
-      local ledger_src="$ROOT/docs/learn/ledger.md"
-      local ledger_dst="$PROJECT_PATH/.claude/topology/learn/ledger.md"
-      if [[ -f "$ledger_src" ]]; then
-        if [[ ! -f "$ledger_dst" ]]; then
-          mkdir -p "$(dirname "$ledger_dst")"
-          cp "$ledger_src" "$ledger_dst"
-          echo "    rescued: $ledger_src → $ledger_dst"
-        else
-          echo "    skipped (already exists): $ledger_dst"
-        fi
-      fi
-      # Memory handoffs — copy any *.handoff.md files from docs/memory/.
-      local memory_src="$ROOT/docs/memory"
-      local memory_dst="$PROJECT_PATH/.claude/topology/memory"
-      if [[ -d "$memory_src" ]]; then
-        local handoff
-        for handoff in "$memory_src"/*.handoff.md; do
-          [[ -e "$handoff" ]] || continue
-          local dst_file
-          dst_file="$memory_dst/$(basename "$handoff")"
-          if [[ ! -f "$dst_file" ]]; then
-            mkdir -p "$memory_dst"
-            cp "$handoff" "$dst_file"
-            echo "    rescued: $handoff → $dst_file"
-          else
-            echo "    skipped (already exists): $dst_file"
-          fi
-        done
-      fi
-    }
-
-    if [[ -e "$ROOT" ]]; then
-      _handle_existing_root_checkout
-    fi
-
     echo "==> Vendoring topology payload at $ROOT (built from checkout)"
-    mkdir -p "$ROOT"
     TMPDIR_BUILD="$(mktemp -d)"
     TMPDIR_STAGE="$(mktemp -d)"
     cleanup_build() { rm -rf "$TMPDIR_BUILD" "$TMPDIR_STAGE"; }
     trap cleanup_build EXIT
     PAYLOAD_TARBALL="$(cd "$TMPDIR_BUILD" && bash "$SRC_ROOT/scripts/build-payload.sh" "$TMPDIR_STAGE")"
+    if [[ -e "$ROOT" ]]; then
+      _handle_existing_root
+    fi
+    mkdir -p "$ROOT"
     _unpack_payload "$PAYLOAD_TARBALL"
     cleanup_build
     trap - EXIT
@@ -327,65 +329,8 @@ else
       exit 1
     }
 
-    _handle_existing_root_piped() {
-      if [[ -f "$ROOT/VERSION" ]]; then
-        echo "==> Upgrading existing payload at $ROOT"
-        rm -rf "$ROOT"
-      elif [[ -d "$ROOT/.git" ]]; then
-        echo "==> Legacy clone detected at $ROOT; rescuing any in-tree state before replacing."
-        # Inline rescue (functions defined before BASH_SOURCE check can't be reused here
-        # because this else-branch has no SRC_ROOT; replicate logic with local paths).
-        local ledger_src="$ROOT/docs/learn/ledger.md"
-        local ledger_dst="$PROJECT_PATH/.claude/topology/learn/ledger.md"
-        if [[ -f "$ledger_src" ]]; then
-          if [[ ! -f "$ledger_dst" ]]; then
-            mkdir -p "$(dirname "$ledger_dst")"
-            cp "$ledger_src" "$ledger_dst"
-            echo "    rescued: $ledger_src → $ledger_dst"
-          else
-            echo "    skipped (already exists): $ledger_dst"
-          fi
-        fi
-        local memory_src="$ROOT/docs/memory"
-        local memory_dst="$PROJECT_PATH/.claude/topology/memory"
-        if [[ -d "$memory_src" ]]; then
-          local handoff
-          for handoff in "$memory_src"/*.handoff.md; do
-            [[ -e "$handoff" ]] || continue
-            local dst_file
-          dst_file="$memory_dst/$(basename "$handoff")"
-            if [[ ! -f "$dst_file" ]]; then
-              mkdir -p "$memory_dst"
-              cp "$handoff" "$dst_file"
-              echo "    rescued: $handoff → $dst_file"
-            else
-              echo "    skipped (already exists): $dst_file"
-            fi
-          done
-        fi
-        if [[ $YES -eq 1 ]] || ! can_prompt; then
-          echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes assumed)"
-          rm -rf "$ROOT"
-        else
-          answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
-          case "$answer" in
-            y|Y|yes|Yes) rm -rf "$ROOT" ;;
-            *)
-              echo "Aborted: legacy clone left intact." >&2
-              exit 1
-              ;;
-          esac
-        fi
-      else
-        echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
-        echo "  Cannot determine safe upgrade path; refusing to touch it." >&2
-        echo "  Remove $ROOT manually and re-run." >&2
-        exit 1
-      fi
-    }
-
     if [[ -e "$ROOT" ]]; then
-      _handle_existing_root_piped
+      _handle_existing_root
     fi
 
     echo "==> Vendoring topology payload at $ROOT (downloaded)"
