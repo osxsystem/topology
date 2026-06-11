@@ -56,7 +56,7 @@ The installer **asks** (when a terminal is available) which scope and harness to
 
 This one command:
 
-1. **Clones** the repo into `${TOPOLOGY_HOME:-$HOME/.topology}` for global scope (or updates it if already present), or vendors a copy at `<path>/.topology` for local scope.
+1. **Acquires the framework** into `${TOPOLOGY_HOME:-$HOME/.topology}` for global scope (clones the repo, or pulls if already present), or for local scope downloads the **distribution payload** tarball — a curated, checksum-verified snapshot of just the operators (hooks, skills, instincts, scan rules, `scripts/fetch-gatekeeper.sh`, `AGENTS.md`, `VERSION`) — and unpacks it at `<path>/.topology`. Re-running the installer upgrades a payload install in place; a `VERSION` file at `<path>/.topology/VERSION` records the installed version so `gatekeeper doctor` can detect binary↔payload skew. If an older clone-based install is found at `<path>/.topology`, the installer rescues any in-tree state (learn ledger, memory handoffs) to `<path>/.claude/topology/` before prompting to replace.
 2. **Downloads** the prebuilt `gatekeeper` binary for your platform, verifies its SHA-256 checksum,
    smoke-tests `--version`, and places it at `$ROOT/bin/gatekeeper`.
 3. **Falls back** to `cargo build --release` if no prebuilt binary is available for your platform.
@@ -68,7 +68,7 @@ This one command:
 9. **Detects stale PATH binaries** — if a `gatekeeper` on PATH has a different version, with a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
 10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check — from the *project* directory for `--project` installs, so the check validates the layout your sessions will actually run in.
 
-If you already have a checkout, run `./scripts/install.sh` from inside it (the curl pipe detects this automatically). Pass `--build-from-source` to skip the prebuilt download and always build from source.
+If you already have a checkout, run `./scripts/install.sh` from inside it — the script detects the checkout via `BASH_SOURCE` and builds the payload locally rather than downloading it. Pass `--build-from-source` to skip the prebuilt gatekeeper download and always build from source (requires Rust; not supported in piped mode for local installs, since no source tree is available).
 
 For `--harness none`, the installer prints the hook config block — paste it into `.claude/settings.json` *inside the repo*:
 
@@ -444,10 +444,10 @@ research-first, and packaging + CI) — is **fully delivered**, and Track 2 (Pha
 from "install = clone the dev repo" to "install = unpack a distribution payload") is underway:
 Phase 7 shipped the payload itself. What remains on the horizon:
 
-- **Track 2, Phases 8–12.** Each release already publishes `topology-payload.tar.gz` — a
-  platform-neutral tarball of just the operators (hooks, skills, instincts, scan rules, `VERSION`)
-  with no gatekeeper source, docs, or git history. Coming next: installer v3 consumes the payload
-  for both scopes (Phase 8), `adapt` v2 delivers full project integration including the operating
+- **Track 2, Phases 9–12.** Each release publishes `topology-payload.tar.gz` — a platform-neutral
+  tarball of just the operators (hooks, skills, instincts, scan rules, `VERSION`) with no gatekeeper
+  source, docs, or git history — and local installs now unpack it instead of cloning (Phase 8,
+  shipped). Coming next: `adapt` v2 delivers full project integration including the operating
   contract (Phase 9), the portable contract splits out of `AGENTS.md` (Phase 10), root resolution
   hardens further (Phase 11), and the whole flow re-verifies end-to-end on the reference project
   (Phase 12).
