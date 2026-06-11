@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-08
 - **Feature slug:** continuous-learning
-- **Status:** draft
+- **Status:** approved
 
 > Grounded in `docs/adr/0005-continuous-learning-capture-gotcha.md` (the accepted decision) and the
 > `source: ledger:<entry-id>` contract **pre-reserved** by the instincts spec

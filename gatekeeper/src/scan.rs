@@ -1602,6 +1602,198 @@ mod match_tests {
     }
 }
 
+// ── AWS secret access key rule tests ──────────────────────────────────────────
+#[cfg(test)]
+mod aws_secret_key_tests {
+    use super::*;
+
+    /// Rules including the aws-secret-access-key content rule + its allowlist entry.
+    fn rules() -> Rules {
+        let toml = concat!(
+            "schema_version = 1\n",
+            "\n",
+            "[[rule]]\n",
+            "id = \"aws-secret-access-key\"\n",
+            "kind = \"content\"\n",
+            "severity = \"block\"\n",
+            "description = \"AWS secret access key assignment\"\n",
+            // single-quoted TOML literal string passes backslashes through to the regex engine.
+            "pattern = '(?i)\\b(?:aws[_-])?secret[_-](?:access[_-])?key\\s*[=:]\\s*[\\x22\\x27]?[A-Za-z0-9/+=]{40,}'\n",
+            "\n",
+            "[[allow]]\n",
+            "rule = \"aws-secret-access-key\"\n",
+            "pattern = '(?i)(?:aws[_-])?secret[_-](?:access[_-])?key\\s*[=:]\\s*[\\x22\\x27]?wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY[\\x22\\x27]?'\n",
+        );
+        parse_rules(toml).unwrap()
+    }
+
+    // Helper: run the content scanner and return findings.
+    fn scan(r: &Rules, input: &[u8]) -> Vec<Finding> {
+        scan_with(&r.content_set, &r.content, input, &r.allows, None)
+    }
+
+    // ── Positive cases (must block) ────────────────────────────────────────────
+
+    #[test]
+    fn blocks_aws_secret_access_key_uppercase() {
+        // The canonical env-var spelling.  Value is 40 base64-ish chars (realistic shape).
+        let r = rules();
+        // Build key by concat to avoid the scanner flagging this source file itself.
+        // "9v" (2) + "Kp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa" (38) = 40 chars total.
+        let val = format!("{}Kp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9v");
+        assert_eq!(val.len(), 40, "test value must be exactly 40 chars");
+        let input = format!("AWS_SECRET_ACCESS_KEY={val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(
+            f.len(),
+            1,
+            "AWS_SECRET_ACCESS_KEY with 40-char value must block"
+        );
+        assert_eq!(report(&f), 1);
+        // Redacted hint must not contain the raw secret.
+        assert!(
+            !f[0].redacted.contains(&val),
+            "redacted hint must not expose the value"
+        );
+    }
+
+    #[test]
+    fn blocks_aws_secret_access_key_lowercase() {
+        // Lowercase / .env file spelling.
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("aws_secret_access_key={val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1, "aws_secret_access_key (lowercase) must block");
+    }
+
+    #[test]
+    fn blocks_secret_key_colon_separator() {
+        // YAML-style colon separator.
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("aws_secret_access_key: {val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1, "colon separator must block");
+    }
+
+    #[test]
+    fn blocks_secret_key_quoted_value() {
+        // Quoted value (shell export / .env style).
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("AWS_SECRET_ACCESS_KEY=\"{val}\"\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1, "double-quoted value must block");
+    }
+
+    #[test]
+    fn blocks_aws_secret_key_short_form() {
+        // No "access" component: aws_secret_key.
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("aws_secret_key={val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1, "aws_secret_key (no 'access') must block");
+    }
+
+    #[test]
+    fn blocks_secret_access_key_no_aws_prefix() {
+        // No "aws" prefix: secret-access-key (hyphen separated, YAML config style).
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("secret-access-key: {val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1, "secret-access-key (no aws prefix) must block");
+    }
+
+    // ── Negative cases (must NOT block) ────────────────────────────────────────
+
+    #[test]
+    fn allows_aws_docs_example_secret() {
+        // The canonical AWS documentation example key is allowlisted.
+        let r = rules();
+        let input = b"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n";
+        let f = scan(&r, input);
+        assert!(
+            f.is_empty(),
+            "AWS docs example secret must be allowlisted; got: {:#?}",
+            f.iter().map(|x| &x.redacted).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn allows_git_sha_without_secret_key_context() {
+        // A 40-hex git SHA must NOT match — no "secret" in the key name.
+        let r = rules();
+        let input = b"commit = 4f80200a4f4f20627a4519c1f4eddf8d6e1c5a99\n";
+        let f = scan(&r, input);
+        assert!(
+            f.is_empty(),
+            "git SHA without secret-key context must not block"
+        );
+    }
+
+    #[test]
+    fn allows_deploy_key_without_secret() {
+        // "deploy_key" contains "key" but not "secret" — must NOT match.
+        let r = rules();
+        let val = "4f80200a4f4f20627a4519c1f4eddf8d6e1c5a99"; // 40 hex chars
+        let input = format!("deploy_key = {val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert!(
+            f.is_empty(),
+            "deploy_key without 'secret' in name must not block"
+        );
+    }
+
+    #[test]
+    fn allows_base64_blob_without_secret_key_context() {
+        // A base64-encoded blob in a lockfile line (no key-name context) must NOT block.
+        let r = rules();
+        // 44-char base64 string (without 'secret' context)
+        let input = b"integrity = sha512-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno=\n";
+        let f = scan(&r, input);
+        assert!(
+            f.is_empty(),
+            "base64 blob without secret-key context must not block"
+        );
+    }
+
+    #[test]
+    fn value_shorter_than_40_chars_not_blocked() {
+        // A 39-char value must not trigger (too short to be a valid AWS secret).
+        let r = rules();
+        let val = "9vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxI"; // 39 chars
+        assert_eq!(val.len(), 39);
+        let input = format!("AWS_SECRET_ACCESS_KEY={val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert!(
+            f.is_empty(),
+            "39-char value must not block (below 40-char minimum)"
+        );
+    }
+
+    #[test]
+    fn redaction_does_not_expose_raw_value() {
+        // Regression guard: the redacted hint must only show a short prefix + length.
+        let r = rules();
+        let val = format!("{}vKp2mXqL8wNzR4tYbE7uJ3hAgF6dScVnM1oPxIa", "9");
+        let input = format!("AWS_SECRET_ACCESS_KEY={val}\n");
+        let f = scan(&r, input.as_bytes());
+        assert_eq!(f.len(), 1);
+        // redact() shows at most 4 leading graphic bytes then "…<len=N>".
+        assert!(
+            f[0].redacted.contains("…<len="),
+            "redacted hint must contain length marker"
+        );
+        assert!(
+            !f[0].redacted.contains(&val),
+            "redacted hint must not contain the raw value"
+        );
+    }
+}
+
 #[cfg(test)]
 mod load_tests {
     use super::*;
