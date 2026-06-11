@@ -40,6 +40,7 @@ use std::process::{exit, Command};
 use regex::Regex;
 
 mod adapt;
+mod config;
 mod doctor;
 mod instinct;
 mod learn;
@@ -532,11 +533,10 @@ fn cmd_check(args: &[String]) -> i32 {
             ) {
                 return code;
             }
-            tdd::gate_tdd(
-                &project_root(),
-                &feature_arg(args),
-                base_arg(args).as_deref(),
-            )
+            // base precedence: --base flag > config.base_branch > gate default
+            let cfg = config::ProjectConfig::load(&artifacts_root());
+            let base = base_arg(args).or(cfg.base_branch);
+            tdd::gate_tdd(&project_root(), &feature_arg(args), base.as_deref())
         }
         "finish" => {
             // `finish` passes everything after `--` through to a child process;
@@ -546,7 +546,8 @@ fn cmd_check(args: &[String]) -> i32 {
             {
                 return code;
             }
-            gate_finish(args)
+            let cfg = config::ProjectConfig::load(&artifacts_root());
+            gate_finish(args, &cfg)
         }
         "review" => {
             if let Some(code) = check_help_or_unknown(
@@ -557,11 +558,14 @@ fn cmd_check(args: &[String]) -> i32 {
             ) {
                 return code;
             }
+            let arts = artifacts_root();
+            let cfg = config::ProjectConfig::load(&arts);
             review::gate_review(
                 &project_root(),
-                &artifacts_root(),
+                &arts,
                 &feature_arg(args),
                 base_arg(args).as_deref(),
+                cfg.base_branch.as_deref(),
             )
         }
         "docs" => {
@@ -862,16 +866,46 @@ fn strip_comments(text: &str) -> String {
     out
 }
 
-fn gate_finish(args: &[String]) -> i32 {
-    let cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
-    if cmd.is_empty() {
-        eprintln!("gatekeeper check finish -- <command...>  (command required)");
-        eprintln!("  The finish gate runs your full test command and passes when it exits 0:");
-        eprintln!("    gatekeeper check finish -- npm test");
-        eprintln!("    gatekeeper check finish -- cargo test");
-        return 2;
+fn gate_finish(args: &[String], cfg: &config::ProjectConfig) -> i32 {
+    let cli_cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
+
+    if !cli_cmd.is_empty() {
+        // Explicit CLI `-- cmd` wins unconditionally.
+        return run_finish_command_parts(&cli_cmd);
     }
+
+    // No CLI command — try config.test_command.
+    if let Some(ref tc) = cfg.test_command {
+        return run_finish_sh(tc);
+    }
+
+    // Nothing supplied — emit the original usage error, extended to mention config.
+    let arts = artifacts_root();
+    eprintln!("gatekeeper check finish -- <command...>  (command required)");
+    eprintln!("  The finish gate runs your full test command and passes when it exits 0:");
+    eprintln!("    gatekeeper check finish -- npm test");
+    eprintln!("    gatekeeper check finish -- cargo test");
+    eprintln!(
+        "  Or set test_command in {}/config.toml to avoid retyping it.",
+        arts.display()
+    );
+    2
+}
+
+/// Run a finish command expressed as a pre-split argument list (from the CLI `-- cmd...` form).
+fn run_finish_command_parts(cmd: &[&String]) -> i32 {
     let status = Command::new(cmd[0]).args(&cmd[1..]).status();
+    finish_status(status)
+}
+
+/// Run a finish command expressed as a single shell string (from config.test_command).
+/// Uses `sh -c` so shell syntax (pipes, &&, etc.) works as expected.
+fn run_finish_sh(cmd: &str) -> i32 {
+    let status = Command::new("sh").arg("-c").arg(cmd).status();
+    finish_status(status)
+}
+
+fn finish_status(status: std::io::Result<std::process::ExitStatus>) -> i32 {
     match status {
         Ok(s) if s.success() => {
             println!("PASS finish gate: test command exited 0");

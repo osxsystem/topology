@@ -213,6 +213,36 @@ fn is_clean_review_path(line: &str, reviews_prefix: &str) -> bool {
     line.get(3..).unwrap_or("").starts_with(reviews_prefix)
 }
 
+/// Detect the default integration branch from the git remote or local branches.
+///
+/// Strategy (in order):
+///
+/// 1. `git symbolic-ref refs/remotes/origin/HEAD` → strip "refs/remotes/origin/" prefix.
+/// 2. Whichever of "main" / "master" exists as a local branch — but if BOTH exist, skip
+///    (ambiguity; fall through to the caller's built-in default).
+///
+/// Returns `None` when detection is inconclusive.
+fn detect_default_branch(git_root: &Path) -> Option<String> {
+    // Strategy 1: origin/HEAD symbolic ref.
+    if let Some(sym) = git(git_root, &["symbolic-ref", "refs/remotes/origin/HEAD"]) {
+        let prefix = "refs/remotes/origin/";
+        if let Some(branch) = sym.strip_prefix(prefix) {
+            if !branch.is_empty() {
+                return Some(branch.to_owned());
+            }
+        }
+    }
+
+    // Strategy 2: local branch existence — but only when exactly one of main/master exists.
+    let has_main = git(git_root, &["rev-parse", "--verify", "main"]).is_some();
+    let has_master = git(git_root, &["rev-parse", "--verify", "master"]).is_some();
+    match (has_main, has_master) {
+        (true, false) => Some("main".to_owned()),
+        (false, true) => Some("master".to_owned()),
+        _ => None, // both or neither → ambiguous, skip
+    }
+}
+
 /// The `review` gate.
 ///
 /// - `git_root`: the project root — all git commands run with `-C git_root` so the result is
@@ -220,6 +250,10 @@ fn is_clean_review_path(line: &str, reviews_prefix: &str) -> bool {
 /// - `artifacts_root`: the artifacts root — review artifacts are read from
 ///   `<artifacts_root>/reviews/`; the clean-tree filter accepts only paths under that directory
 ///   (expressed as a relpath from `git_root`).
+/// - `base_ref`: explicit `--base` flag value (highest precedence).
+/// - `config_base`: value from `config.toml`'s `base_branch` key (second precedence).
+///
+/// Base-branch precedence: `--base` flag > `config_base` > detection > "main".
 ///
 /// Returns a process exit code: 0 pass, 1 veto, 2 usage error.
 pub fn gate_review(
@@ -227,6 +261,7 @@ pub fn gate_review(
     artifacts_root: &Path,
     feature: &str,
     base_ref: Option<&str>,
+    config_base: Option<&str>,
 ) -> i32 {
     if feature.is_empty() {
         eprintln!("gatekeeper: --feature <slug> is required");
@@ -282,7 +317,14 @@ pub fn gate_review(
         return 1;
     }
 
-    let branch = base_ref.unwrap_or("main");
+    // Resolve the base branch using the precedence chain:
+    //   --base flag  >  config.base_branch  >  detection  >  "main"
+    let detected = detect_default_branch(git_root);
+    let branch: &str = base_ref
+        .or(config_base)
+        .or(detected.as_deref())
+        .unwrap_or("main");
+
     // Reject option-shaped refs: a value like "--independent" or "--fork-point" would be
     // parsed by `git merge-base` as a mode flag (and could print HEAD itself), turning a
     // wrong-based artifact into a pass. A valid git ref never begins with '-'.
@@ -296,7 +338,8 @@ pub fn gate_review(
             println!("FAIL review gate: cannot resolve merge-base of '{branch}' and HEAD");
             println!(
                 "  (default base is 'main'; if this repo's default branch differs, pass \
-                 --base <branch>, e.g. --base master)"
+                 --base <branch> or set base_branch in {}/config.toml)",
+                artifacts_root.display()
             );
             return 1;
         }
@@ -592,7 +635,7 @@ mod gate_tests {
         let (root, head) = repo("pass");
         write_artifact(&root, &head, &head, true); // single-commit repo: merge-base(main,HEAD)==HEAD
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             0
         );
         let _ = fs::remove_dir_all(&root);
@@ -606,7 +649,7 @@ mod gate_tests {
         assert!(porcelain.lines().any(|l| l.contains("docs/reviews/")));
         // ... yet the gate still passes, because the clean-tree check excludes docs/reviews/.
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             0
         );
         let _ = fs::remove_dir_all(&root);
@@ -621,7 +664,7 @@ mod gate_tests {
             true,
         );
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -632,7 +675,7 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         fs::write(root.join("a.txt"), "changed\n").unwrap(); // tracked file modified
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -644,7 +687,7 @@ mod gate_tests {
         write_artifact(&root, &head, &head, true);
         fs::write(root.join("stray.txt"), "junk\n").unwrap();
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -659,7 +702,7 @@ mod gate_tests {
             true,
         );
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -669,7 +712,7 @@ mod gate_tests {
         let (root, head) = repo("failv");
         write_artifact(&root, &head, &head, false);
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -683,7 +726,8 @@ mod gate_tests {
                 &root,
                 &arts(&root),
                 "code-review-gate",
-                Some("no-such-branch")
+                Some("no-such-branch"),
+                None,
             ),
             1
         );
@@ -695,7 +739,7 @@ mod gate_tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -712,7 +756,7 @@ mod gate_tests {
         )
         .unwrap();
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -730,13 +774,13 @@ mod gate_tests {
         // Correct review: BASE is the fork point, not HEAD.
         write_artifact(&root, &head, &base, true);
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             0
         );
         // A review lying with BASE == HEAD must be rejected (merge-base != HEAD here).
         write_artifact(&root, &head, &head, true);
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -758,7 +802,7 @@ mod gate_tests {
         // Stage a rename moving the tracked review file out of docs/reviews/.
         run(&root, &["mv", "docs/reviews/tracked.md", "moved.rs"]);
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -772,7 +816,7 @@ mod gate_tests {
         let dir = root.join("docs").join("reviews");
         fs::write(dir.join("bad-code-review-gate.md"), b"\xff\xfe\x00\x9f").unwrap();
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -793,7 +837,7 @@ mod gate_tests {
         // Unstaged modification -> porcelain " M adocs/reviews/x.rs" (sorts before docs/).
         fs::write(sneaky.join("x.rs"), "two\n").unwrap();
         assert_eq!(
-            gate_review(&root, &arts(&root), "code-review-gate", None),
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
             1
         );
         let _ = fs::remove_dir_all(&root);
@@ -809,9 +853,167 @@ mod gate_tests {
                 &root,
                 &arts(&root),
                 "code-review-gate",
-                Some("--independent")
+                Some("--independent"),
+                None,
             ),
             2
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── config_base tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn config_base_used_when_no_flag_and_detection_ambiguous() {
+        // When detection is ambiguous (both main and master exist, no origin/HEAD),
+        // the gate falls back to "main".  Providing config_base = "master" overrides that
+        // and makes the gate resolve correctly against master.
+        let (root, head) = {
+            let r = env::temp_dir().join(format!("topo_gate_cfgbase_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&r);
+            fs::create_dir_all(&r).unwrap();
+            run(&r, &["init", "-q", "-b", "main"]);
+            run(&r, &["config", "user.email", "t@t.t"]);
+            run(&r, &["config", "user.name", "t"]);
+            fs::write(r.join("a.txt"), "one\n").unwrap();
+            run(&r, &["add", "."]);
+            run(&r, &["commit", "-q", "-m", "init"]);
+            // Also create master so detection is ambiguous (both exist, no origin/HEAD).
+            run(&r, &["branch", "master"]);
+            let h = git(&r, &["rev-parse", "HEAD"]).unwrap();
+            (r, h)
+        };
+        write_artifact(&root, &head, &head, true);
+        // Both main and master exist → detection returns None → falls through to "main".
+        // merge-base("main", HEAD) works (main is the current branch) → should pass.
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
+            0,
+            "should pass: ambiguous detection falls back to main, which is the current branch"
+        );
+        // Providing config_base = "master" works too (master exists as a local ref).
+        assert_eq!(
+            gate_review(
+                &root,
+                &arts(&root),
+                "code-review-gate",
+                None,
+                Some("master"),
+            ),
+            0,
+            "should pass with config_base = master (it exists as a local branch)"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn flag_overrides_config_base() {
+        // flag (--base) takes precedence over config_base.
+        let (root, head) = {
+            let r = env::temp_dir().join(format!("topo_gate_flagcfg_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&r);
+            fs::create_dir_all(&r).unwrap();
+            run(&r, &["init", "-q", "-b", "main"]);
+            run(&r, &["config", "user.email", "t@t.t"]);
+            run(&r, &["config", "user.name", "t"]);
+            fs::write(r.join("a.txt"), "one\n").unwrap();
+            run(&r, &["add", "."]);
+            run(&r, &["commit", "-q", "-m", "init"]);
+            let h = git(&r, &["rev-parse", "HEAD"]).unwrap();
+            (r, h)
+        };
+        write_artifact(&root, &head, &head, true);
+        // --base "main" should win over a wrong config_base "nonexistent".
+        assert_eq!(
+            gate_review(
+                &root,
+                &arts(&root),
+                "code-review-gate",
+                Some("main"),
+                Some("nonexistent"),
+            ),
+            0,
+            "--base flag must override config_base"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detect_default_branch_finds_master_when_only_master_exists() {
+        // A repo with only a "master" branch: detect_default_branch should return "master".
+        let root = env::temp_dir().join(format!("topo_detect_master_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "master"]);
+        run(&root, &["config", "user.email", "t@t.t"]);
+        run(&root, &["config", "user.name", "t"]);
+        fs::write(root.join("x.txt"), "x\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "init"]);
+
+        let detected = detect_default_branch(&root);
+        assert_eq!(detected, Some("master".to_owned()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detect_default_branch_finds_main_when_only_main_exists() {
+        let root = env::temp_dir().join(format!("topo_detect_main_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]);
+        run(&root, &["config", "user.email", "t@t.t"]);
+        run(&root, &["config", "user.name", "t"]);
+        fs::write(root.join("x.txt"), "x\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "init"]);
+
+        let detected = detect_default_branch(&root);
+        assert_eq!(detected, Some("main".to_owned()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn detect_default_branch_ambiguous_returns_none() {
+        // When both main and master exist (and no origin/HEAD), detection returns None.
+        let root = env::temp_dir().join(format!("topo_detect_ambig_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]);
+        run(&root, &["config", "user.email", "t@t.t"]);
+        run(&root, &["config", "user.name", "t"]);
+        fs::write(root.join("x.txt"), "x\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "init"]);
+        // Create a "master" branch as well.
+        run(&root, &["branch", "master"]);
+
+        let detected = detect_default_branch(&root);
+        assert_eq!(detected, None, "ambiguous case must return None");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gate_uses_detection_when_no_flag_and_no_config() {
+        // A master-only repo: detection finds "master"; gate passes without any flag or config.
+        let (root, head) = {
+            let r = env::temp_dir().join(format!("topo_gate_detect_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&r);
+            fs::create_dir_all(&r).unwrap();
+            run(&r, &["init", "-q", "-b", "master"]);
+            run(&r, &["config", "user.email", "t@t.t"]);
+            run(&r, &["config", "user.name", "t"]);
+            fs::write(r.join("a.txt"), "one\n").unwrap();
+            run(&r, &["add", "."]);
+            run(&r, &["commit", "-q", "-m", "init"]);
+            let h = git(&r, &["rev-parse", "HEAD"]).unwrap();
+            (r, h)
+        };
+        write_artifact(&root, &head, &head, true);
+        assert_eq!(
+            gate_review(&root, &arts(&root), "code-review-gate", None, None),
+            0,
+            "detection should find master and gate should pass"
         );
         let _ = fs::remove_dir_all(&root);
     }

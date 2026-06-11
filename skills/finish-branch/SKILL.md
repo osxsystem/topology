@@ -13,7 +13,8 @@ Only enter after `code-review` passes (which itself follows `verify-before-done`
    ```bash
    gatekeeper check finish -- <your full test command>
    ```
-   This runs the command and gates on a zero exit code.
+   This runs the command and gates on a zero exit code. If `test_command` is set in
+   `<artifacts_root>/config.toml`, you can omit `-- <cmd>` and it will be used automatically.
 2. **Run the formatters/linters.** For this repo: `cargo fmt --check` and `cargo clippy -- -D warnings`.
 3. **Present options** to the user — don't merge unilaterally:
    - merge to the base branch
