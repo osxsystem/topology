@@ -1,5 +1,7 @@
 # Spec — robust framework-root resolution
 
+**Status:** approved
+
 ## Goal
 
 `framework_root()` must resolve to a genuine Topology root, must not be hijacked by an unrelated

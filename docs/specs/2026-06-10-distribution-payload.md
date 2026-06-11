@@ -1,5 +1,7 @@
 # Spec — distribution payload (Phase 7)
 
+**Status:** approved
+
 ## Goal
 
 A release artifact that is the unit of install — the tool without the workshop. A governed project

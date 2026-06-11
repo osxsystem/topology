@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-07
 - **Feature slug:** instincts-engine
-- **Status:** draft
+- **Status:** approved
 
 > Grounded in `docs/research/2026-06-07-instincts-engine.md` (the RESEARCH note). That note mapped the
 > terrain and enumerated decisions A–H; this doc **resolves** them. The load-bearing fork — **what an

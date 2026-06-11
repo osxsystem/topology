@@ -55,7 +55,7 @@ A *rule* ("verify before asserting") has an invisible opt-out — the agent skip
 
 | Gate | Passes when |
 |------|-------------|
-| `design`  | an approved design doc exists at `docs/specs/<date>-<feature>.md` |
+| `design`  | an approved design doc exists at `docs/specs/<date>-<feature>.md` with a `Status: approved` marker |
 | `plan`    | a placeholder-free plan exists at `docs/plans/<date>-<feature>.md` |
 | `tdd`     | the working tree has a committed failing-test-first history (heuristic) |
 | `verify`  | a verification note exists for the feature |

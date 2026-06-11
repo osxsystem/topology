@@ -1,5 +1,7 @@
 # Spec — installer v2: harness/scope selection, `.claude/topology/` artifacts, stale-PATH repair
 
+**Status:** approved
+
 ## Goal
 
 The one-liner becomes a guided install, and governing an external project stops polluting its root

@@ -22,7 +22,17 @@ No production code until a design doc exists at `docs/specs/<date>-<feature>.md`
 gatekeeper check design --feature <feature-slug>
 ```
 
-Passes only when the design doc exists. When it passes, transition to `write-plan`.
+Passes only when the design doc exists **and** contains an explicit approval marker. The gate
+teaches the fix on failure; accepted forms (anywhere in the file, case-insensitive):
+
+```
+Status: approved
+**Status:** approved
+- **Status:** approved
+```
+
+Add the marker once the human has reviewed and signed off the design. When the gate passes,
+transition to `write-plan`.
 
 ## Common rationalizations (rebutted)
 
