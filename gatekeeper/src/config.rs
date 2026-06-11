@@ -76,6 +76,9 @@ pub struct ProjectConfig {
     pub design_substance_floor: bool,
     /// `[design] approval` — `"status-line"` (default) | `"human-commit"`.
     pub design_approval: DesignApproval,
+    /// `[design] agent_trailer_patterns` — regex list matched against Co-Authored-By values.
+    /// Default catches Claude, Copilot, Cursor, Codex, Gemini, Devin, Aider, [bot].
+    pub design_agent_trailer_patterns: Vec<String>,
 
     // ── hardened finish settings (§5) ────────────────────────────────────────
     /// `[finish] require_test_count` — default false.
@@ -129,6 +132,21 @@ impl DesignApproval {
     }
 }
 
+// ── default agent_trailer_patterns ───────────────────────────────────────────
+
+fn default_agent_trailer_patterns() -> Vec<String> {
+    vec![
+        r"(?i)claude".to_string(),
+        r"(?i)copilot".to_string(),
+        r"(?i)cursor".to_string(),
+        r"(?i)codex".to_string(),
+        r"(?i)gemini".to_string(),
+        r"(?i)devin".to_string(),
+        r"(?i)aider".to_string(),
+        r"(?i)\[bot\]".to_string(),
+    ]
+}
+
 // ── default allowed_command_prefixes ─────────────────────────────────────────
 
 fn default_allowed_prefixes() -> Vec<String> {
@@ -155,6 +173,7 @@ impl Default for ProjectConfig {
             allowed_command_prefixes: default_allowed_prefixes(),
             design_substance_floor: false,
             design_approval: DesignApproval::default(),
+            design_agent_trailer_patterns: default_agent_trailer_patterns(),
             finish_require_test_count: false,
             finish_extra_count_patterns: Vec::new(),
         }
@@ -244,6 +263,7 @@ impl ProjectConfig {
         // [design] sub-table
         let mut design_substance_floor = false;
         let mut design_approval = DesignApproval::default();
+        let mut design_agent_trailer_patterns = default_agent_trailer_patterns();
 
         if let Some(design_tbl) = table.get("design").and_then(|v| v.as_table()) {
             if let Some(sf_val) = design_tbl.get("substance_floor") {
@@ -252,6 +272,15 @@ impl ProjectConfig {
             if let Some(appr_val) = design_tbl.get("approval") {
                 let appr_str = appr_val.as_str().unwrap_or("");
                 design_approval = DesignApproval::from_str(appr_str)?;
+            }
+            if let Some(atp_val) = design_tbl.get("agent_trailer_patterns") {
+                if let Some(arr) = atp_val.as_array() {
+                    design_agent_trailer_patterns = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_owned)
+                        .collect();
+                }
             }
         }
 
@@ -282,6 +311,7 @@ impl ProjectConfig {
             allowed_command_prefixes,
             design_substance_floor,
             design_approval,
+            design_agent_trailer_patterns,
             finish_require_test_count,
             finish_extra_count_patterns,
         })

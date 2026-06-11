@@ -15,6 +15,8 @@ use crate::learn;
 use crate::scan;
 use crate::version;
 
+// toml is a direct dependency — re-use the crate already in Cargo.toml
+
 // ── VERSION file types ───────────────────────────────────────────────────────
 
 /// Parsed contents of the `VERSION` file at the framework root.
@@ -273,6 +275,54 @@ pub fn cmd_doctor(root: &Path) -> i32 {
         }
     }
 
+    // ── git version ≥ 2.15 + capabilities ───────────────────────────────────
+    // Required by the human-commit approval provenance check (spec §4).
+    let proj_root_for_git = crate::project_root();
+    let has_git_repo = proj_root_for_git.join(".git").exists();
+    match crate::probe_git_version() {
+        crate::GitVersionResult::Ok => {
+            println!("git version: ok (≥ 2.15)");
+            if !has_git_repo {
+                println!("git shallow: n/a (no .git repository at project root)");
+            } else {
+                match crate::probe_git_shallow(&proj_root_for_git) {
+                    crate::ShallowResult::NotShallow => {
+                        println!("git shallow: ok (full clone)");
+                    }
+                    crate::ShallowResult::Shallow => {
+                        println!(
+                            "git shallow: FAIL: repository is a shallow clone; \
+                             run 'git fetch --unshallow' to enable human-commit approval check"
+                        );
+                        failures += 1;
+                    }
+                    crate::ShallowResult::Error(e) => {
+                        println!("git shallow: FAIL: cannot determine: {e}");
+                        failures += 1;
+                    }
+                }
+            }
+        }
+        crate::GitVersionResult::TooOld(v) => {
+            println!(
+                "git version: FAIL: {v} is too old (need ≥ 2.15 for %(trailers) support and \
+                 --is-shallow-repository); upgrade git"
+            );
+            failures += 1;
+        }
+        crate::GitVersionResult::Unparsable(raw) => {
+            println!(
+                "git version: FAIL: cannot parse git version output {raw:?}; upgrade git or fix PATH"
+            );
+            failures += 1;
+        }
+    }
+
+    // ── config.toml unknown keys ─────────────────────────────────────────────
+    // Doctor lists unrecognized keys under known tables (catches typos).
+    let art_root_for_cfg = crate::artifacts_root();
+    probe_config_unknown_keys(&art_root_for_cfg);
+
     // ── Summary ─────────────────────────────────────────────────────────────
     if failures == 0 {
         println!("doctor: all probes ok");
@@ -280,6 +330,79 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     } else {
         println!("doctor: {failures} probe(s) FAILED");
         1
+    }
+}
+
+/// Known top-level config keys.
+const KNOWN_TOP_KEYS: &[&str] = &["base_branch", "test_command", "verify", "design", "finish"];
+
+/// Known [verify] sub-keys.
+const KNOWN_VERIFY_KEYS: &[&str] = &["mode", "replay_timeout_secs", "allowed_command_prefixes"];
+
+/// Known [design] sub-keys.
+const KNOWN_DESIGN_KEYS: &[&str] = &["substance_floor", "approval", "agent_trailer_patterns"];
+
+/// Known [finish] sub-keys.
+const KNOWN_FINISH_KEYS: &[&str] = &["require_test_count", "extra_count_patterns"];
+
+/// Parse config.toml and list any unrecognized keys under known tables.
+/// Prints informational lines (not FAIL lines — forward-compat is the policy for unknown keys).
+fn probe_config_unknown_keys(artifacts_root: &Path) {
+    let config_path = artifacts_root.join("config.toml");
+    let raw = match fs::read_to_string(&config_path) {
+        Ok(s) => s,
+        Err(_) => {
+            // Missing config is fine; nothing to report.
+            return;
+        }
+    };
+    let val: toml::Value = match raw.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            // Parse errors are reported by the gate; doctor just skips the key scan.
+            println!("config.toml unknown-keys: skipped (config.toml is malformed)");
+            return;
+        }
+    };
+    let table = match val.as_table() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut unknown_top: Vec<String> = Vec::new();
+    for key in table.keys() {
+        if !KNOWN_TOP_KEYS.contains(&key.as_str()) {
+            unknown_top.push(key.clone());
+        }
+    }
+    if !unknown_top.is_empty() {
+        println!(
+            "config.toml: unrecognized top-level key(s): {} (ignored — forward compat; possible typo?)",
+            unknown_top.join(", ")
+        );
+    }
+
+    // Check sub-tables
+    let sub_checks: &[(&str, &[&str])] = &[
+        ("verify", KNOWN_VERIFY_KEYS),
+        ("design", KNOWN_DESIGN_KEYS),
+        ("finish", KNOWN_FINISH_KEYS),
+    ];
+    for (table_name, known) in sub_checks {
+        if let Some(sub) = table.get(*table_name).and_then(|v| v.as_table()) {
+            let unknown: Vec<String> = sub
+                .keys()
+                .filter(|k| !known.contains(&k.as_str()))
+                .cloned()
+                .collect();
+            if !unknown.is_empty() {
+                println!(
+                    "config.toml [{}]: unrecognized key(s): {} (ignored — forward compat; possible typo?)",
+                    table_name,
+                    unknown.join(", ")
+                );
+            }
+        }
     }
 }
 

@@ -68,7 +68,6 @@ fn head_sha(root: &Path) -> String {
 // ── (a) spec containing ONLY `Status: approved` ──────────────────────────────
 
 #[test]
-#[ignore = "red until design substance floor lands (spec §4, task 7)"]
 fn hollow_a_approved_only_spec() {
     // The design gate's future substance floor (config-gated: `[design]
     // substance_floor = true`) requires ≥2 `##` headings and at least one
