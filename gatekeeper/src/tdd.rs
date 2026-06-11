@@ -86,10 +86,7 @@ fn strip_last_extension(filename: &str) -> Option<&str> {
 /// True if `path` should be treated as an artifact/doc/config location, not production code.
 fn is_artifact_path(path: &str) -> bool {
     // Directory prefixes
-    if path.starts_with("docs/")
-        || path.starts_with(".claude/")
-        || path.starts_with(".github/")
-    {
+    if path.starts_with("docs/") || path.starts_with(".claude/") || path.starts_with(".github/") {
         return true;
     }
 
@@ -261,9 +258,7 @@ pub fn gate_tdd(git_root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
                 0
             } else {
                 let first_prod = &commits[idx];
-                println!(
-                    "FAIL tdd gate: no test-only commit precedes the first production commit"
-                );
+                println!("FAIL tdd gate: no test-only commit precedes the first production commit");
                 println!(
                     "  first production commit: {} {}",
                     first_prod.short_sha, first_prod.subject
@@ -361,7 +356,8 @@ mod tests {
 
     #[test]
     fn parse_log_single_prod_commit() {
-        let raw = "COMMIT:abc1234def5678901234567890123456789012ab\tsrc: add feature\nsrc/main.rs\n";
+        let raw =
+            "COMMIT:abc1234def5678901234567890123456789012ab\tsrc: add feature\nsrc/main.rs\n";
         let commits = parse_log_output(raw);
         assert_eq!(commits.len(), 1);
         assert!(!commits[0].test_touching);
@@ -406,8 +402,7 @@ mod gate_tests {
 
     /// Create a temp git repo with an initial commit on `main`.
     fn make_repo(tag: &str) -> std::path::PathBuf {
-        let root =
-            env::temp_dir().join(format!("topo_tdd_{}_{}", tag, std::process::id()));
+        let root = env::temp_dir().join(format!("topo_tdd_{}_{}", tag, std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         run_git(&root, &["init", "-q", "-b", "main"]);
@@ -464,7 +459,15 @@ mod gate_tests {
         fs::write(root.join("tests").join("foo_test.rs"), "#[test] fn t() {}").unwrap();
         fs::write(root.join("src").join("foo.rs"), "pub fn foo() {}").unwrap();
         run_git(&root, &["add", "."]);
-        run_git(&root, &["commit", "-q", "-m", "feat+test: add foo and its test together"]);
+        run_git(
+            &root,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "feat+test: add foo and its test together",
+            ],
+        );
         assert_eq!(gate_tdd(&root, "feature", None), 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -496,12 +499,7 @@ mod gate_tests {
             "# Notes\n\nSome notes.\n",
             "docs: add notes",
         );
-        commit_file(
-            &root,
-            "README.md",
-            "# Updated\n",
-            "docs: update readme",
-        );
+        commit_file(&root, "README.md", "# Updated\n", "docs: update readme");
         let code = gate_tdd(&root, "feature", None);
         assert_eq!(code, 0);
         let _ = fs::remove_dir_all(&root);
@@ -567,18 +565,8 @@ mod gate_tests {
             "#[test] fn b_fails() {}",
             "test: second failing test",
         );
-        commit_file(
-            &root,
-            "src/a.rs",
-            "pub fn a() {}",
-            "feat: implement a",
-        );
-        commit_file(
-            &root,
-            "src/b.rs",
-            "pub fn b() {}",
-            "feat: implement b",
-        );
+        commit_file(&root, "src/a.rs", "pub fn a() {}", "feat: implement a");
+        commit_file(&root, "src/b.rs", "pub fn b() {}", "feat: implement b");
         assert_eq!(gate_tdd(&root, "feature", None), 0);
         let _ = fs::remove_dir_all(&root);
     }
@@ -594,12 +582,7 @@ mod gate_tests {
             "#[test] fn t() {}",
             "test: failing test",
         );
-        commit_file(
-            &root,
-            "src/feat.rs",
-            "pub fn feat() {}",
-            "feat: implement",
-        );
+        commit_file(&root, "src/feat.rs", "pub fn feat() {}", "feat: implement");
         // Using "main" explicitly should work the same as the default
         assert_eq!(gate_tdd(&root, "feature", Some("main")), 0);
         let _ = fs::remove_dir_all(&root);

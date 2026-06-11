@@ -350,7 +350,11 @@ fn cmd_check(args: &[String]) -> i32 {
         }
         "plan" => gate_plan(&feature_arg(args)),
         "verify" => gate_doc_exists("verify", "verify", &feature_arg(args)),
-        "tdd" => tdd::gate_tdd(&project_root(), &feature_arg(args), base_arg(args).as_deref()),
+        "tdd" => tdd::gate_tdd(
+            &project_root(),
+            &feature_arg(args),
+            base_arg(args).as_deref(),
+        ),
         "finish" => gate_finish(args),
         "review" => review::gate_review(
             &project_root(),
