@@ -61,8 +61,8 @@ const PLACEHOLDERS: &[&str] = &[
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
-        Some("list") => cmd_list(),
-        Some("activate") => cmd_activate(),
+        Some("list") => cmd_list(&args[1..]),
+        Some("activate") => cmd_activate(&args[1..]),
         Some("check") => cmd_check(&args[1..]),
         Some("scan") => scan::cmd_scan(
             &args[1..],
@@ -79,7 +79,13 @@ fn main() {
             &framework_root(),
             &project_root(),
         ),
-        Some("doctor") => doctor::cmd_doctor(&framework_root()),
+        Some("doctor") => {
+            if let Some(code) = check_help_or_unknown("doctor", &args[1..], &[], USAGE_DOCTOR) {
+                code
+            } else {
+                doctor::cmd_doctor(&framework_root())
+            }
+        }
         Some("--version") | Some("-V") => {
             println!(
                 "gatekeeper {} (rules schema v{})",
@@ -215,7 +221,85 @@ pub(crate) fn artifacts_root() -> PathBuf {
     resolve_artifacts_root(&project_root(), &framework_root())
 }
 
-fn cmd_list() -> i32 {
+// ── per-subcommand usage strings (subsets of print_help) ────────────────────
+
+const USAGE_ACTIVATE: &str = "\
+USAGE:\n  gatekeeper activate            (reads prompt on stdin)";
+
+const USAGE_LIST: &str = "\
+USAGE:\n  gatekeeper list";
+
+const USAGE_CHECK: &str = "\
+USAGE:\n  gatekeeper check research --feature <slug>\n  \
+gatekeeper check design  --feature <slug>\n  \
+gatekeeper check plan    --feature <slug>\n  \
+gatekeeper check verify  --feature <slug>\n  \
+gatekeeper check review  --feature <slug> [--base <ref>]\n  \
+gatekeeper check finish  -- <command...>\n  \
+gatekeeper check docs";
+
+pub(crate) const USAGE_SCAN: &str = "\
+USAGE:\n  gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
+gatekeeper scan --staged | --check-path <path>";
+
+pub(crate) const USAGE_INSTINCT: &str = "\
+USAGE:\n  gatekeeper instinct list\n  \
+gatekeeper instinct render [--harness <h>] [--budget <n>]";
+
+pub(crate) const USAGE_ADAPT: &str = "\
+USAGE:\n  gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]";
+
+pub(crate) const USAGE_LEARN: &str = "\
+USAGE:\n  gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
+gatekeeper learn list\n  \
+gatekeeper learn promote --id <id> [--kind <k>] [--yes]";
+
+pub(crate) const USAGE_MEMORY: &str = "\
+USAGE:\n  gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
+gatekeeper memory read  --feature <slug>\n  \
+gatekeeper memory list";
+
+const USAGE_DOCTOR: &str = "\
+USAGE:\n  gatekeeper doctor";
+
+/// Check for `--help` / `-h` OR an unrecognized flag in `args`.
+///
+/// * `--help` / `-h` → print usage to stdout, return `Some(0)`.
+/// * An arg that starts with `-` but is not in `known_flags` → print error + usage to stderr,
+///   return `Some(2)`.
+/// * Otherwise → return `None` (proceed normally).
+///
+/// `args` is the slice AFTER the subcommand name.  Flags consumed by the known set (the caller
+/// iterates those separately) are listed in `known_flags`.  Anything after `--` is ignored so
+/// that `check finish -- cmd --any-flag` passes through unmolested.
+pub(crate) fn check_help_or_unknown(
+    sub: &str,
+    args: &[String],
+    known_flags: &[&str],
+    usage: &str,
+) -> Option<i32> {
+    // Stop scanning at `--` — everything after it is a passthrough (e.g. finish gate).
+    let scan_args: &[String] = match args.iter().position(|a| a == "--") {
+        Some(pos) => &args[..pos],
+        None => args,
+    };
+    for arg in scan_args {
+        if arg == "--help" || arg == "-h" {
+            println!("{usage}");
+            return Some(0);
+        }
+        if arg.starts_with('-') && !known_flags.contains(&arg.as_str()) {
+            eprintln!("gatekeeper {sub}: unknown flag '{arg}'\n{usage}");
+            return Some(2);
+        }
+    }
+    None
+}
+
+fn cmd_list(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("list", args, &[], USAGE_LIST) {
+        return code;
+    }
     let skills_dir = framework_root().join("skills");
     let mut entries: Vec<PathBuf> = match fs::read_dir(&skills_dir) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
@@ -283,7 +367,10 @@ fn extract_prompt_owned(raw: &str) -> Option<String> {
     None
 }
 
-fn cmd_activate() -> i32 {
+fn cmd_activate(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("activate", args, &[], USAGE_ACTIVATE) {
+        return code;
+    }
     let mut raw = String::new();
     if std::io::stdin().read_to_string(&mut raw).is_err() {
         eprintln!("gatekeeper: failed to read stdin");
@@ -377,12 +464,29 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
 
 fn cmd_check(args: &[String]) -> i32 {
     let Some(gate) = args.first().map(String::as_str) else {
-        eprintln!("gatekeeper check: missing gate name");
+        eprintln!("gatekeeper check: missing gate name\n{USAGE_CHECK}");
         return 2;
     };
+    // Handle --help / -h at the check level (before gate dispatch).
+    if gate == "--help" || gate == "-h" {
+        println!("{USAGE_CHECK}");
+        return 0;
+    }
     match gate {
-        "research" => gate_doc_exists("research", "research", &feature_arg(args)),
+        "research" => {
+            if let Some(code) =
+                check_help_or_unknown("check research", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_doc_exists("research", "research", &feature_arg(args))
+        }
         "design" => {
+            if let Some(code) =
+                check_help_or_unknown("check design", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
             let f = feature_arg(args);
             if f.is_empty() {
                 // A missing --feature is a usage error (exit 2), like every other gate via
@@ -403,21 +507,69 @@ fn cmd_check(args: &[String]) -> i32 {
                 Some(_) => gate_design_approved(&f),
             }
         }
-        "plan" => gate_plan(&feature_arg(args)),
-        "verify" => gate_doc_exists("verify", "verify", &feature_arg(args)),
-        "tdd" => tdd::gate_tdd(
-            &project_root(),
-            &feature_arg(args),
-            base_arg(args).as_deref(),
-        ),
-        "finish" => gate_finish(args),
-        "review" => review::gate_review(
-            &project_root(),
-            &artifacts_root(),
-            &feature_arg(args),
-            base_arg(args).as_deref(),
-        ),
-        "docs" => check_docs(&framework_root()),
+        "plan" => {
+            if let Some(code) =
+                check_help_or_unknown("check plan", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_plan(&feature_arg(args))
+        }
+        "verify" => {
+            if let Some(code) =
+                check_help_or_unknown("check verify", &args[1..], &["--feature"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_doc_exists("verify", "verify", &feature_arg(args))
+        }
+        "tdd" => {
+            if let Some(code) = check_help_or_unknown(
+                "check tdd",
+                &args[1..],
+                &["--feature", "--base"],
+                USAGE_CHECK,
+            ) {
+                return code;
+            }
+            tdd::gate_tdd(
+                &project_root(),
+                &feature_arg(args),
+                base_arg(args).as_deref(),
+            )
+        }
+        "finish" => {
+            // `finish` passes everything after `--` through to a child process;
+            // check_help_or_unknown already stops at `--`, so this is safe.
+            if let Some(code) =
+                check_help_or_unknown("check finish", &args[1..], &["--"], USAGE_CHECK)
+            {
+                return code;
+            }
+            gate_finish(args)
+        }
+        "review" => {
+            if let Some(code) = check_help_or_unknown(
+                "check review",
+                &args[1..],
+                &["--feature", "--base"],
+                USAGE_CHECK,
+            ) {
+                return code;
+            }
+            review::gate_review(
+                &project_root(),
+                &artifacts_root(),
+                &feature_arg(args),
+                base_arg(args).as_deref(),
+            )
+        }
+        "docs" => {
+            if let Some(code) = check_help_or_unknown("check docs", &args[1..], &[], USAGE_CHECK) {
+                return code;
+            }
+            check_docs(&framework_root())
+        }
         other => {
             eprintln!("gatekeeper check: unknown gate '{other}'");
             2

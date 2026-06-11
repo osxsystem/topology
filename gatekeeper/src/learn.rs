@@ -279,8 +279,19 @@ fn slugify(s: &str) -> Option<String> {
 /// the framework repo (where promotion is allowed) or in a governed project (where it refuses).
 pub fn cmd_learn(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") => {
+            println!("{}", crate::USAGE_LEARN);
+            0
+        }
         Some("capture") => cmd_capture(&args[1..], artifacts_root),
-        Some("list") => cmd_list(artifacts_root),
+        Some("list") => {
+            if let Some(code) =
+                crate::check_help_or_unknown("learn list", &args[1..], &[], crate::USAGE_LEARN)
+            {
+                return code;
+            }
+            cmd_list(artifacts_root)
+        }
         Some("promote") => cmd_promote(&args[1..], artifacts_root, framework_root),
         _ => {
             eprintln!("gatekeeper learn: expected `capture`, `list`, or `promote`");
@@ -303,6 +314,12 @@ fn is_iso_date(s: &str) -> bool {
 }
 
 fn cmd_capture(args: &[String], root: &Path) -> i32 {
+    if args.first().map(String::as_str) == Some("--help")
+        || args.first().map(String::as_str) == Some("-h")
+    {
+        println!("{}", crate::USAGE_LEARN);
+        return 0;
+    }
     let mut summary: Option<String> = None;
     let mut trigger = Trigger::Manual;
     let mut gate: Option<String> = None;
@@ -553,6 +570,12 @@ fn is_framework_repo(artifacts_root: &Path, framework_root: &Path) -> bool {
 }
 
 fn cmd_promote(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
+    if args.first().map(String::as_str) == Some("--help")
+        || args.first().map(String::as_str) == Some("-h")
+    {
+        println!("{}", crate::USAGE_LEARN);
+        return 0;
+    }
     // ── ADR-0013 §3: promote is framework-only ─────────────────────────────────
     // The promotion targets (instincts/, skills/, security/rules.toml) live inside
     // the payload.  In a governed project the payload is replaced wholesale on

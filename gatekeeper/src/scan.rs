@@ -347,6 +347,14 @@ fn read_stdin_bytes(cap: usize) -> Result<Vec<u8>, String> {
 /// <project>/.claude/topology). Returns the process exit code (0 clean / 1 veto / 2 usage or
 /// load error). Rules load first so a broken rules file fails closed (exit 2) on every subcommand.
 pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path, project_root: &Path) -> i32 {
+    // Handle --help / -h before loading rules (avoid unnecessary I/O).
+    if args.first().map(String::as_str) == Some("--help")
+        || args.first().map(String::as_str) == Some("-h")
+    {
+        println!("{}", crate::USAGE_SCAN);
+        return 0;
+    }
+
     let rules_path = root.join("security").join("rules.toml");
     let rules = match load_rules(&rules_path) {
         Ok(r) => r,
@@ -376,6 +384,13 @@ pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path, project_roo
             scan_staged(&rules, root, project_root, artifacts_root, STAGED_BLOB_CAP)
         }
         Some("--content") => scan_content_cmd(&rules),
+        Some(other) if other.starts_with('-') => {
+            eprintln!(
+                "gatekeeper scan: unknown flag '{other}'\n{}",
+                crate::USAGE_SCAN
+            );
+            2
+        }
         _ => {
             eprintln!(
                 "gatekeeper scan: expected --hook | --cmd | --content | --staged | --check-path <path>"
