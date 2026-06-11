@@ -10,6 +10,9 @@ is "done" without a check that proves it.
 > [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
 > The active track is **Phases 7–12 (distribution vs. repository)** — separating what a governed
 > project receives from the framework's own development repo.
+> Queued behind it: **Track 3 (Phases 13–17, gate substance & proportional process)** — hardening
+> *what the gates verify*, per the 2026-06-11 five-failure-modes audit
+> ([plan](plans/2026-06-11-five-failure-modes-roadmap.md)).
 
 ```mermaid
 flowchart LR
@@ -28,6 +31,14 @@ flowchart LR
     P9 --> P12["Phase 12<br/>End-to-end<br/>re-verification"]
     P10["Phase 10<br/>Contract split"] --> P12
     P11["Phase 11<br/>Root resolution<br/>hardening"] --> P12
+```
+
+```mermaid
+flowchart LR
+    P13["Phase 13<br/>Containment<br/>+ baseline"] --> P14["Phase 14<br/>Hollow-pass kills<br/>+ doc-sync"]
+    P14 --> P15["Phase 15<br/>Substance<br/>engines"]
+    P15 --> P16["Phase 16<br/>Risk-tiered<br/>profiles"]
+    P16 --> P17["Phase 17<br/>Measurement<br/>+ ratchets"]
 ```
 
 **Why this order.** Security is the biggest true gap, so it's front-loaded (Phase 1). Instincts
@@ -414,6 +425,180 @@ separately `--project`); record the verify artifact.
 
 ---
 
+# Track 3 — Gate substance & proportional process (Phases 13–17)
+
+**The problem (found 2026-06-11, adversarial audit of v0.4.0).** Five failure modes, demonstrated
+end-to-end on a hypothetical 25-line fix: process weight is constant regardless of change size
+(5 artifacts + 8 commits for 31 LOC); gates verify existence/sequence, not substance — a spec
+containing only `Status: approved`, an `assert!(true)` red commit, and an empty verify file all
+pass; the released v0.4.0 binary's usage text drifted from the docs *at the tag* (the fix missed
+the release); keyword routing is lexical, so "mask bearer tokens" never summons `security-scanning`
+("token" appears in no keyword list); and the secret scan is prefix/label-anchored — a live JWT
+pasted into a verify artifact commits clean. Full demonstration, remediation design, and KPIs:
+[`plans/2026-06-11-five-failure-modes-roadmap.md`](plans/2026-06-11-five-failure-modes-roadmap.md).
+
+**The fix in one line.** Move every gate from the artifact's surface to the system's behavior —
+execute claims instead of grepping for them — then, once gates verify substance, scale ceremony by
+measured risk.
+
+**Why this order.** Containment first (rules-only patch, zero risk); drift-proofing plus the cheap
+substance checks second; the deep engines third; tiering only *after* gates have teeth (tiering
+hollow gates is tiering theater); measurement last, so the fixes can't silently rot the way the
+usage text did. Deployment doctrine for the whole track: every behavior change ships **shadow-first**
+(current behavior as default, log-only verdicts) and flips on burn-in data, never on the calendar —
+a self-governing framework must not deadlock its own delivery pipeline.
+
+---
+
+## Phase 13 — Day-zero containment & baseline *(target: v0.4.1, payload-only)*
+
+**Goal.** Stop the demonstrated scan bleeding with pure `rules.toml` additions; record the
+process-weight baseline that every later KPI divides by.
+
+**Deliverables.**
+- `security/rules.toml`: structural JWT rule (`eyJ` three-segment shape), `sk-`-prefix pattern
+  tolerant of hyphenated segments (`sk-proj-…` evasion), labeled-assignment generic rule
+  (`api_key|auth_token|password|bearer` + value, `warn`).
+- Secrets benchmark corpus: `gatekeeper/tests/fixtures/secrets-bench/` (10 synthetic positives,
+  5 negatives) + `tests/cli_scan_bench.rs` pinning current detection (~5/10) as the red harness.
+- GitHub push protection enabled on the repo (host-side backstop).
+- `scripts/metrics.sh`: per-merged-branch CSV (production LOC, artifact LOC, commits, lead time)
+  committed as a research note under `docs/research/` — the FM1 denominator.
+
+**New `gatekeeper` surface.** None — rules, fixtures, and scripts only.
+
+**Verify.** Bench detection rises 5/10 → 8/10 with 0/5 false positives; push-protection status
+reads `enabled` via the GitHub API; the baseline CSV records median commits/branch and
+artifact-to-production ratio (expected ≈8 and ≈5:1).
+
+**Depends on.** Nothing — executable immediately.
+
+---
+
+## Phase 14 — Hollow-pass kills + drift-proof CLI surface *(target: v0.5.0)*
+
+**Goal.** Make doc/binary drift unrepresentable; close the three cheapest hollow-artifact holes;
+build the adversarial fixture suite that defines "done" for the whole track.
+
+**Deliverables.**
+- `tests/cli_hollow.rs`: seven hollow fixtures (approved-only spec, empty verify, `assert!(true)`
+  red commit, "Looks fine" review, `test_command = "true"`, synonym-dodged plan, zero-tests-run
+  finish) — each must be **rejected**; `#[ignore]`-tagged until its fix lands.
+- Single dispatch table replacing the hand-rolled match and all nine `USAGE_*` constants — help and
+  dispatch iterate the same data; decision recorded as ADR-0014 (*table over clap*; ADR-0007's
+  four-dependency constraint holds).
+- README↔help sync test (`tests/cli_doc_sync.rs`, zero new deps) wired into `ci.yml` **and** the
+  `release.yml` version-guard — the v0.4.0 escape class dies at the tag.
+- Verify gate **evidence replay**: parse ` ```evidence ` blocks (`$ command` + `# expect:` lines),
+  execute with allowlisted command prefixes, fail-closed (`[verify] mode`, shadow default).
+- Design gate **human-commit approval**: the commit flipping `Status:` to approved must carry no
+  agent co-author trailer (`[design] approval`, shadow default).
+- Finish gate **zero-test floor**: parse runner summaries, fail on zero tests executed
+  (`[finish] require_test_count`, shadow default).
+
+**New `gatekeeper` surface.** Config keys `[verify]` / `[design]` / `[finish]`; no new subcommands.
+
+**Verify.** Hollow fixtures for the three hardened gates are rejected (4/7 un-ignored and green);
+`grep -c 'pub const USAGE' gatekeeper/src/main.rs` returns 0; the doc-sync test runs in both CI
+jobs; ≥90% of existing verify artifacts replay green unchanged (format codified practice, not
+invented it).
+
+**Depends on.** Phase 13 (fixture idiom, baseline).
+
+---
+
+## Phase 15 — Substance engines *(target: v0.6.0)*
+
+**Goal.** The deep fixes — red-green replay, entropy scanning with a synced ruleset, path-triggered
+routing, a measured router — and the Phase 14 shadow flips, gated on burn-in data.
+
+**Deliverables.**
+- TDD **red-green replay** (`[tdd] mode = "replay"`, ADR-0016): worktree at merge-base + the new
+  test files must fail *red* there; `assert!(true)` choreography dies (compile-error-red residual
+  is documented and carried to Phase 17 mutation testing).
+- Rules **schema v2** with `kind = "entropy"` (Shannon thresholds per charset, `[scan]
+  exclude_paths`, warn-then-block burn-in; ADR-0015) — the class fix for unlabeled secrets.
+- `scripts/sync-gitleaks-rules.sh`: quarterly, human-reviewed translation of a curated upstream
+  ruleset subset into `rules.toml` (provenance header; never auto-merged — `rules.toml` is a
+  protected path).
+- **Path-triggered routing**: `pathTriggers` globs per skill in `skill-rules.json`; PostToolUse
+  hook injects required-skill context when edits touch trigger paths; pre-commit prints
+  required-skill reminders for staged protected paths. Security routing keys on what the diff
+  *touches*, not how the prompt is phrased.
+- **Router eval harness**: ≥50 labeled prompts (`tests/fixtures/routing-eval.jsonl`) with CI
+  thresholds — recall ≥0.90 on `require` skills, precision ≥0.80. A semantic/embedding layer is
+  explicitly rejected (offline-first, four-dep constraint; the host agent already routes
+  semantically — this router is the deterministic backstop).
+
+**New `gatekeeper` surface.** `route --paths <p>` / `route --staged-paths`; `scan` accepts rules
+schema 1 and 2; `[tdd]` config table.
+
+**Verify.** All mechanically-checkable hollow fixtures rejected; secrets bench ≥9/10 in-scope with
+FP <1 per 10k lines on a full-history replay (env-var indirection stays a *documented* out-of-scope
+miss); both audit prompts route correctly; 100% of edits under trigger globs inject the context
+line.
+
+**Depends on.** Phase 14 (shadow logs <2% false-block gate the default flips).
+
+---
+
+## Phase 16 — Risk-tiered gate profiles *(target: v0.7.0)*
+
+**Goal.** Ceremony proportional to measured risk — deliberately sequenced *after* the gates verify
+substance, so a waived gate is a calculated trade, not an abdication.
+
+**Deliverables.**
+- ADR-0017 tier policy: `docs` / `patch` / `feature` profiles classified from the **cumulative
+  merge-base diff** (never per-commit — slicing can't downgrade); protected paths force `feature`
+  unconditionally; escalation is monotonic (a branch outgrowing `patch` re-owes the waived gates).
+- New `profile.rs`: tier + machine-readable reasons; gates resolve the tier first and print
+  **visible waivers** (`PASS (waived: profile=patch)`) — never silent; the review artifact records
+  tier + reason (audit trail).
+- `[profiles]` config (`enabled = false` at ship; flips in v0.8.0 after burn-in), thresholds,
+  `force_full_globs` (includes `.github/**`).
+- `scripts/metrics.sh` audit join: tier vs merged branches, per release.
+- METHODOLOGY.md doctrine amendment in the same PR: gates are never *skipped silently*; they are
+  *waived visibly by measured tier*. The `finish` gate is constitutionally un-waivable in every
+  profile — encoded as a unit test, not a convention.
+
+**New `gatekeeper` surface.** `gatekeeper profile --base <ref>`.
+
+**Verify.** Patch-tier ceremony drops from 8 commits / 5 artifacts to ≤4 / ≤2; patch-tier median
+lead time −40% vs the Phase 13 baseline CSV; tier distribution lands in the 30–60% sanity band;
+the post-merge audit shows **zero** protected-path branches on a reduced tier.
+
+**Depends on.** Phases 14–15 enforced by default; Phase 13 baseline.
+
+---
+
+## Phase 17 — Measurement, depth & ratchets *(target: v0.8.0)*
+
+**Goal.** Close the carried residuals (test quality beyond red-green; prose substance) and make
+every Track 3 KPI self-reporting — unmeasured gates regress exactly the way unmeasured docs
+drifted.
+
+**Deliverables.**
+- `gatekeeper stats --since <tag>`: the KPI table (process-to-payload ratio, lead time per tier,
+  tier distribution, waiver counts) as markdown + JSON, embedded in release notes.
+- Weekly `cargo-mutants --in-diff` CI job (never per-PR; never blocking): surviving mutants on
+  changed lines filed as issues; caught-ratio ≥80% on changed lines, ratcheting release-over-release.
+- Advisory **prose-substance judge** (`check design --judge` / `check plan --judge`; ADR-0018):
+  host-provided `claude -p`, pinned model, temperature 0, evidence-quoting rubric; promoted to
+  `require` only at ≥90% agreement on a 20-artifact human-graded calibration set; never the sole
+  blocker; offline = visible skip. The binary stays dependency-pure — the judge is a host layer.
+- Router eval grown to ≥150 labeled prompts from real transcripts; recall threshold ratchets
+  0.90 → 0.95.
+- Hollow suite standing at 7/7 rejections, zero `#[ignore]` — the permanent regression wall.
+
+**New `gatekeeper` surface.** `gatekeeper stats`; `--judge` flags on `check design` / `check plan`.
+
+**Verify.** Stats output lands in the v0.8.0 release notes; the mutation ratio is reported and
+non-regressing; judge agreement is measured *before* any promotion; the hollow suite is complete.
+
+**Depends on.** Phase 16 (`profiles.enabled = true` flipped; tier data feeds stats).
+
+---
+
 ## Status at a glance
 
 | Phase | Capability | Status |
@@ -432,3 +617,8 @@ separately `--project`); record the verify artifact.
 | 10 | Contract split | ⬜ planned |
 | 11 | Root resolution hardening | ⬜ planned |
 | 12 | End-to-end re-verification | ⬜ planned |
+| 13 | Day-zero containment & baseline (scan rules, push protection, metrics) | ⬜ planned |
+| 14 | Hollow-pass kills + drift-proof CLI surface | ⬜ planned |
+| 15 | Substance engines (replay TDD, entropy scan, path routing) | ⬜ planned |
+| 16 | Risk-tiered gate profiles | ⬜ planned |
+| 17 | Measurement, depth & ratchets | ⬜ planned |
