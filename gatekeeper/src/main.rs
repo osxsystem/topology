@@ -36,6 +36,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+use regex::Regex;
+
 mod adapt;
 mod doctor;
 mod instinct;
@@ -253,12 +255,39 @@ fn read_description(skill_md: &Path) -> Option<String> {
     None
 }
 
+/// Extract the user-facing prompt text from stdin.
+///
+/// Claude Code's `UserPromptSubmit` hook delivers a JSON object such as
+/// `{"prompt":"..."}` on stdin.  When we receive a JSON object that contains
+/// a top-level `"prompt"` string field we extract just that string so that
+/// keyword matching runs only against the user's words — not the envelope keys
+/// (which would cause the word "prompt" inside `{"prompt":"…"}` to route
+/// `finish-branch` on every single hook invocation).
+///
+/// Non-JSON input (plain text) is returned as `None` so the caller keeps the
+/// original without an extra allocation.  A JSON envelope returns `Some(text)`.
+fn extract_prompt_owned(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    // Fast bail-out: only attempt JSON parsing when the input starts with '{'
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(s) = val.get("prompt").and_then(|v| v.as_str()) {
+            return Some(s.to_owned());
+        }
+    }
+    None
+}
+
 fn cmd_activate() -> i32 {
-    let mut prompt = String::new();
-    if std::io::stdin().read_to_string(&mut prompt).is_err() {
+    let mut raw = String::new();
+    if std::io::stdin().read_to_string(&mut raw).is_err() {
         eprintln!("gatekeeper: failed to read stdin");
         return 1;
     }
+    let extracted = extract_prompt_owned(&raw);
+    let prompt = extracted.as_deref().unwrap_or(&raw);
     let prompt_lc = prompt.to_lowercase();
 
     let rules_path = framework_root().join("hooks").join("skill-rules.json");
@@ -287,6 +316,31 @@ fn cmd_activate() -> i32 {
     0
 }
 
+/// Build a word-boundary regex for a keyword phrase (case-insensitive).
+///
+/// Each word in the phrase must appear as a whole word in the prompt.
+/// For a single-word keyword like "pr" this prevents it from matching inside
+/// "prompt", "approach", "print", etc.  Multi-word phrases are matched as a
+/// contiguous whole-word sequence.
+///
+/// Returns `None` if the keyword is empty or the regex cannot be compiled
+/// (should never happen for the simple ASCII keywords in skill-rules.json).
+fn keyword_regex(keyword: &str) -> Option<Regex> {
+    let kw = keyword.trim();
+    if kw.is_empty() {
+        return None;
+    }
+    // Escape each word individually and join with `\s+` to allow any whitespace.
+    let inner: String = kw
+        .split_whitespace()
+        .map(|w| regex::escape(w))
+        .collect::<Vec<_>>()
+        .join(r"\s+");
+    // Wrap with word-boundary anchors.
+    let pattern = format!(r"(?i)\b{inner}\b");
+    Regex::new(&pattern).ok()
+}
+
 /// Given parsed skill-rules JSON and a lowercased prompt, return (skill, enforcement) matches.
 fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -307,7 +361,8 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
             let hit = kws
                 .iter()
                 .filter_map(|k| k.as_str())
-                .any(|k| prompt_lc.contains(&k.to_lowercase()));
+                .filter_map(|k| keyword_regex(k))
+                .any(|re| re.is_match(prompt_lc));
             if hit {
                 out.push((name.clone(), enforcement));
             }
@@ -897,5 +952,141 @@ mod tests {
             "differing roots → .claude/topology/"
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── word-boundary keyword matching (issue #23, Part A) ───────────────────
+
+    fn finish_branch_rules() -> serde_json::Value {
+        serde_json::from_str(
+            r#"{ "skills": { "finish-branch": { "enforcement": "suggest",
+                "promptTriggers": { "keywords": ["merge", "pr", "pull request",
+                    "wrap up", "ship", "cleanup", "close out"] } } } }"#,
+        )
+        .unwrap()
+    }
+
+    /// "approach" must NOT route finish-branch (substring of "approach" is "pr")
+    #[test]
+    fn word_boundary_approach_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "approach").is_empty(),
+            "'approach' must not match keyword 'pr'"
+        );
+    }
+
+    /// "print the report" must NOT route finish-branch
+    #[test]
+    fn word_boundary_print_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "print the report").is_empty(),
+            "'print the report' must not match keyword 'pr'"
+        );
+    }
+
+    /// The bare word "prompt" that appears in the JSON envelope must NOT route finish-branch
+    #[test]
+    fn word_boundary_prompt_does_not_match_pr() {
+        let rules = finish_branch_rules();
+        assert!(
+            route(&rules, "prompt").is_empty(),
+            "'prompt' must not match keyword 'pr'"
+        );
+    }
+
+    /// "open a pr" MUST still route finish-branch
+    #[test]
+    fn word_boundary_open_a_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        assert_eq!(
+            route(&rules, "open a pr"),
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "'open a pr' must match keyword 'pr'"
+        );
+    }
+
+    /// "raise a PR" (upper-case) MUST still route finish-branch
+    #[test]
+    fn word_boundary_raise_a_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        assert_eq!(
+            route(&rules, "raise a pr"),
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "'raise a PR' must match keyword 'pr'"
+        );
+    }
+
+    // ── JSON envelope extraction (issue #23, Part B) ─────────────────────────
+
+    /// Helper: extract and fall back to the original string (mirrors cmd_activate logic).
+    fn do_extract(raw: &str) -> String {
+        extract_prompt_owned(raw)
+            .unwrap_or_else(|| raw.to_owned())
+    }
+
+    /// Plain text is returned as-is (no JSON envelope detected).
+    #[test]
+    fn extract_prompt_plain_text_unchanged() {
+        assert_eq!(do_extract("implement the input"), "implement the input");
+    }
+
+    /// A JSON envelope {"prompt":"..."} returns only the string value.
+    #[test]
+    fn extract_prompt_unwraps_json_envelope() {
+        assert_eq!(
+            do_extract(r#"{"prompt":"implement X"}"#),
+            "implement X"
+        );
+    }
+
+    /// JSON envelope routes the same skills as bare text (no spurious finish-branch match).
+    #[test]
+    fn json_envelope_routes_same_as_plain_text() {
+        let rules = finish_branch_rules();
+        // Bare text: "implement the input" — no finish-branch keywords
+        let plain = route(&rules, &do_extract("implement the input").to_lowercase());
+        // JSON envelope wrapping the same text
+        let enveloped = route(
+            &rules,
+            &do_extract(r#"{"prompt":"implement the input"}"#).to_lowercase(),
+        );
+        assert_eq!(
+            plain, enveloped,
+            "JSON envelope must route identically to bare text"
+        );
+        assert!(
+            plain.is_empty(),
+            "'implement the input' must not route finish-branch"
+        );
+    }
+
+    /// JSON envelope with a PR prompt correctly routes finish-branch.
+    #[test]
+    fn json_envelope_with_pr_routes_finish_branch() {
+        let rules = finish_branch_rules();
+        let matched = route(
+            &rules,
+            &do_extract(r#"{"prompt":"open a pr for this change"}"#).to_lowercase(),
+        );
+        assert_eq!(
+            matched,
+            vec![("finish-branch".to_string(), "suggest".to_string())],
+            "JSON envelope containing 'open a pr' must route finish-branch"
+        );
+    }
+
+    /// Non-JSON that starts with something other than '{' is returned unchanged.
+    #[test]
+    fn extract_prompt_non_json_returned_unchanged() {
+        let input = "just a plain string without braces";
+        assert_eq!(do_extract(input), input);
+    }
+
+    /// JSON object without a "prompt" field is returned as the raw string.
+    #[test]
+    fn extract_prompt_json_without_prompt_key_returns_raw() {
+        let input = r#"{"message":"hello"}"#;
+        assert_eq!(do_extract(input), input);
     }
 }
