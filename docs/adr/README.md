@@ -19,3 +19,4 @@ a real trade-off**.
 | [0011](0011-prebuilt-binary-distribution.md) | 0011 — Prebuilt-first binary distribution: release matrix, installer download, plugin self-provisioning | Accepted |
 | [0012](0012-project-root-vs-framework-root.md) | 0012 — Project root vs framework root: artifacts move to `.claude/topology/` in governed projects | Accepted |
 | [0013](0013-payload-read-only-artifacts-root-state.md) | 0013 — The payload is read-only at runtime; mutable state anchors to the artifacts root | Accepted |
+| [0014](0014-dispatch-table-over-clap.md) | 0014 — One dispatch table over clap for the CLI surface | Accepted |

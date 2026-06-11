@@ -280,14 +280,17 @@ fn slugify(s: &str) -> Option<String> {
 pub fn cmd_learn(args: &[String], artifacts_root: &Path, framework_root: &Path) -> i32 {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") => {
-            println!("{}", crate::USAGE_LEARN);
+            println!("{}", crate::lookup_usage("learn"));
             0
         }
         Some("capture") => cmd_capture(&args[1..], artifacts_root),
         Some("list") => {
-            if let Some(code) =
-                crate::check_help_or_unknown("learn list", &args[1..], &[], crate::USAGE_LEARN)
-            {
+            if let Some(code) = crate::check_help_or_unknown(
+                "learn list",
+                &args[1..],
+                &[],
+                crate::lookup_usage("learn"),
+            ) {
                 return code;
             }
             cmd_list(artifacts_root)
@@ -317,7 +320,7 @@ fn cmd_capture(args: &[String], root: &Path) -> i32 {
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("{}", crate::USAGE_LEARN);
+        println!("{}", crate::lookup_usage("learn"));
         return 0;
     }
     let mut summary: Option<String> = None;
@@ -573,7 +576,7 @@ fn cmd_promote(args: &[String], artifacts_root: &Path, framework_root: &Path) ->
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("{}", crate::USAGE_LEARN);
+        println!("{}", crate::lookup_usage("learn"));
         return 0;
     }
     // ── ADR-0013 §3: promote is framework-only ─────────────────────────────────

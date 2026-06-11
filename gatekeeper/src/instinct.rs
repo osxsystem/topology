@@ -321,7 +321,7 @@ pub fn instincts_for_adapt(root: &Path) -> Result<Vec<(String, String)>, String>
 pub fn cmd_instinct(args: &[String], root: &Path) -> i32 {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") => {
-            println!("{}", crate::USAGE_INSTINCT);
+            println!("{}", crate::lookup_usage("instinct"));
             0
         }
         Some("list") => {
@@ -329,7 +329,7 @@ pub fn cmd_instinct(args: &[String], root: &Path) -> i32 {
                 "instinct list",
                 &args[1..],
                 &[],
-                crate::USAGE_INSTINCT,
+                crate::lookup_usage("instinct"),
             ) {
                 return code;
             }
@@ -367,7 +367,7 @@ fn cmd_render(args: &[String], root: &Path) -> i32 {
         "instinct render",
         args,
         &["--harness", "--budget"],
-        crate::USAGE_INSTINCT,
+        crate::lookup_usage("instinct"),
     ) {
         return code;
     }
