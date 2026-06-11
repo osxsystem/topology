@@ -320,7 +320,7 @@ have passed.
 | plan | `gatekeeper check plan --feature <slug>` | a plan exists in `plans/` with **no placeholder words** (`TBD`, "implement later", …) |
 | verify | `gatekeeper check verify --feature <slug>` | a verification note exists in `verify/` |
 | review | `gatekeeper check review --feature <slug> [--base <ref>]` | a fresh critic's artifact passes for the clean `HEAD` (bound to merge-base, both rubric dimensions, no blockers) |
-| finish | `gatekeeper check finish -- <command...>` | the given test command exits `0` |
+| finish | `gatekeeper check finish [-- <command...>]` | the given test command exits `0`; falls back to `test_command` in `config.toml` when no `-- cmd` is given |
 | docs | `gatekeeper check docs` | docs-coverage lint passes (skills frontmatter, ADR index, ROADMAP evidence paths) |
 
 ```bash
@@ -334,6 +334,26 @@ The artifact directories live at the **artifacts root**: `docs/` in the framewor
 
 > The `review` gate **fails closed** if the working tree has uncommitted changes — it won't bless
 > code it can't pin to a clean commit. Commit first, then re-run.
+
+### Per-project config — `<artifacts_root>/config.toml`
+
+`gatekeeper adapt` generates `<artifacts_root>/config.toml` on project installs. All keys are
+optional; missing files and unknown keys are silently ignored; a malformed file warns to stderr
+and falls back to defaults.
+
+```toml
+base_branch = "master"
+# test_command = "npm test"   # uncomment and set; `gatekeeper check finish` runs this when no -- <cmd> is given
+```
+
+| Key | Effect |
+|---|---|
+| `base_branch` | Default integration branch for `check review`. Precedence: `--base` flag > `base_branch` > auto-detection (origin/HEAD or unique main/master) > `"main"` |
+| `test_command` | Test command run by `check finish` when no `-- <cmd>` is given. Explicit `-- cmd` always wins. Runs via `sh -c` so shell syntax works. |
+
+The config file lives at:
+- `<project>/.claude/topology/config.toml` (governed projects)
+- `docs/config.toml` (when working inside the framework repo itself)
 
 ### Security scanning — `gatekeeper scan`
 

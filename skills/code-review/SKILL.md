@@ -10,8 +10,10 @@ The author cannot grade their own work — a separate critic must. Dispatch a **
 
 ## Process
 
-1. **Compute the diff scope.** `base = git merge-base <integration-branch> HEAD` (default
-   `main`; override with `--base`). The critic reviews `git diff <base>...HEAD` (three-dot).
+1. **Compute the diff scope.** `base = git merge-base <integration-branch> HEAD`. The base
+   branch is resolved in order: `--base` flag > `base_branch` in `<artifacts_root>/config.toml` >
+   auto-detection (origin/HEAD or unique main/master local branch) > default `main`. The critic
+   reviews `git diff <base>...HEAD` (three-dot).
 2. **Dispatch one fresh critic subagent** with the diff, the design doc, the plan, and the repo
    standards (`docs/adr/`, `AGENTS.md`, `METHODOLOGY.md`, `CONTEXT.md` if present).
 3. **Review two dimensions separately and document each:**
