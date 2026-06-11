@@ -104,8 +104,6 @@ printf 'branch,merge_commit,production_loc,artifact_loc,commits,lead_time_hours\
 # Walk first-parent history; emit one row per merge commit.
 # Collect direct-to-main commit hashes for the residual row.
 # ---------------------------------------------------------------------------
-direct_hashes=""
-
 git rev-list --first-parent "$SINCE_TAG..$BRANCH" | while read -r hash; do
   num_parents=$(git cat-file commit "$hash" | grep -c "^parent ")
   if [ "$num_parents" -ge 2 ]; then

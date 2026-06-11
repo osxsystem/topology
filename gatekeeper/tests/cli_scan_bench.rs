@@ -97,7 +97,10 @@ struct Case {
 fn positives() -> Vec<Case> {
     let jwt_header = format!("eyJ{}{}", "hbGciOiJIUzI1NiIs", "InR5cCI6IkpXVCJ9");
     let jwt_payload = format!("eyJ{}{}", "zdWIiOiIxMjM0NTY3", "ODkwIiwiYWRtIjp0fQ");
-    let jwt_sig = format!("{}{}{}", "dBjftJeZ4CVP-mB92", "K27uhbUJU1p1r-wW1", "gFWFOEjXk");
+    let jwt_sig = format!(
+        "{}{}{}",
+        "dBjftJeZ4CVP-mB92", "K27uhbUJU1p1r-wW1", "gFWFOEjXk"
+    );
     let sk_tail = format!("{}{}", "T3BlbkFJa1b2c3d4", "e5f6g7h8");
     // Underscore-bearing tail: the shape a pure-alnum tail class would miss (spec §1).
     let ant_tail = format!("{}-{}_{}", "kT3xV9mWqR7v", "Z2pL5nY8cD4f", "H6jB1sM3kQ9z");
@@ -211,7 +214,10 @@ fn bench_positives_meet_phase0_floor() {
             .iter()
             .any(|r| fired.iter().any(|f| f == r));
         if case.in_scope && !attributed {
-            missed.push(format!("{} (expected rule: {:?})", case.id, case.expect_rules));
+            missed.push(format!(
+                "{} (expected rule: {:?})",
+                case.id, case.expect_rules
+            ));
         }
         rows.push(format!(
             "  {:<20} {:<9} {:<8} via {}",
