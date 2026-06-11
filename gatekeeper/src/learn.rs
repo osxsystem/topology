@@ -285,12 +285,9 @@ pub fn cmd_learn(args: &[String], artifacts_root: &Path, framework_root: &Path) 
         }
         Some("capture") => cmd_capture(&args[1..], artifacts_root),
         Some("list") => {
-            if let Some(code) = crate::check_help_or_unknown(
-                "learn list",
-                &args[1..],
-                &[],
-                crate::USAGE_LEARN,
-            ) {
+            if let Some(code) =
+                crate::check_help_or_unknown("learn list", &args[1..], &[], crate::USAGE_LEARN)
+            {
                 return code;
             }
             cmd_list(artifacts_root)

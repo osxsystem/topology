@@ -76,9 +76,7 @@ fn main() {
             &project_root(),
         ),
         Some("doctor") => {
-            if let Some(code) =
-                check_help_or_unknown("doctor", &args[1..], &[], USAGE_DOCTOR)
-            {
+            if let Some(code) = check_help_or_unknown("doctor", &args[1..], &[], USAGE_DOCTOR) {
                 code
             } else {
                 doctor::cmd_doctor(&framework_root())
@@ -418,23 +416,17 @@ fn cmd_check(args: &[String]) -> i32 {
     }
     match gate {
         "research" => {
-            if let Some(code) = check_help_or_unknown(
-                "check research",
-                &args[1..],
-                &["--feature"],
-                USAGE_CHECK,
-            ) {
+            if let Some(code) =
+                check_help_or_unknown("check research", &args[1..], &["--feature"], USAGE_CHECK)
+            {
                 return code;
             }
             gate_doc_exists("research", "research", &feature_arg(args))
         }
         "design" => {
-            if let Some(code) = check_help_or_unknown(
-                "check design",
-                &args[1..],
-                &["--feature"],
-                USAGE_CHECK,
-            ) {
+            if let Some(code) =
+                check_help_or_unknown("check design", &args[1..], &["--feature"], USAGE_CHECK)
+            {
                 return code;
             }
             let f = feature_arg(args);
@@ -458,23 +450,17 @@ fn cmd_check(args: &[String]) -> i32 {
             }
         }
         "plan" => {
-            if let Some(code) = check_help_or_unknown(
-                "check plan",
-                &args[1..],
-                &["--feature"],
-                USAGE_CHECK,
-            ) {
+            if let Some(code) =
+                check_help_or_unknown("check plan", &args[1..], &["--feature"], USAGE_CHECK)
+            {
                 return code;
             }
             gate_plan(&feature_arg(args))
         }
         "verify" => {
-            if let Some(code) = check_help_or_unknown(
-                "check verify",
-                &args[1..],
-                &["--feature"],
-                USAGE_CHECK,
-            ) {
+            if let Some(code) =
+                check_help_or_unknown("check verify", &args[1..], &["--feature"], USAGE_CHECK)
+            {
                 return code;
             }
             gate_doc_exists("verify", "verify", &feature_arg(args))
@@ -506,9 +492,7 @@ fn cmd_check(args: &[String]) -> i32 {
             )
         }
         "docs" => {
-            if let Some(code) =
-                check_help_or_unknown("check docs", &args[1..], &[], USAGE_CHECK)
-            {
+            if let Some(code) = check_help_or_unknown("check docs", &args[1..], &[], USAGE_CHECK) {
                 return code;
             }
             check_docs(&framework_root())

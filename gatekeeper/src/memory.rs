@@ -415,12 +415,9 @@ pub fn cmd_memory(
             cmd_read(args, artifacts_root)
         }
         "list" => {
-            if let Some(code) = crate::check_help_or_unknown(
-                "memory list",
-                &args[1..],
-                &[],
-                crate::USAGE_MEMORY,
-            ) {
+            if let Some(code) =
+                crate::check_help_or_unknown("memory list", &args[1..], &[], crate::USAGE_MEMORY)
+            {
                 return code;
             }
             cmd_list(artifacts_root)

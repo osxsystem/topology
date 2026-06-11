@@ -325,9 +325,12 @@ pub fn cmd_instinct(args: &[String], root: &Path) -> i32 {
             0
         }
         Some("list") => {
-            if let Some(code) =
-                crate::check_help_or_unknown("instinct list", &args[1..], &[], crate::USAGE_INSTINCT)
-            {
+            if let Some(code) = crate::check_help_or_unknown(
+                "instinct list",
+                &args[1..],
+                &[],
+                crate::USAGE_INSTINCT,
+            ) {
                 return code;
             }
             cmd_list_instincts(root)

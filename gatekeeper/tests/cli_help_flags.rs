@@ -15,13 +15,16 @@ use std::process::{Command, Stdio};
 
 /// Minimal framework root: skills/ + AGENTS.md + security/rules.toml.
 fn scratch_root(tag: &str) -> PathBuf {
-    let root =
-        std::env::temp_dir().join(format!("topo_help_flags_{tag}_{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("topo_help_flags_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("skills")).unwrap();
     fs::write(root.join("AGENTS.md"), "").unwrap();
     fs::create_dir_all(root.join("security")).unwrap();
-    fs::write(root.join("security").join("rules.toml"), "schema_version = 1\n").unwrap();
+    fs::write(
+        root.join("security").join("rules.toml"),
+        "schema_version = 1\n",
+    )
+    .unwrap();
     root
 }
 
@@ -79,7 +82,10 @@ fn activate_short_help_exits_0() {
     let root = scratch_root("act_shelp");
     let (code, out, _) = run(&root, &["activate", "-h"]);
     assert_eq!(code, 0, "activate -h must exit 0; stdout: {out}");
-    assert!(out.contains("activate"), "output should mention 'activate'; got: {out}");
+    assert!(
+        out.contains("activate"),
+        "output should mention 'activate'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -103,7 +109,10 @@ fn list_help_exits_0() {
     let root = scratch_root("list_help");
     let (code, out, _) = run(&root, &["list", "--help"]);
     assert_eq!(code, 0, "list --help must exit 0; stdout: {out}");
-    assert!(out.contains("list"), "output should mention 'list'; got: {out}");
+    assert!(
+        out.contains("list"),
+        "output should mention 'list'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -126,7 +135,10 @@ fn check_help_exits_0() {
     let root = scratch_root("chk_help");
     let (code, out, _) = run(&root, &["check", "--help"]);
     assert_eq!(code, 0, "check --help must exit 0; stdout: {out}");
-    assert!(out.contains("check"), "output should mention 'check'; got: {out}");
+    assert!(
+        out.contains("check"),
+        "output should mention 'check'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -135,7 +147,10 @@ fn check_help_exits_0() {
 fn check_design_unknown_flag_exits_2() {
     let root = scratch_root("chk_des_unk");
     let (code, _, stderr) = run(&root, &["check", "design", "--bogus"]);
-    assert_eq!(code, 2, "check design --bogus must exit 2; stderr: {stderr}");
+    assert_eq!(
+        code, 2,
+        "check design --bogus must exit 2; stderr: {stderr}"
+    );
     assert!(
         stderr.contains("unknown flag") && stderr.contains("--bogus"),
         "stderr must name the flag; got: {stderr}"
@@ -163,7 +178,10 @@ fn check_finish_help_exits_0() {
     let root = scratch_root("chk_fin_help");
     let (code, out, _) = run(&root, &["check", "finish", "--help"]);
     assert_eq!(code, 0, "check finish --help must exit 0; stdout: {out}");
-    assert!(out.contains("finish"), "output should mention 'finish'; got: {out}");
+    assert!(
+        out.contains("finish"),
+        "output should mention 'finish'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -174,7 +192,10 @@ fn scan_help_exits_0() {
     let root = scratch_root("scan_help");
     let (code, out, _) = run(&root, &["scan", "--help"]);
     assert_eq!(code, 0, "scan --help must exit 0; stdout: {out}");
-    assert!(out.contains("scan"), "output should mention 'scan'; got: {out}");
+    assert!(
+        out.contains("scan"),
+        "output should mention 'scan'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -198,7 +219,10 @@ fn instinct_help_exits_0() {
     let root = scratch_root("inst_help");
     let (code, out, _) = run(&root, &["instinct", "--help"]);
     assert_eq!(code, 0, "instinct --help must exit 0; stdout: {out}");
-    assert!(out.contains("instinct"), "output should mention 'instinct'; got: {out}");
+    assert!(
+        out.contains("instinct"),
+        "output should mention 'instinct'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -208,7 +232,10 @@ fn instinct_list_help_exits_0() {
     fs::create_dir_all(root.join("instincts")).unwrap();
     let (code, out, _) = run(&root, &["instinct", "list", "--help"]);
     assert_eq!(code, 0, "instinct list --help must exit 0; stdout: {out}");
-    assert!(out.contains("instinct"), "output should mention 'instinct'; got: {out}");
+    assert!(
+        out.contains("instinct"),
+        "output should mention 'instinct'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -217,7 +244,10 @@ fn instinct_list_unknown_flag_exits_2() {
     let root = scratch_root("inst_list_unk");
     fs::create_dir_all(root.join("instincts")).unwrap();
     let (code, _, stderr) = run(&root, &["instinct", "list", "--bogus"]);
-    assert_eq!(code, 2, "instinct list --bogus must exit 2; stderr: {stderr}");
+    assert_eq!(
+        code, 2,
+        "instinct list --bogus must exit 2; stderr: {stderr}"
+    );
     assert!(
         stderr.contains("unknown flag") && stderr.contains("--bogus"),
         "stderr must name the flag; got: {stderr}"
@@ -232,7 +262,10 @@ fn adapt_help_exits_0() {
     let root = scratch_root("adapt_help");
     let (code, out, _) = run(&root, &["adapt", "--help"]);
     assert_eq!(code, 0, "adapt --help must exit 0; stdout: {out}");
-    assert!(out.contains("adapt"), "output should mention 'adapt'; got: {out}");
+    assert!(
+        out.contains("adapt"),
+        "output should mention 'adapt'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -255,7 +288,10 @@ fn learn_help_exits_0() {
     let root = scratch_root("learn_help");
     let (code, out, _) = run(&root, &["learn", "--help"]);
     assert_eq!(code, 0, "learn --help must exit 0; stdout: {out}");
-    assert!(out.contains("learn"), "output should mention 'learn'; got: {out}");
+    assert!(
+        out.contains("learn"),
+        "output should mention 'learn'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -278,7 +314,10 @@ fn memory_help_exits_0() {
     let root = scratch_root("mem_help");
     let (code, out, _) = run(&root, &["memory", "--help"]);
     assert_eq!(code, 0, "memory --help must exit 0; stdout: {out}");
-    assert!(out.contains("memory"), "output should mention 'memory'; got: {out}");
+    assert!(
+        out.contains("memory"),
+        "output should mention 'memory'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -301,7 +340,10 @@ fn doctor_help_exits_0() {
     let root = scratch_root("doc_help");
     let (code, out, _) = run(&root, &["doctor", "--help"]);
     assert_eq!(code, 0, "doctor --help must exit 0; stdout: {out}");
-    assert!(out.contains("doctor"), "output should mention 'doctor'; got: {out}");
+    assert!(
+        out.contains("doctor"),
+        "output should mention 'doctor'; got: {out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

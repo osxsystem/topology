@@ -291,12 +291,9 @@ fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
 /// - `write_root`: the project root — generated files are written relative to this directory.
 ///   When `read_root == write_root` (in-framework use) the behavior is identical to v1.
 pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
-    if let Some(code) = crate::check_help_or_unknown(
-        "adapt",
-        args,
-        &["--harness", "--check"],
-        crate::USAGE_ADAPT,
-    ) {
+    if let Some(code) =
+        crate::check_help_or_unknown("adapt", args, &["--harness", "--check"], crate::USAGE_ADAPT)
+    {
         return code;
     }
     let mut harness: Option<String> = None;
