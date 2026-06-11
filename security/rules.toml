@@ -50,8 +50,22 @@ pattern = '\bxox[baprs]-[A-Za-z0-9-]{10,}\b'
 id = "openai-key"
 kind = "content"
 severity = "block"
-description = "OpenAI-style secret key prefix"
-pattern = '\bsk-[A-Za-z0-9]{20,}\b'
+description = "sk-prefixed provider key, hyphenated segments tolerated (sk-proj-…, sk-ant-…)"
+pattern = '\bsk-(?:[A-Za-z0-9_]+-)*[A-Za-z0-9_]{20,}\b'
+
+[[rule]]
+id = "jwt-structural"
+kind = "content"
+severity = "block"
+description = "JWT — three dot-joined base64url segments with the eyJ sigil"
+pattern = '\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b'
+
+[[rule]]
+id = "labeled-secret-assignment"
+kind = "content"
+severity = "warn"
+description = "credential-labeled assignment (api key / auth token / password / bearer)"
+pattern = '(?i)\b(?:api[_-]?key|auth[_-]?token|password|passwd|bearer)\s*[=:]\s*[\x22\x27]?[A-Za-z0-9+/=_-]{16,}'
 
 # ---------- command rules (scanned only on shell-command inputs: --cmd, --hook Bash) ----------
 [[rule]]
