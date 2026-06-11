@@ -70,16 +70,24 @@ fn head_sha(root: &Path) -> String {
 #[test]
 #[ignore = "red until design substance floor lands (spec §4, task 7)"]
 fn hollow_a_approved_only_spec() {
-    // The design gate's future substance floor requires ≥2 `##` headings and at
-    // least one non-empty body line besides the `Status:` line.  A spec that is
-    // literally just the approval marker has zero headings and zero body — today
-    // the gate checks only for the approval marker and passes; once §4 lands it
-    // must reject this artifact.
+    // The design gate's future substance floor (config-gated: `[design]
+    // substance_floor = true`) requires ≥2 `##` headings and at least one
+    // non-empty body line besides the `Status:` line.  A spec that is literally
+    // just the approval marker has zero headings and zero body — today the gate
+    // checks only for the approval marker and passes (the config key does not
+    // exist yet and is silently ignored); once §4 lands it must reject this.
     let root = scratch_root("a_spec");
     let research_dir = root.join("docs").join("research");
     let specs_dir = root.join("docs").join("specs");
     fs::create_dir_all(&research_dir).unwrap();
     fs::create_dir_all(&specs_dir).unwrap();
+
+    // config.toml opting in to the substance floor (silently ignored today).
+    fs::write(
+        root.join("docs").join("config.toml"),
+        "[design]\nsubstance_floor = true\n",
+    )
+    .unwrap();
 
     // Research note present (satisfies the sequence-lock).
     fs::write(
@@ -327,26 +335,26 @@ fn hollow_f_synonym_placeholder_plan() {
 #[test]
 #[ignore = "red until finish zero-test floor lands (spec §5, task 8)"]
 fn hollow_g_zero_test_runner() {
-    // Distinct from (e): instead of the shell built-in `true`, this fixture uses a
-    // command that exits 0 and prints output but produces no recognisable runner
-    // summary line (`N passed`, `ok N`, etc.).  The future zero-test floor must
-    // reject both — fail-closed means an unrecognised runner is not waved through.
+    // Distinct from (e): the command emits a *recognised* cargo summary line whose
+    // executed-test count is zero.  (e) covers the no-recognisable-summary class;
+    // this covers recognised-summary-zero-count.  The future zero-test floor must
+    // reject both: a runner that ran nothing is not verification.
     let root = scratch_root("g_finish");
     let docs_dir = root.join("docs");
     fs::create_dir_all(&docs_dir).unwrap();
 
-    // A command that exits 0 and emits human-readable text but no test runner
-    // summary (different from `true` in (e) which produces no output at all).
+    // A command that exits 0 and prints a genuine cargo-format summary with a
+    // zero count (config test_command runs via `sh -c`, so echo works here).
     fs::write(
         docs_dir.join("config.toml"),
-        "test_command = \"echo 'running 0 tests'\"\n\n[finish]\nrequire_test_count = true\n",
+        "test_command = \"echo 'test result: ok. 0 passed; 0 failed; 0 ignored'\"\n\n[finish]\nrequire_test_count = true\n",
     )
     .unwrap();
 
     let (code, out) = run(&root, &["check", "finish"]);
     assert_ne!(
         code, 0,
-        "HOLLOW PASS: zero-test echo command was accepted by the finish gate with require_test_count; out: {out}"
+        "HOLLOW PASS: recognised summary with zero tests was accepted by the finish gate with require_test_count; out: {out}"
     );
 
     let _ = fs::remove_dir_all(&root);
