@@ -1,5 +1,7 @@
 # Spec — one-command install
 
+**Status:** approved
+
 ## Goal
 
 A brand-new user gets a working Topology — gatekeeper binary included — from **one command**, with

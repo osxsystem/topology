@@ -400,7 +400,7 @@ fn cmd_check(args: &[String]) -> i32 {
                     );
                     1
                 }
-                Some(_) => gate_doc_exists("design", "specs", &f),
+                Some(_) => gate_design_approved(&f),
             }
         }
         "plan" => gate_plan(&feature_arg(args)),
@@ -589,6 +589,77 @@ fn gate_doc_exists(label: &str, sub: &str, feature: &str) -> i32 {
             1
         }
     }
+}
+
+/// Return true if the spec file contains an approval marker on any line.
+///
+/// Accepted forms (case-insensitive, flexible whitespace around `:` and value):
+///   `Status: approved`                   — plain, with optional trailing text (dates, notes)
+///   `**Status:** approved`               — Markdown bold field
+///   `- **Status:** approved`             — bullet list item (house style)
+///   `🟢 **Approved …`                    — emoji-prefixed bold approved (legacy form)
+///
+/// Algorithm per line:
+///   1. Fold to lowercase and strip Markdown decoration (`*`, `-` bullets, common emoji).
+///   2. Look for `status` followed by optional whitespace, a colon, optional whitespace, then
+///      a value starting with `approved`.
+pub(crate) fn spec_is_approved(text: &str) -> bool {
+    for line in text.lines() {
+        // Strip all `*` (Markdown bold/italic markers), leading `-` bullets, the 🟢 emoji, and
+        // surrounding whitespace.  This normalises every accepted form into `status: approved …`
+        // without needing separate branches for each decoration variant.
+        let cleaned: String = line.chars().filter(|&c| c != '*').collect::<String>();
+        let cleaned = cleaned.trim().trim_start_matches('-').trim();
+        // Strip the 🟢 emoji if present (multi-byte: match the literal char).
+        let cleaned = cleaned.trim_start_matches('🟢').trim();
+        let lc = cleaned.to_lowercase();
+        // Match `status` then optional whitespace then `:` then optional whitespace then `approved`.
+        if let Some(after_status) = lc.strip_prefix("status") {
+            let rest = after_status.trim_start();
+            if let Some(after_colon) = rest.strip_prefix(':') {
+                let value = after_colon.trim();
+                if value.starts_with("approved") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Design gate: after the research-first sequence-lock and file-existence checks, additionally
+/// require an explicit approval marker in the spec file.
+///
+/// The gate fails with a specific message when the spec exists but has no marker, teaching the
+/// human what to add.
+fn gate_design_approved(feature: &str) -> i32 {
+    if feature.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+    let Some(p) = find_doc("specs", feature) else {
+        let dir = artifacts_root().join("specs");
+        println!(
+            "FAIL design gate: no {}/*{feature}*.md found",
+            dir.display()
+        );
+        return 1;
+    };
+    let text = fs::read_to_string(&p).unwrap_or_default();
+    if !spec_is_approved(&text) {
+        println!(
+            "FAIL design gate: {} exists but is not approved",
+            p.display()
+        );
+        println!("  add a line 'Status: approved' once a human has signed off the design");
+        println!("  accepted forms (anywhere in the file, case-insensitive):");
+        println!("    Status: approved");
+        println!("    **Status:** approved");
+        println!("    - **Status:** approved");
+        return 1;
+    }
+    println!("PASS design gate: {}", p.display());
+    0
 }
 
 fn gate_plan(feature: &str) -> i32 {
