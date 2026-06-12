@@ -616,7 +616,7 @@ non-regressing; judge agreement is measured *before* any promotion; the hollow s
 | 6 | Packaging & CI | ✅ delivered |
 | 7 | Distribution payload | ✅ delivered |
 | 8 | Installer v3 | ✅ delivered (v0.7.0) |
-| 9 | `adapt` v2: project integration | ⬜ planned |
+| 9 | `adapt` v2: project integration | ✅ delivered (v0.9.0) |
 | 10 | Contract split | ✅ delivered (v0.8.0) |
 | 11 | Root resolution hardening | ✅ delivered (v0.6.0) |
 | 12 | End-to-end re-verification | ⬜ planned |
