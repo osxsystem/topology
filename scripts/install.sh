@@ -5,8 +5,8 @@
 #   1. Piped/sourced — no BASH_SOURCE file: downloads (or re-downloads) the distribution
 #      payload tarball from GitHub releases, verifies its SHA-256 checksum, and unpacks it
 #      into the target directory.
-#   2. Inside a checkout — BASH_SOURCE resolves to a real file: uses that checkout directly
-#      for global scope; builds the payload from the checkout for local scope (no clone).
+#   2. Inside a checkout — BASH_SOURCE resolves to a real file: builds the payload from the
+#      checkout for both scopes (no clone; the checkout is never used as the install root).
 #
 # Options:
 #   --harness <claude|codex|cursor|opencode|none>
@@ -19,7 +19,7 @@
 #   --build-from-source   Skip the prebuilt download; build with cargo instead.
 #
 # Test seams:
-#   TOPOLOGY_HOME                 Override the global clone destination (default $HOME/.topology).
+#   TOPOLOGY_HOME                 Override the global install destination (default $HOME/.topology).
 #   TOPOLOGY_RELEASE_BASE_URL     Override the binary/payload download URL prefix (file:// works).
 #   TOPOLOGY_VERSION              Override the pinned version.
 #   PROMPT_INPUT_FD               Override the fd used for interactive prompts (default /dev/tty).
@@ -40,18 +40,30 @@ Options:
 USAGE
 }
 
+# Interactive prompts read from /dev/tty by default; the PROMPT_INPUT_FD test seam
+# (already used by the stale-PATH repair) substitutes a readable path so the e2e
+# suite can exercise interactive branches without a tty. Production behavior is
+# unchanged when the variable is unset.
 can_prompt() {
+  if [[ -n "${PROMPT_INPUT_FD:-}" && -r "${PROMPT_INPUT_FD}" ]]; then
+    return 0
+  fi
   ( : < /dev/tty ) 2>/dev/null
 }
 
-# Read one line from /dev/tty; if unavailable, echo the default.
-# Usage: ask "question" "default"  → prints result to stdout
+# Read one line from /dev/tty (or $PROMPT_INPUT_FD when set); if unavailable, echo
+# the default. Usage: ask "question" "default"  → prints result to stdout
 ask() {
   local question="$1"
   local default="$2"
-  printf '%s [%s]: ' "$question" "$default" > /dev/tty
   local answer
-  read -r answer < /dev/tty
+  if [[ -n "${PROMPT_INPUT_FD:-}" && -r "${PROMPT_INPUT_FD}" ]]; then
+    printf '%s [%s]: ' "$question" "$default" >&2
+    read -r answer < "$PROMPT_INPUT_FD" || answer=""
+  else
+    printf '%s [%s]: ' "$question" "$default" > /dev/tty
+    read -r answer < /dev/tty
+  fi
   echo "${answer:-$default}"
 }
 
@@ -323,6 +335,11 @@ _download_and_verify_payload() {
   fi
 
   TMPDIR_DL="$(mktemp -d)"
+  # Register cleanup immediately — a curl failure under set -e must not leak the
+  # temp dir. The EXIT trap also covers the error paths below and the unpack itself;
+  # callers clear it (trap - EXIT) once the payload is installed.
+  cleanup_dl() { rm -rf "$TMPDIR_DL"; }
+  trap cleanup_dl EXIT
 
   echo "==> Downloading payload from $payload_url" >&2
   curl -fsSL --max-time 60 -o "$TMPDIR_DL/topology-payload.tar.gz" "$payload_url"
@@ -335,21 +352,22 @@ _download_and_verify_payload() {
   sums_line="$(grep "topology-payload.tar.gz" "$TMPDIR_DL/SHA256SUMS" || true)"
   if [[ -z "$sums_line" ]]; then
     echo "error: topology-payload.tar.gz not found in SHA256SUMS" >&2
-    rm -rf "$TMPDIR_DL"
     exit 1
   fi
   echo "$sums_line" > "$TMPDIR_DL/SHA256SUMS.single"
   (cd "$TMPDIR_DL" && $SHASUM_CMD -c SHA256SUMS.single >&2) || {
     echo "error: payload checksum verification failed" >&2
-    rm -rf "$TMPDIR_DL"
     exit 1
   }
 }
 
-# ─── 2. Locate or create the framework tree ──────────────────────────────────
+# ─── 3. Locate or create the framework tree ──────────────────────────────────
 
 if [[ "$SCOPE" == "global" ]]; then
   ROOT="${TOPOLOGY_HOME:-$HOME/.topology}"
+  # Strip any trailing slash: ${ROOT}-backup-<ts> would otherwise be a CHILD of
+  # ROOT, and the legacy-clone rescue's backup would be deleted with the clone.
+  ROOT="${ROOT%/}"
 
   # Fail early for piped+--build-from-source (no Rust source available in a
   # payload install). Same rule as local scope.
@@ -384,10 +402,9 @@ if [[ "$SCOPE" == "global" ]]; then
 
   else
     # Piped mode: download the payload tarball from GitHub releases and verify its
-    # checksum before unpacking (same machinery as local piped mode — hoisted above).
+    # checksum before unpacking (same machinery as local piped mode — hoisted above;
+    # the helper registers the cleanup trap itself).
     _download_and_verify_payload
-    cleanup_dl() { rm -rf "$TMPDIR_DL"; }
-    trap cleanup_dl EXIT
 
     if [[ -e "$ROOT" ]]; then
       _handle_existing_root
@@ -429,10 +446,8 @@ else
 
   else
     # Piped mode: download the payload tarball from GitHub releases and verify its
-    # checksum before unpacking.
+    # checksum before unpacking (the helper registers the cleanup trap itself).
     _download_and_verify_payload
-    cleanup_dl() { rm -rf "$TMPDIR_DL"; }
-    trap cleanup_dl EXIT
 
     if [[ -e "$ROOT" ]]; then
       _handle_existing_root
@@ -455,7 +470,7 @@ fi
 
 cd "$ROOT"
 
-# ─── 3. Manifest tracking ────────────────────────────────────────────────────
+# ─── 4. Manifest tracking ────────────────────────────────────────────────────
 
 MANIFEST=()
 note() { MANIFEST+=("$1"); }
@@ -467,7 +482,7 @@ if [[ "$SCOPE" == "local" ]]; then
   fi
 fi
 
-# ─── 4. Acquire the binary ───────────────────────────────────────────────────
+# ─── 5. Acquire the binary ───────────────────────────────────────────────────
 
 BIN="$ROOT/bin/gatekeeper"
 
@@ -489,56 +504,29 @@ fi
 if [[ $BUILD_FROM_SOURCE -eq 1 ]]; then
   echo "==> Building gatekeeper from source (release)"
 
-  if [[ "$SCOPE" == "local" ]]; then
-    # Local-scope cargo fallback: the payload has no Rust source tree.
-    # Piped mode with --build-from-source is already rejected above; we only
-    # reach here in dev-checkout mode when the prebuilt download failed.
-    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-      # SRC_ROOT was set in section 2 for the dev-checkout branch.
-      if ! command -v cargo >/dev/null 2>&1; then
-        echo "error: cargo (Rust) not found and prebuilt download failed." >&2
-        echo "  Fix one of:" >&2
-        echo "    1. Install Rust from https://rustup.rs and re-run." >&2
-        echo "    2. Ensure network access for the prebuilt download." >&2
-        exit 1
-      fi
-      ( cd "$SRC_ROOT/gatekeeper" && cargo build --release )
-      mkdir -p "$ROOT/bin"
-      cp "$SRC_ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
-      echo "    built + copied: $BIN"
-      note "$BIN"
-    else
-      # This branch is unreachable: piped + --build-from-source is caught early.
-      echo "error: no Rust source tree available in a downloaded payload install." >&2
-      echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
-      echo "    scripts/install.sh --project <path> --build-from-source" >&2
-      echo "  from inside the checkout." >&2
+  # Cargo fallback: the payload has no Rust source tree. Piped + --build-from-source
+  # is rejected early for both scopes, so we only reach here in checkout mode (where
+  # section 2 set SRC_ROOT) when the prebuilt download failed or was skipped.
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    if ! command -v cargo >/dev/null 2>&1; then
+      echo "error: cargo (Rust) not found and prebuilt download failed." >&2
+      echo "  Fix one of:" >&2
+      echo "    1. Install Rust from https://rustup.rs and re-run." >&2
+      echo "    2. Ensure network access for the prebuilt download." >&2
       exit 1
     fi
+    ( cd "$SRC_ROOT/gatekeeper" && cargo build --release )
+    mkdir -p "$ROOT/bin"
+    cp "$SRC_ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
+    echo "    built + copied: $BIN"
+    note "$BIN"
   else
-    # Global scope, checkout mode: SRC_ROOT points at the checkout (set in section 2).
-    # Piped+--build-from-source is already rejected before section 2 for global scope.
-    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-      if ! command -v cargo >/dev/null 2>&1; then
-        echo "error: cargo (Rust) not found and prebuilt download failed." >&2
-        echo "  Fix one of:" >&2
-        echo "    1. Install Rust from https://rustup.rs and re-run." >&2
-        echo "    2. Ensure network access for the prebuilt download." >&2
-        exit 1
-      fi
-      ( cd "$SRC_ROOT/gatekeeper" && cargo build --release )
-      mkdir -p "$ROOT/bin"
-      cp "$SRC_ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
-      echo "    built + copied: $BIN"
-      note "$BIN"
-    else
-      # This branch is unreachable: piped + --build-from-source is caught early.
-      echo "error: no Rust source tree available in a downloaded global payload install." >&2
-      echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
-      echo "    scripts/install.sh --global --build-from-source" >&2
-      echo "  from inside the checkout." >&2
-      exit 1
-    fi
+    # Unreachable belt-and-suspenders: piped + --build-from-source is caught early.
+    echo "error: no Rust source tree available in a downloaded payload install." >&2
+    echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
+    echo "    scripts/install.sh [--global|--project <path>] --build-from-source" >&2
+    echo "  from inside the checkout." >&2
+    exit 1
   fi
 fi
 
@@ -550,21 +538,21 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-# ─── 5. CLAUDE.md → AGENTS.md symlink ────────────────────────────────────────
+# ─── 6. CLAUDE.md → AGENTS.md symlink ────────────────────────────────────────
 
 echo "==> Linking CLAUDE.md -> AGENTS.md"
 ln -sf AGENTS.md CLAUDE.md
 note "$ROOT/CLAUDE.md"
 echo "    $ROOT/CLAUDE.md -> AGENTS.md"
 
-# ─── 6. Mark scripts executable ──────────────────────────────────────────────
+# ─── 7. Mark scripts executable ──────────────────────────────────────────────
 
 echo "==> Marking scripts executable"
 chmod +x hooks/*.sh scripts/*.sh
 note "hooks/*.sh scripts/*.sh (made executable)"
 echo "    done"
 
-# ─── 7. Git pre-commit hook ───────────────────────────────────────────────────
+# ─── 8. Git pre-commit hook ───────────────────────────────────────────────────
 
 echo "==> Installing the git pre-commit hook"
 # The hook must guard the repo the developer COMMITS to. For a --project install that is the
@@ -584,7 +572,7 @@ else
   echo "    (no .git dir at $HOOK_REPO; wire hooks/pre-commit.sh into your VCS manually)"
 fi
 
-# ─── 8. Harness wiring ───────────────────────────────────────────────────────
+# ─── 9. Harness wiring ───────────────────────────────────────────────────────
 
 HARNESS=""
 if [[ -n "$HARNESS_FLAG" ]]; then
@@ -664,7 +652,7 @@ EOF
     ;;
 esac
 
-# ─── 9. Stale-PATH repair ─────────────────────────────────────────────────────
+# ─── 10. Stale-PATH repair ─────────────────────────────────────────────────────
 #
 # PROMPT_INPUT_FD test seam: the interactive repair branch reads confirmation
 # from this fd (default /dev/tty). CI and tests set it to a file/pipe
@@ -712,7 +700,7 @@ repair_stale_path() {
   fi
 }
 
-# ─── 10. Adapt notes (global scope, harness=none) ────────────────────────────
+# ─── 11. Adapt notes (global scope, harness=none) ────────────────────────────
 
 if [[ "$SCOPE" == "global" && "$HARNESS" == "none" ]]; then
   cat <<EOF
@@ -726,12 +714,12 @@ if [[ "$SCOPE" == "global" && "$HARNESS" == "none" ]]; then
 EOF
 fi
 
-# ─── 11. Stale-PATH check ────────────────────────────────────────────────────
+# ─── 12. Stale-PATH check ────────────────────────────────────────────────────
 # Runs before the summary so an accepted overwrite appears in the printed manifest.
 
 repair_stale_path "$BIN"
 
-# ─── 12. Post-install summary ────────────────────────────────────────────────
+# ─── 13. Post-install summary ────────────────────────────────────────────────
 
 echo ""
 echo "==> Installed gatekeeper"
@@ -744,7 +732,7 @@ for f in "${MANIFEST[@]}"; do
   echo "    $f"
 done
 
-# ─── 12a. Commit hint (local scope only) ─────────────────────────────────────
+# ─── 13a. Commit hint (local scope only) ─────────────────────────────────────
 # The installer writes governance files (.claude/settings.json, .gitignore, ...)
 # into the project repo but leaves them uncommitted. The review gate's cleanliness
 # check will fail with "uncommitted changes" until they are committed. Detect which

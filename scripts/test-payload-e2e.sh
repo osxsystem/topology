@@ -443,18 +443,14 @@ fi
 
 # ── Global-scope scenarios (Phase 8) ─────────────────────────────────────────
 #
-# These scenarios exercise the new global payload path introduced in Phase 8.
-# They are guarded behind PHASE8_RED=1 and initially expected to fail against
-# the pre-Phase-8 code (red fixtures). The guard is removed in task 2 once the
-# production code is in place.
+# These scenarios exercise the global payload path introduced in Phase 8. They
+# were committed red-first behind a PHASE8_RED=1 guard, removed once the
+# production code landed.
 #
-# Interactive-refusal limitation: _handle_existing_root's interactive branch
-# reads from /dev/tty via the ask() function (gated by can_prompt), NOT from
-# PROMPT_INPUT_FD. The test harness runs without a tty (CI, piped invocation),
-# so can_prompt returns false and the code takes the non-interactive warning
-# path. Consequently, the "interactive refusal leaves the clone intact (exit 1)"
-# scenario from AC-3 cannot be exercised in this suite — it requires a real tty
-# that the harness cannot provide. This is documented as a spec deviation.
+# Interactive branches are exercised via the PROMPT_INPUT_FD seam: can_prompt()
+# treats a set-and-readable PROMPT_INPUT_FD as promptable and ask() reads from
+# it, so the legacy-clone refusal branch (test K) runs without a tty. Production
+# behavior is unchanged when the variable is unset.
 
 # ── Global test F: piped global offline install via file:// ──────────────────
 # Verifies that a piped --global install (BASH_SOURCE unset, no tty) uses the
@@ -465,7 +461,9 @@ cleanup_all_global() {
   rm -rf "$TMPDIR_STAGE" "$TMPDIR_WORK" "$TMPDIR_RELEASE" "$TMPDIR_TOPOLOGY" \
          "$TMPDIR_FIXTURE_PIPED" "${TMPDIR_FIXTURE_CHECKOUT:-}" "${TMPDIR_FIXTURE_LEGACY:-}" \
          "${TMPDIR_FIXTURE_HINT:-}" "$TMPDIR_GLOBAL_HOME" \
-         "${TMPDIR_GLOBAL_CHECKOUT_HOME:-}" "${TMPDIR_GLOBAL_LEGACY_HOME:-}"
+         "${TMPDIR_GLOBAL_CHECKOUT_HOME:-}" "${TMPDIR_GLOBAL_LEGACY_HOME:-}" \
+         "${TMPDIR_CORRUPT_HOME:-}" "${TMPDIR_CORRUPT_RELEASE:-}" \
+         "${TMPDIR_SLASH_HOME:-}" "${TMPDIR_REFUSE_HOME:-}"
 }
 trap cleanup_all_global EXIT
 
@@ -513,9 +511,6 @@ fi
 # A tampered tarball must be refused and must not touch an existing root.
 TMPDIR_CORRUPT_HOME="$(mktemp -d)"
 CORRUPT_ROOT="$TMPDIR_CORRUPT_HOME/.topology"
-trap_extra_corrupt() {
-  rm -rf "$TMPDIR_CORRUPT_HOME"
-}
 
 # Plant an existing good VERSION file to prove it is untouched after refusal.
 mkdir -p "$CORRUPT_ROOT"
@@ -586,18 +581,24 @@ else
   fail "global checkout install: .git present — checkout must not be used as ROOT"
 fi
 
-# Re-run (upgrade in place).
+# Re-run (upgrade in place). Assert on the re-run's own exit code and the
+# in-place-upgrade marker — VERSION-still-present alone is guaranteed by run 1
+# and could not fail even if the re-run died before touching anything.
+RERUN_EXIT=0
+RERUN_OUT="$(
   HOME="$TMPDIR_GLOBAL_CHECKOUT_HOME" \
   TOPOLOGY_HOME="$GLOBAL_CHECKOUT_ROOT" \
   TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
   TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
     bash "$SCRIPT_DIR/install.sh" \
-      --global --yes --harness none >/dev/null 2>&1 || true
+      --global --yes --harness none 2>&1
+)" || RERUN_EXIT=$?
 
-if [[ -f "$GLOBAL_CHECKOUT_ROOT/VERSION" ]]; then
-  pass "global checkout install re-run: upgrades in place (VERSION still present)"
+if [[ $RERUN_EXIT -eq 0 ]] && grep -qF "Upgrading existing payload" <<<"$RERUN_OUT" \
+   && [[ -f "$GLOBAL_CHECKOUT_ROOT/VERSION" ]]; then
+  pass "global checkout install re-run: upgraded in place (exit 0)"
 else
-  fail "global checkout install re-run: VERSION missing after re-run"
+  fail "global checkout install re-run: exit=$RERUN_EXIT (output: ${RERUN_OUT:0:400})"
 fi
 
 # ── Global test I: legacy global clone rescue with --yes ─────────────────────
@@ -667,7 +668,10 @@ else
   fail "global legacy rescue --yes: VERSION missing from new payload"
 fi
 
-# No PROJECT_PATH writes: the backup must not write into /.claude/topology.
+# Belt-and-suspenders: the rescue must not write any .claude/ under the remapped
+# HOME. (An empty-PROJECT_PATH regression would target /.claude/topology at the
+# filesystem root, which this can't see — but that variant dies loudly anyway:
+# the root-level mkdir -p fails on permissions under set -e.)
 if [[ ! -d "$TMPDIR_GLOBAL_LEGACY_HOME/.claude" ]]; then
   pass "global legacy rescue: no PROJECT_PATH writes (no .claude/ created)"
 else
@@ -675,6 +679,92 @@ else
 fi
 
 rm -rf "$TMPDIR_GLOBAL_LEGACY_HOME"
+
+# ── Global test J: trailing slash on TOPOLOGY_HOME must not eat the backup ───
+# Regression for the review-found data-loss bug: with TOPOLOGY_HOME ending in
+# "/", ${ROOT}-backup-<ts> was computed as a CHILD of ROOT ("…/.topology/-backup-…"),
+# so rm -rf "$ROOT" deleted the freshly written backup — after printing
+# "rescued: …". The installer now strips the trailing slash; the backup must
+# survive as a true sibling.
+TMPDIR_SLASH_HOME="$(mktemp -d)"
+SLASH_ROOT="$TMPDIR_SLASH_HOME/.topology"
+
+mkdir -p "$SLASH_ROOT"
+git -C "$SLASH_ROOT" init -q
+git -C "$SLASH_ROOT" config user.name  "Test User"
+git -C "$SLASH_ROOT" config user.email "test@example.com"
+mkdir -p "$SLASH_ROOT/docs/learn"
+echo "slash-sentinel-ledger" > "$SLASH_ROOT/docs/learn/ledger.md"
+git -C "$SLASH_ROOT" add -A
+git -C "$SLASH_ROOT" commit -q -m "legacy"
+
+# Note the trailing slash on TOPOLOGY_HOME — tab completion produces this routinely.
+INSTALL_SLASH_OUT="$(
+  HOME="$TMPDIR_SLASH_HOME" \
+  TOPOLOGY_HOME="$SLASH_ROOT/" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --yes --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || true
+
+SLASH_BACKUP_DIR="$(find "$TMPDIR_SLASH_HOME" -maxdepth 1 -name '.topology-backup-*' -type d 2>/dev/null | head -1)"
+if [[ -n "$SLASH_BACKUP_DIR" && -f "$SLASH_BACKUP_DIR/docs/learn/ledger.md" ]] && \
+   grep -qF "slash-sentinel-ledger" "$SLASH_BACKUP_DIR/docs/learn/ledger.md"; then
+  pass "trailing-slash TOPOLOGY_HOME: backup survives as a sibling"
+else
+  fail "trailing-slash TOPOLOGY_HOME: backup missing — data loss regression (output: ${INSTALL_SLASH_OUT:0:400})"
+fi
+
+if [[ -f "$SLASH_ROOT/VERSION" && ! -d "$SLASH_ROOT/.git" ]]; then
+  pass "trailing-slash TOPOLOGY_HOME: clone replaced with payload"
+else
+  fail "trailing-slash TOPOLOGY_HOME: payload not installed at normalized root"
+fi
+
+rm -rf "$TMPDIR_SLASH_HOME"
+
+# ── Global test K: interactive refusal leaves the legacy clone intact ────────
+# AC-3's refusal branch, exercised via the PROMPT_INPUT_FD seam: answering "n"
+# to "replace legacy clone …?" must abort (exit 1) and leave the clone untouched.
+TMPDIR_REFUSE_HOME="$(mktemp -d)"
+REFUSE_ROOT="$TMPDIR_REFUSE_HOME/.topology"
+
+mkdir -p "$REFUSE_ROOT"
+git -C "$REFUSE_ROOT" init -q
+git -C "$REFUSE_ROOT" config user.name  "Test User"
+git -C "$REFUSE_ROOT" config user.email "test@example.com"
+mkdir -p "$REFUSE_ROOT/docs/learn"
+echo "refuse-sentinel-ledger" > "$REFUSE_ROOT/docs/learn/ledger.md"
+git -C "$REFUSE_ROOT" add -A
+git -C "$REFUSE_ROOT" commit -q -m "legacy"
+
+printf 'n\n' > "$TMPDIR_REFUSE_HOME/answers"
+
+REFUSE_EXIT=0
+REFUSE_OUT="$(
+  HOME="$TMPDIR_REFUSE_HOME" \
+  TOPOLOGY_HOME="$REFUSE_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+  PROMPT_INPUT_FD="$TMPDIR_REFUSE_HOME/answers" \
+    bash -s -- --global --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || REFUSE_EXIT=$?
+
+if [[ $REFUSE_EXIT -ne 0 ]] && grep -qF "legacy clone left intact" <<<"$REFUSE_OUT"; then
+  pass "interactive refusal: install aborts non-zero with intact-clone message"
+else
+  fail "interactive refusal: exit=$REFUSE_EXIT (output: ${REFUSE_OUT:0:400})"
+fi
+
+if [[ -d "$REFUSE_ROOT/.git" ]] && grep -qF "refuse-sentinel-ledger" "$REFUSE_ROOT/docs/learn/ledger.md"; then
+  pass "interactive refusal: legacy clone left intact (ledger + .git untouched)"
+else
+  fail "interactive refusal: clone was modified despite refusal"
+fi
+
+rm -rf "$TMPDIR_REFUSE_HOME"
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""
