@@ -178,14 +178,20 @@ fn adapt_writes_to_project_not_framework() {
     let _ = fs::remove_dir_all(&fw);
     let _ = fs::remove_dir_all(&proj);
 
-    // Framework: skills/ + AGENTS.md + hooks/ (marks it as topology root).
+    // Framework: skills/ + AGENTS.md + hooks/ + templates/ (marks it as topology root).
     fs::create_dir_all(fw.join("skills").join("s")).unwrap();
     fs::create_dir_all(fw.join("instincts")).unwrap();
     fs::create_dir_all(fw.join("hooks")).unwrap();
+    fs::create_dir_all(fw.join("templates")).unwrap();
     fs::write(fw.join("AGENTS.md"), "# Topology\n\nGates.\n").unwrap();
     fs::write(
         fw.join("skills").join("s").join("SKILL.md"),
         "---\nname: s\ndescription: A skill.\n---\nBody.\n",
+    )
+    .unwrap();
+    fs::write(
+        fw.join("templates").join("CONTRACT.template.md"),
+        "# Contract\nRoot: {{ARTIFACTS_ROOT}}\nCmd: {{GATEKEEPER_CMD}}\n{{BINARY_NOTE}}",
     )
     .unwrap();
 
@@ -317,7 +323,6 @@ fn run_proj(fw: &Path, proj: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// AC-1: pre-existing CLAUDE.md is not clobbered; only the import line is appended; second run is no-op.
 #[test]
-#[ignore = "task 5 implements project-install path"]
 fn ac1_append_only_claude_md() {
     let fw = scratch_fw_with_template("ac1");
     let proj = scratch_proj("ac1");
@@ -362,7 +367,6 @@ fn ac1_append_only_claude_md() {
 
 /// AC-2: CLAUDE.md created if missing, containing only the import line.
 #[test]
-#[ignore = "task 5 implements project-install path"]
 fn ac2_create_if_missing_claude_md() {
     let fw = scratch_fw_with_template("ac2");
     let proj = scratch_proj("ac2");
@@ -390,7 +394,6 @@ fn ac2_create_if_missing_claude_md() {
 /// - Edit outside block → preserved.
 /// - --check flags an out-of-date block.
 #[test]
-#[ignore = "task 5 implements project-install path"]
 fn ac3_codex_managed_block_round_trip() {
     let fw = scratch_fw_with_template("ac3");
     let proj = scratch_proj("ac3");
@@ -452,7 +455,6 @@ fn ac3_codex_managed_block_round_trip() {
 
 /// AC-4: pre-existing settings.json user key (`model`) survives after adapt.
 #[test]
-#[ignore = "task 4 implements settings merge"]
 fn ac4_settings_no_clobber() {
     let fw = scratch_fw_with_template("ac4");
     let proj = scratch_proj("ac4");
@@ -496,7 +498,6 @@ fn ac4_settings_no_clobber() {
 
 /// AC-5: env.GATEKEEPER_BIN equals `<framework>/bin/gatekeeper`.
 #[test]
-#[ignore = "task 4 implements settings merge"]
 fn ac5_gatekeeper_bin_value() {
     let fw = scratch_fw_with_template("ac5");
     let proj = scratch_proj("ac5");
@@ -524,7 +525,6 @@ fn ac5_gatekeeper_bin_value() {
 
 /// AC-6: `.claude/topology/{research,specs,plans,verify,reviews}` dirs exist after one run.
 #[test]
-#[ignore = "task 5 implements scaffold"]
 fn ac6_scaffold_dirs_exist() {
     let fw = scratch_fw_with_template("ac6");
     let proj = scratch_proj("ac6");
@@ -546,7 +546,6 @@ fn ac6_scaffold_dirs_exist() {
 
 /// AC-7: rendered project CONTRACT.md contains the bare-stub first-session instruction.
 #[test]
-#[ignore = "task 5 implements contract write; task 6 adds the instruction to template"]
 fn ac7_contract_contains_first_session_instruction() {
     let fw = scratch_fw_with_template("ac7");
     let proj = scratch_proj("ac7");
@@ -568,7 +567,6 @@ fn ac7_contract_contains_first_session_instruction() {
 
 /// AC-8: malformed managed block (begin, no end) → exit 2 naming the file.
 #[test]
-#[ignore = "task 5 implements project-install path"]
 fn ac8_malformed_managed_block_exits_2() {
     let fw = scratch_fw_with_template("ac8");
     let proj = scratch_proj("ac8");

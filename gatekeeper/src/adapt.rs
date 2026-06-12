@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use crate::instinct;
 
 /// The outcome of a partial-file edit (user-owned files).
-// Used from cmd_adapt in tasks 4/5; allow until production wiring lands.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum Edit {
     /// The file already contained the desired content — no write needed.
@@ -29,8 +27,6 @@ pub(crate) enum Edit {
 /// - `None` → `Created(line + "\n")`.
 /// - `line` found in any row (trimmed) → `Unchanged`.
 /// - Otherwise → `Updated` with `line` appended on its own line, single trailing newline.
-// Wired into cmd_adapt in task 5.
-#[allow(dead_code)]
 fn ensure_import_line(existing: Option<&str>, line: &str) -> Edit {
     let line_trimmed = line.trim();
     match existing {
@@ -54,10 +50,7 @@ fn ensure_import_line(existing: Option<&str>, line: &str) -> Edit {
     }
 }
 
-// Used in task 5 from cmd_adapt.
-#[allow(dead_code)]
 const BLOCK_BEGIN: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
-#[allow(dead_code)]
 const BLOCK_END: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
 
 /// Ensure the marker-delimited managed block contains `body`.
@@ -66,8 +59,6 @@ const BLOCK_END: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
 /// - Block present, identical body → `Unchanged`.
 /// - Block present, different body → replace in place, outside content preserved.
 /// - Malformed (begin without end, or duplicate begin) → `Failed` naming the problem.
-// Wired into cmd_adapt in task 5.
-#[allow(dead_code)]
 fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
     let wrapped = format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}\n");
 
@@ -191,8 +182,6 @@ pub(crate) fn merge_claude_settings(
 /// Check mode: exit 1 on any would-change, exit 2 on any Failed; never writes.
 ///
 /// Returns exit code: 0 = up-to-date; 1 = drift; 2 = failed.
-// Called in task 4/5 from cmd_adapt; allow until then.
-#[allow(dead_code)]
 fn apply_edits(edits: &[(String, Edit)], check: bool) -> i32 {
     let mut drift = false;
     let mut failed = false;
@@ -928,6 +917,69 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
             if roots_differ {
                 if let Some(cfg_file) = build_project_config(write_root) {
                     files.push(cfg_file);
+                }
+
+                // Scaffold the five artifact subdirectories with .gitkeep files.
+                for subdir in &["research", "specs", "plans", "verify", "reviews"] {
+                    files.push(GenFile::new(
+                        format!(".claude/topology/{subdir}/.gitkeep"),
+                        String::new(),
+                    ));
+                }
+
+                // Render and deliver the project contract (whole-file GenFile).
+                let template_path = read_root.join("templates").join("CONTRACT.template.md");
+                match fs::read_to_string(&template_path) {
+                    Ok(template) => match render_contract(&template, &project_ctx()) {
+                        Ok(rendered) => {
+                            files.push(GenFile::new(".topology/CONTRACT.md", rendered));
+                        }
+                        Err(e) => {
+                            eprintln!("gatekeeper adapt: contract render error: {e}");
+                            return 2;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!(
+                            "gatekeeper adapt: cannot read {}: {e}",
+                            template_path.display()
+                        );
+                        return 2;
+                    }
+                }
+
+                // Deliver the contract pointer into the harness-native surface.
+                // claude: append @.topology/CONTRACT.md import to CLAUDE.md.
+                // codex: upsert managed block in AGENTS.md.
+                // cursor/opencode: unchanged from v1 (Phase 9.1).
+                match harness.as_str() {
+                    "claude" => {
+                        let claude_md_path = write_root.join("CLAUDE.md");
+                        let existing = fs::read_to_string(&claude_md_path).ok();
+                        let edit =
+                            ensure_import_line(existing.as_deref(), "@.topology/CONTRACT.md");
+                        let edits = vec![(claude_md_path.to_string_lossy().into_owned(), edit)];
+                        let code = apply_edits(&edits, check);
+                        if code != 0 {
+                            // Exit early on error; on drift (code=1) still report and return.
+                            let files_code = apply_or_check(&files, write_root, check);
+                            return if code == 2 || files_code == 2 { 2 } else { 1 };
+                        }
+                    }
+                    "codex" => {
+                        let agents_md_path = write_root.join("AGENTS.md");
+                        let existing = fs::read_to_string(&agents_md_path).ok();
+                        const CODEX_BLOCK_BODY: &str =
+                            "See `.topology/CONTRACT.md` for the Topology operating contract (gate sequence, conduct rules).";
+                        let edit = ensure_managed_block(existing.as_deref(), CODEX_BLOCK_BODY);
+                        let edits = vec![(agents_md_path.to_string_lossy().into_owned(), edit)];
+                        let code = apply_edits(&edits, check);
+                        if code != 0 {
+                            let files_code = apply_or_check(&files, write_root, check);
+                            return if code == 2 || files_code == 2 { 2 } else { 1 };
+                        }
+                    }
+                    _ => {}
                 }
             }
             apply_or_check(&files, write_root, check)
