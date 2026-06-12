@@ -1,6 +1,6 @@
 {
   "name": "topology",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Topology gate-enforcement engine: routes skills and checks methodology gates.",
   "author": { "name": "osxsystem" },
   "repository": "https://github.com/osxsystem/topology",
