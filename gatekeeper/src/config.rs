@@ -85,6 +85,12 @@ pub struct ProjectConfig {
     pub finish_require_test_count: bool,
     /// `[finish] extra_count_patterns` — user-supplied regex escape-hatch.
     pub finish_extra_count_patterns: Vec<String>,
+
+    // ── hardened tdd settings ─────────────────────────────────────────────────
+    /// `[tdd] mode` — `"history"` (default) | `"replay"`.
+    pub tdd_mode: TddMode,
+    /// `[tdd] replay_test_command` — optional test command for replay mode.
+    pub tdd_replay_test_command: Option<String>,
 }
 
 // ── hardened enum types ───────────────────────────────────────────────────────
@@ -105,6 +111,28 @@ impl VerifyMode {
             "replay" => Ok(VerifyMode::Replay),
             other => Err(format!(
                 "invalid value for [verify] mode = {:?}; expected \"presence\" or \"replay\"",
+                other
+            )),
+        }
+    }
+}
+
+/// `[tdd] mode`
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
+pub enum TddMode {
+    #[default]
+    History,
+    Replay,
+}
+
+impl TddMode {
+    /// Parse from a TOML string value; returns `Err` for a known-but-invalid value.
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "history" => Ok(TddMode::History),
+            "replay" => Ok(TddMode::Replay),
+            other => Err(format!(
+                "invalid value for [tdd] mode = {:?}; expected \"history\" or \"replay\"",
                 other
             )),
         }
@@ -176,6 +204,8 @@ impl Default for ProjectConfig {
             design_agent_trailer_patterns: default_agent_trailer_patterns(),
             finish_require_test_count: false,
             finish_extra_count_patterns: Vec::new(),
+            tdd_mode: TddMode::default(),
+            tdd_replay_test_command: None,
         }
     }
 }
@@ -303,6 +333,20 @@ impl ProjectConfig {
             }
         }
 
+        // [tdd] sub-table
+        let mut tdd_mode = TddMode::default();
+        let mut tdd_replay_test_command = None;
+
+        if let Some(tdd_tbl) = table.get("tdd").and_then(|v| v.as_table()) {
+            if let Some(mode_val) = tdd_tbl.get("mode") {
+                let mode_str = mode_val.as_str().unwrap_or("");
+                tdd_mode = TddMode::from_str(mode_str)?;
+            }
+            if let Some(cmd_val) = tdd_tbl.get("replay_test_command") {
+                tdd_replay_test_command = cmd_val.as_str().map(str::to_owned);
+            }
+        }
+
         Ok(Self {
             base_branch,
             test_command,
@@ -314,6 +358,8 @@ impl ProjectConfig {
             design_agent_trailer_patterns,
             finish_require_test_count,
             finish_extra_count_patterns,
+            tdd_mode,
+            tdd_replay_test_command,
         })
     }
 }
@@ -495,6 +541,58 @@ mod tests {
         .unwrap();
         let cfg = ProjectConfig::load(&dir);
         assert!(cfg.finish_require_test_count);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tdd_mode_replay_parsed() {
+        let dir = tmp("tdd_replay");
+        fs::write(dir.join("config.toml"), "[tdd]\nmode = \"replay\"\n").unwrap();
+        let cfg = ProjectConfig::load(&dir);
+        assert_eq!(cfg.tdd_mode, TddMode::Replay);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tdd_mode_defaults_history() {
+        let dir = tmp("tdd_default");
+        fs::write(dir.join("config.toml"), "").unwrap();
+        let cfg = ProjectConfig::load(&dir);
+        assert_eq!(cfg.tdd_mode, TddMode::History);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tdd_mode_invalid_returns_error() {
+        let dir = tmp("tdd_invalid");
+        fs::write(dir.join("config.toml"), "[tdd]\nmode = \"bogus\"\n").unwrap();
+        let result = ProjectConfig::load_result(&dir);
+        assert!(
+            result.is_parse_failed(),
+            "invalid known value for mode must be ParseFailed"
+        );
+        if let LoadResult::ParseFailed(e) = &result {
+            assert!(
+                e.contains("bogus"),
+                "error message should mention the bad value: {e}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tdd_replay_test_command_parsed() {
+        let dir = tmp("tdd_replay_cmd");
+        fs::write(
+            dir.join("config.toml"),
+            "[tdd]\nreplay_test_command = \"cargo test --test x\"\n",
+        )
+        .unwrap();
+        let cfg = ProjectConfig::load(&dir);
+        assert_eq!(
+            cfg.tdd_replay_test_command,
+            Some("cargo test --test x".to_string())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
