@@ -1666,13 +1666,20 @@ fn gate_finish(args: &[String], cfg: &config::ProjectConfig) -> i32 {
     let cli_cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
 
     if !cli_cmd.is_empty() {
-        // Explicit CLI `-- cmd` wins unconditionally.
-        return run_finish_command_parts(&cli_cmd);
+        // Explicit CLI `-- cmd` wins unconditionally over config.test_command.
+        // Spec §5: floor applies to both invocation paths.
+        let cmd_str = cli_cmd
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return run_finish_command_parts_floor(&cli_cmd, &cmd_str, cfg);
     }
 
     // No CLI command — try config.test_command.
     if let Some(ref tc) = cfg.test_command {
-        return run_finish_sh(tc);
+        let tc_owned = tc.clone();
+        return run_finish_sh_floor(&tc_owned, cfg);
     }
 
     // Nothing supplied — emit the original usage error, extended to mention config.
@@ -1688,37 +1695,271 @@ fn gate_finish(args: &[String], cfg: &config::ProjectConfig) -> i32 {
     2
 }
 
+// ── finish gate — streaming tee + zero-test floor ────────────────────────────
+
 /// Run a finish command expressed as a pre-split argument list (from the CLI `-- cmd...` form).
-fn run_finish_command_parts(cmd: &[&String]) -> i32 {
-    let status = Command::new(cmd[0]).args(&cmd[1..]).status();
-    finish_status(status)
+/// Captures output while streaming through; applies the zero-test floor when configured.
+fn run_finish_command_parts_floor(
+    cmd: &[&String],
+    cmd_str: &str,
+    cfg: &config::ProjectConfig,
+) -> i32 {
+    use std::process::Stdio;
+    let mut child = match Command::new(cmd[0])
+        .args(&cmd[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("FAIL finish gate: could not run command: {e}");
+            return 1;
+        }
+    };
+    let (transcript, truncated, exit_ok) = drain_finish_child(&mut child);
+    apply_finish_floor(transcript, truncated, exit_ok, cmd_str, cfg)
 }
 
 /// Run a finish command expressed as a single shell string (from config.test_command).
 /// Uses `sh -c` so shell syntax (pipes, &&, etc.) works as expected.
-fn run_finish_sh(cmd: &str) -> i32 {
-    let status = Command::new("sh").arg("-c").arg(cmd).status();
-    finish_status(status)
-}
-
-fn finish_status(status: std::io::Result<std::process::ExitStatus>) -> i32 {
-    match status {
-        Ok(s) if s.success() => {
-            println!("PASS finish gate: test command exited 0");
-            0
-        }
-        Ok(s) => {
-            println!(
-                "FAIL finish gate: test command exited {}",
-                s.code().unwrap_or(-1)
-            );
-            1
-        }
+/// Captures output while streaming through; applies the zero-test floor when configured.
+fn run_finish_sh_floor(cmd: &str, cfg: &config::ProjectConfig) -> i32 {
+    use std::process::Stdio;
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
         Err(e) => {
             println!("FAIL finish gate: could not run command: {e}");
-            1
+            return 1;
+        }
+    };
+    let (transcript, truncated, exit_ok) = drain_finish_child(&mut child);
+    apply_finish_floor(transcript, truncated, exit_ok, cmd, cfg)
+}
+
+/// Drain a child process's stdout+stderr while **streaming each line through** to the
+/// real stdout/stderr respectively.  Returns `(merged_transcript, truncated, exit_ok)`.
+///
+/// Two reader threads tee each line: send to the channel (for capture) AND write it to
+/// the real fd immediately.  Tail-capped at 1 MiB.
+fn drain_finish_child(child: &mut std::process::Child) -> (String, bool, bool) {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::thread;
+
+    const OUTPUT_CAP: usize = 1024 * 1024; // 1 MiB
+
+    let stdout = child.stdout.take().map(BufReader::new);
+    let stderr = child.stderr.take().map(BufReader::new);
+
+    // Each message: (line_text, is_stderr)
+    let (tx_a, rx) = mpsc::channel::<(String, bool)>();
+    let tx_b = tx_a.clone();
+
+    let mut handles = Vec::new();
+
+    if let Some(reader) = stdout {
+        handles.push(thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                println!("{line}");
+                let _ = tx_a.send((line, false));
+            }
+        }));
+    } else {
+        drop(tx_a);
+    }
+
+    if let Some(reader) = stderr {
+        handles.push(thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                let _ = tx_b.send((line, true));
+            }
+        }));
+    } else {
+        drop(tx_b);
+    }
+
+    // Collect all lines (approximate arrival order).
+    let all_lines: Vec<String> = rx.into_iter().map(|(l, _)| l).collect();
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let status = child.wait();
+    let exit_ok = status.map(|s| s.success()).unwrap_or(false);
+
+    // Tail-cap at 1 MiB.
+    let total: usize = all_lines.iter().map(|l| l.len() + 1).sum();
+    let truncated = total > OUTPUT_CAP;
+    let kept = if truncated {
+        let mut lines = all_lines;
+        let mut cur = total;
+        while cur > OUTPUT_CAP && !lines.is_empty() {
+            cur -= lines.remove(0).len() + 1;
+        }
+        lines
+    } else {
+        all_lines
+    };
+
+    (kept.join("\n"), truncated, exit_ok)
+}
+
+/// The outcome of parsing runner summaries from a transcript.
+#[derive(Debug)]
+enum TestCountResult {
+    /// Pattern matched; sum of counts across matching lines.
+    Recognized(u64),
+    /// No pattern matched at all.
+    Unrecognized,
+}
+
+/// Parse runner summaries from a merged transcript.
+///
+/// Patterns tried in order; first-match-wins:
+///   1. cargo:  `(?m)^test result: \w+\. (\d+) passed`
+///   2. pytest: `(?m)(\d+) passed[^\n]* in [0-9.]+s`
+///   3. extra_count_patterns (user-supplied, one capture group each)
+pub(crate) fn parse_test_count(transcript: &str, extra_patterns: &[String]) -> TestCountResult {
+    use regex::Regex;
+
+    // 1. cargo
+    {
+        let re = Regex::new(r"(?m)^test result: \w+\. (\d+) passed").unwrap();
+        let caps: Vec<_> = re.captures_iter(transcript).collect();
+        if !caps.is_empty() {
+            let sum: u64 = caps
+                .iter()
+                .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                .sum();
+            return TestCountResult::Recognized(sum);
         }
     }
+
+    // 2. pytest (no === fence anchor; pytest -q compatible)
+    {
+        let re = Regex::new(r"(?m)(\d+) passed[^\n]* in [0-9.]+s").unwrap();
+        let caps: Vec<_> = re.captures_iter(transcript).collect();
+        if !caps.is_empty() {
+            let sum: u64 = caps
+                .iter()
+                .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                .sum();
+            return TestCountResult::Recognized(sum);
+        }
+    }
+
+    // 3. extra_count_patterns (user-supplied)
+    for pat in extra_patterns {
+        match Regex::new(pat) {
+            Err(_) => continue, // invalid patterns are skipped at runtime
+            Ok(re) => {
+                let caps: Vec<_> = re.captures_iter(transcript).collect();
+                if !caps.is_empty() {
+                    let sum: u64 = caps
+                        .iter()
+                        .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                        .sum();
+                    return TestCountResult::Recognized(sum);
+                }
+            }
+        }
+    }
+
+    TestCountResult::Unrecognized
+}
+
+/// Core logic after capture: apply zero-test floor, emit SHADOW, return exit code.
+fn apply_finish_floor(
+    transcript: String,
+    truncated: bool,
+    exit_ok: bool,
+    cmd_str: &str,
+    cfg: &config::ProjectConfig,
+) -> i32 {
+    let count_result = parse_test_count(&transcript, &cfg.finish_extra_count_patterns);
+
+    // Determine shadow configured state.
+    let shadow_configured = if cfg.finish_require_test_count {
+        verify::ShadowConfigured::On
+    } else {
+        verify::ShadowConfigured::Default
+    };
+
+    // Build detail string.
+    let (floor_pass, detail) = match &count_result {
+        TestCountResult::Recognized(n) => {
+            let trunc = if truncated {
+                " (output truncated to last 1 MiB)"
+            } else {
+                ""
+            };
+            let pass = *n > 0;
+            let detail = format!("recognized runner summary; count={n}{trunc}");
+            (pass, detail)
+        }
+        TestCountResult::Unrecognized => {
+            let trunc = if truncated {
+                " (output truncated to last 1 MiB)"
+            } else {
+                ""
+            };
+            let detail = format!("no recognized runner summary{trunc}");
+            (false, detail)
+        }
+    };
+
+    // Emit SHADOW line always (whether key is on or off).
+    verify::emit_shadow(
+        "finish",
+        "zero_test_floor",
+        shadow_configured,
+        None,
+        Some(cmd_str),
+        if floor_pass {
+            verify::ShadowResult::Pass
+        } else {
+            verify::ShadowResult::Fail
+        },
+        &detail,
+    );
+
+    // Check exit code first.
+    if !exit_ok {
+        println!("FAIL finish gate: test command exited non-zero");
+        return 1;
+    }
+
+    // Apply floor when configured.
+    if cfg.finish_require_test_count && !floor_pass {
+        match &count_result {
+            TestCountResult::Unrecognized => {
+                println!(
+                    "FAIL finish gate: require_test_count=true but no recognized runner summary found; \
+                     add a cargo/pytest/extra_count_patterns-matched summary line"
+                );
+            }
+            TestCountResult::Recognized(0) => {
+                println!(
+                    "FAIL finish gate: require_test_count=true but recognized summary shows 0 tests; \
+                     run a non-empty test suite"
+                );
+            }
+            TestCountResult::Recognized(_) => unreachable!(),
+        }
+        return 1;
+    }
+
+    println!("PASS finish gate: test command exited 0");
+    0
 }
 
 #[cfg(test)]

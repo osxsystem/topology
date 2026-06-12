@@ -261,7 +261,6 @@ fn hollow_d_looks_fine_review() {
 // ── (e) finish gate: test_command = "true" ────────────────────────────────────
 
 #[test]
-#[ignore = "red until finish zero-test floor lands (spec §5, task 8)"]
 fn hollow_e_test_command_true() {
     // `true` exits 0 but runs zero tests.  The finish gate's future zero-test floor
     // (spec §5) with `[finish] require_test_count = true` must reject a command that
@@ -331,7 +330,6 @@ fn hollow_f_synonym_placeholder_plan() {
 // ── (g) finish gate: zero-test runner (exit 0, no runner summary) ─────────────
 
 #[test]
-#[ignore = "red until finish zero-test floor lands (spec §5, task 8)"]
 fn hollow_g_zero_test_runner() {
     // Distinct from (e): the command emits a *recognised* cargo summary line whose
     // executed-test count is zero.  (e) covers the no-recognisable-summary class;
