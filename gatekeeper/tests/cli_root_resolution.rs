@@ -69,6 +69,7 @@ fn run_binary(
     )
 }
 
+#[allow(dead_code)]
 fn gk_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_gatekeeper"))
 }
