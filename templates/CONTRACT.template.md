@@ -2,6 +2,10 @@
 
 You are a coding agent operating under the **Topology** methodology. Topology is not a style preference — it is a set of **gates** you must pass through in order. A gate is an objective, checkable condition, not a suggestion. The `gatekeeper` CLI exists so you (and CI) can verify each gate instead of trusting a feeling.
 
+## First session in a new project
+
+**First session in a new project.** If the project documentation above this import line is a bare Topology stub (no project-specific content), your first gate is: analyze the codebase, write the project's own documentation above the import, *then* proceed through the gate sequence.
+
 ## Operating contract
 
 **Before responding to any coding task:**
