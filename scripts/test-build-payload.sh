@@ -49,6 +49,8 @@ REQUIRED_ENTRIES=(
   # AGENTS.md is the ROOT_MARKERS sentinel required by is_marked_root(); without it
   # the unpacked payload tree cannot be resolved as the framework root (Note 4).
   "AGENTS.md"
+  # Phase 10: contract template ships in the payload.
+  "templates/CONTRACT.template.md"
 )
 
 for entry in "${REQUIRED_ENTRIES[@]}"; do
@@ -209,43 +211,33 @@ else
   fail "build-payload did not produce a tarball when testing version-arg-beats-env"
 fi
 
-# ── Phase 10 assertions (guarded behind PHASE10_RED=1 until Task 5) ──────────
-# These assertions are committed red in Task 1 and un-guarded in Task 5 once
-# build-payload.sh ships templates/ and the skill sweep is complete.
-if [[ "${PHASE10_RED:-0}" == "1" ]]; then
-  # AC-7a: templates/CONTRACT.template.md must be present in the tarball.
-  if echo "$LISTING" | grep -qF "templates/CONTRACT.template.md"; then
-    pass "tarball contains templates/CONTRACT.template.md"
-  else
-    fail "tarball missing templates/CONTRACT.template.md (Phase 10: build-payload.sh must ship templates/)"
-  fi
+# ── Phase 10 assertions (AC-6, AC-7) ─────────────────────────────────────────
 
-  # AC-7b: docs/DEVELOPMENT.md must NOT be in the tarball (it is framework-dev only).
-  if echo "$LISTING" | grep -qE 'docs/DEVELOPMENT\.md'; then
-    fail "tarball must not contain docs/DEVELOPMENT.md (framework-dev only, not for governed projects)"
-  else
-    pass "tarball does not contain docs/DEVELOPMENT.md"
-  fi
+# AC-7b: docs/DEVELOPMENT.md must NOT be in the tarball (it is framework-dev only).
+if echo "$LISTING" | grep -qE 'docs/DEVELOPMENT\.md'; then
+  fail "tarball must not contain docs/DEVELOPMENT.md (framework-dev only, not for governed projects)"
+else
+  pass "tarball does not contain docs/DEVELOPMENT.md"
+fi
 
-  # AC-7c: CONTRACT.md must NOT be in the tarball (render-at-inject-time, Phase 9 scope).
-  if echo "$LISTING" | grep -qE '^\.?/?CONTRACT\.md$'; then
-    fail "tarball must not contain CONTRACT.md (reserved slot — render at inject time, Phase 9)"
-  else
-    pass "tarball does not contain CONTRACT.md"
-  fi
+# AC-7c: CONTRACT.md must NOT be in the tarball (render-at-inject-time, Phase 9 scope).
+if echo "$LISTING" | grep -qE '^\.?/?CONTRACT\.md$'; then
+  fail "tarball must not contain CONTRACT.md (reserved slot — render at inject time, Phase 9)"
+else
+  pass "tarball does not contain CONTRACT.md"
+fi
 
-  # AC-6: No docs/<kind>/ artifact paths in skills/ or instincts/ under the payload.
-  # These are repo-only paths; governed projects use .claude/topology/<kind>/.
-  TMPDIR_SKILL_CHECK="$(mktemp -d)"
-  tar -xzf "$TARBALL" -C "$TMPDIR_SKILL_CHECK" 2>/dev/null || true
-  DOCS_ARTIFACT_HITS="$(grep -rE 'docs/(specs|plans|research|verify|reviews|memory|learn)/' \
-    "$TMPDIR_SKILL_CHECK/skills/" "$TMPDIR_SKILL_CHECK/instincts/" 2>/dev/null || true)"
-  rm -rf "$TMPDIR_SKILL_CHECK"
-  if [[ -n "$DOCS_ARTIFACT_HITS" ]]; then
-    fail "skills/ or instincts/ contain docs/<kind>/ artifact paths (Phase 10 skill sweep incomplete):"$'\n'"$DOCS_ARTIFACT_HITS"
-  else
-    pass "no docs/<kind>/ artifact paths in payload skills/ or instincts/"
-  fi
+# AC-6: No docs/<kind>/ artifact paths in skills/ or instincts/ under the payload.
+# These are repo-only paths; governed projects use .claude/topology/<kind>/.
+TMPDIR_SKILL_CHECK="$(mktemp -d)"
+tar -xzf "$TARBALL" -C "$TMPDIR_SKILL_CHECK" 2>/dev/null || true
+DOCS_ARTIFACT_HITS="$(grep -rE 'docs/(specs|plans|research|verify|reviews|memory|learn)/' \
+  "$TMPDIR_SKILL_CHECK/skills/" "$TMPDIR_SKILL_CHECK/instincts/" 2>/dev/null || true)"
+rm -rf "$TMPDIR_SKILL_CHECK"
+if [[ -n "$DOCS_ARTIFACT_HITS" ]]; then
+  fail "skills/ or instincts/ contain docs/<kind>/ artifact paths (Phase 10 skill sweep incomplete):"$'\n'"$DOCS_ARTIFACT_HITS"
+else
+  pass "no docs/<kind>/ artifact paths in payload skills/ or instincts/"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────────

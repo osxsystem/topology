@@ -370,7 +370,11 @@ pub(crate) struct ContractCtx {
 
 /// The three known template placeholders (order matters for fail-closed check: substituted before
 /// scanning for residual `{{`).
-const KNOWN_PLACEHOLDERS: &[&str] = &["{{ARTIFACTS_ROOT}}", "{{GATEKEEPER_CMD}}", "{{BINARY_NOTE}}"];
+const KNOWN_PLACEHOLDERS: &[&str] = &[
+    "{{ARTIFACTS_ROOT}}",
+    "{{GATEKEEPER_CMD}}",
+    "{{BINARY_NOTE}}",
+];
 
 /// The gatekeeper invocation word used in both contexts (the binary is always on PATH in the
 /// framework; governed projects will wire it via GATEKEEPER_BIN in Phase 9).
@@ -735,7 +739,10 @@ mod tests {
             !rendered.contains(".claude/topology"),
             "framework render must not contain '.claude/topology': {rendered}"
         );
-        assert!(rendered.contains("gatekeeper"), "must contain gatekeeper cmd");
+        assert!(
+            rendered.contains("gatekeeper"),
+            "must contain gatekeeper cmd"
+        );
     }
 
     #[test]

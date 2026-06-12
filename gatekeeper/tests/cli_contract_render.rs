@@ -19,10 +19,7 @@ use std::process::Command;
 /// A minimal framework root: skills/ marker, AGENTS.md, and a valid template.
 /// The template uses the three known placeholders so all three substitutions are exercised.
 fn scratch_framework(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "topo_contract_fw_{tag}_{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("topo_contract_fw_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("skills")).unwrap();
     fs::create_dir_all(root.join("templates")).unwrap();
@@ -37,10 +34,7 @@ fn scratch_framework(tag: &str) -> PathBuf {
 
 /// A framework root with a template that contains an unknown placeholder.
 fn scratch_bad_template(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!(
-        "topo_contract_bad_{tag}_{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("topo_contract_bad_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(root.join("skills")).unwrap();
     fs::create_dir_all(root.join("templates")).unwrap();
@@ -106,10 +100,7 @@ const BAD_TEMPLATE: &str = "\
 fn framework_render_contains_docs_paths() {
     let root = scratch_framework("fw_render");
     let (code, stdout, stderr) = run_with_root(&root, &root, &["adapt", "--contract", "framework"]);
-    assert_eq!(
-        code, 0,
-        "framework render must exit 0; stderr: {stderr}"
-    );
+    assert_eq!(code, 0, "framework render must exit 0; stderr: {stderr}");
     assert!(
         stdout.contains("docs/"),
         "framework render must contain 'docs/' paths; stdout:\n{stdout}"
@@ -127,12 +118,8 @@ fn framework_render_contains_docs_paths() {
 #[test]
 fn project_render_contains_topology_paths() {
     let root = scratch_framework("proj_render");
-    let (code, stdout, stderr) =
-        run_with_root(&root, &root, &["adapt", "--contract", "project"]);
-    assert_eq!(
-        code, 0,
-        "project render must exit 0; stderr: {stderr}"
-    );
+    let (code, stdout, stderr) = run_with_root(&root, &root, &["adapt", "--contract", "project"]);
+    assert_eq!(code, 0, "project render must exit 0; stderr: {stderr}");
     assert!(
         stdout.contains(".claude/topology/"),
         "project render must contain '.claude/topology/' paths; stdout:\n{stdout}"
@@ -179,7 +166,10 @@ fn unknown_placeholder_exits_2_and_names_it() {
 fn agents_md_byte_equal_to_framework_render() {
     // Use the real repo root (not a scratch dir) — this is the dogfood assertion.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest.parent().expect("manifest has parent").to_path_buf();
+    let repo_root = manifest
+        .parent()
+        .expect("manifest has parent")
+        .to_path_buf();
 
     let canonical = fs::canonicalize(&repo_root).unwrap_or_else(|_| repo_root.clone());
     let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
@@ -198,8 +188,8 @@ fn agents_md_byte_equal_to_framework_render() {
         "adapt --contract framework must exit 0 at real repo root; stderr: {stderr}"
     );
 
-    let agents_on_disk = fs::read_to_string(repo_root.join("AGENTS.md"))
-        .expect("AGENTS.md must exist at repo root");
+    let agents_on_disk =
+        fs::read_to_string(repo_root.join("AGENTS.md")).expect("AGENTS.md must exist at repo root");
 
     assert_eq!(
         stdout, agents_on_disk,
