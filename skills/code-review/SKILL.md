@@ -15,7 +15,8 @@ The author cannot grade their own work — a separate critic must. Dispatch a **
    auto-detection (origin/HEAD or unique main/master local branch) > default `main`. The critic
    reviews `git diff <base>...HEAD` (three-dot).
 2. **Dispatch one fresh critic subagent** with the diff, the design doc, the plan, and the repo
-   standards (`docs/adr/`, `AGENTS.md`, `METHODOLOGY.md`, `CONTEXT.md` if present).
+   standards (`<artifacts-root>/adr/`, `AGENTS.md`, `METHODOLOGY.md`, `CONTEXT.md` if present)
+   (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path).
 3. **Review two dimensions separately and document each:**
    - **Spec/plan conformance** — does the diff implement the acceptance criteria and the plan?
      Flag missing, partial, or scope-creep.
@@ -24,7 +25,7 @@ The author cannot grade their own work — a separate critic must. Dispatch a **
 4. **Require evidence.** Every blocking finding cites `file:line`. No location -> not a blocker.
 5. **Seek reasons to FAIL first.** Skip tooling-enforced checks (lint/format/types the `finish`
    gate or linters catch). Distinguish hard violations from judgement calls.
-6. **Write the artifact atomically** to `docs/reviews/<YYYY-MM-DD>-<feature-slug>.md`
+6. **Write the artifact atomically** to `<artifacts-root>/reviews/<YYYY-MM-DD>-<feature-slug>.md`
    (write a temp file, then rename) using the exact grammar below. Never put HTML comments or
    raw diff lines in the machine-parsed regions.
 
@@ -62,7 +63,7 @@ one or more `- <file:line> — <why it blocks>` items instead of `None.`.
 gatekeeper check review --feature <feature-slug> [--base <ref>]
 ```
 
-Passes only when: the worktree is clean (except `docs/reviews/`), exactly one artifact names the
+Passes only when: the worktree is clean (except `<artifacts-root>/reviews/`), exactly one artifact names the
 current `HEAD`, its `BASE` equals the computed merge-base, both rubric dimensions are present, and
 the verdict is `pass` with no blocking findings. Every ambiguity fails closed. Then transition to
 `finish-branch`.

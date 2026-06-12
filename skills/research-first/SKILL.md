@@ -5,7 +5,7 @@ description: Gather cited evidence about a problem space before writing any desi
 
 # Research First (the research gate)
 
-No design doc until a research note exists at `docs/research/<date>-<slug>.md` and the research gate passes. The design gate is sequence-locked behind it.
+No design doc until a research note exists at `<artifacts-root>/research/<date>-<slug>.md` and the research gate passes (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path). The design gate is sequence-locked behind it.
 
 ## Process
 
@@ -13,7 +13,7 @@ No design doc until a research note exists at `docs/research/<date>-<slug>.md` a
 2. **Gather.** Delegate heavy exploration to a subagent. Give it the sub-questions and a scope boundary. The subagent reads code, searches docs, and gathers facts — the main loop does not do this work itself.
 3. **Cite.** The subagent returns a structured summary. Every factual claim names its source (file path, line range, URL, or doc section). Unsupported claims are marked as assumptions.
 4. **Verify.** Cross-check the top-risk claims before accepting the summary. If a claim contradicts the codebase, resolve the conflict before writing the note.
-5. **Write the note.** Consolidate the verified summary into `docs/research/<YYYY-MM-DD>-<feature-slug>.md` and commit it.
+5. **Write the note.** Consolidate the verified summary into `<artifacts-root>/research/<YYYY-MM-DD>-<feature-slug>.md` and commit it.
 
 ## Gate check
 
@@ -21,14 +21,14 @@ No design doc until a research note exists at `docs/research/<date>-<slug>.md` a
 gatekeeper check research --feature <feature-slug>
 ```
 
-Passes when a file matching `docs/research/*<slug>*.md` exists. When it passes, the design gate unlocks — `gatekeeper check design` will proceed to the spec check instead of failing with "research-first."
+Passes when a file matching `<artifacts-root>/research/*<slug>*.md` exists. When it passes, the design gate unlocks — `gatekeeper check design` will proceed to the spec check instead of failing with "research-first."
 
 ## Sequence lock
 
 `gatekeeper check design` calls `find_doc("research", slug)` before it checks for the spec. If the research note is absent, design returns:
 
 ```
-FAIL design gate: research-first — no docs/research/*<slug>*.md
+FAIL design gate: research-first — no <artifacts-root>/research/*<slug>*.md
 ```
 
 Fix by running this skill and committing the note, then re-run the design gate.

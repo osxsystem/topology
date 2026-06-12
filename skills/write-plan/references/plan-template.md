@@ -2,7 +2,7 @@
 
 - **Date:** <YYYY-MM-DD>
 - **Feature slug:** <feature-slug>
-- **Design:** docs/specs/<YYYY-MM-DD>-<feature-slug>.md
+- **Design:** <artifacts-root>/specs/<YYYY-MM-DD>-<feature-slug>.md
 - **Baseline:** tests green at commit <sha>
 
 ## Files

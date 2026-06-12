@@ -66,14 +66,14 @@ that closes one task cleanly.
 
 1. **`--verified-by <verify-slug>` must be non-empty.** This is the slug of the verification
    evidence.
-2. **`docs/verify/*<slug>*.md` must exist on disk.** `gatekeeper memory write --status done`
+2. **`<artifacts-root>/verify/*<slug>*.md` must exist on disk** (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path). `gatekeeper memory write --status done`
    is refused if that note is absent.
 
 The sequence:
 
 ```bash
 # 1. Produce the evidence note via the verify-before-done skill (it writes
-#    docs/verify/<date>-<slug>.md), then confirm the gate sees it:
+#    <artifacts-root>/verify/<date>-<slug>.md), then confirm the gate sees it:
 gatekeeper check verify --feature <slug>
 
 # 2. Only after the note exists, write the final handoff.
@@ -85,7 +85,7 @@ gatekeeper memory write \
   < body.md
 ```
 
-If you have not produced `docs/verify/*<slug>*.md` yet, see the
+If you have not produced `<artifacts-root>/verify/*<slug>*.md` yet, see the
 [`verify-before-done`](../verify-before-done/SKILL.md) skill. Do not attempt to force
 `status: done` without it — the write will be refused.
 

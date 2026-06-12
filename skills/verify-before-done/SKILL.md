@@ -12,7 +12,7 @@ description: Prove a task is actually complete with evidence before claiming don
 1. **Restate the acceptance criteria** from the design doc.
 2. **Demonstrate each one** with a concrete run: command + actual output. For a bug, reproduce the original symptom, then show it resolved on the same input.
 3. **Run the full suite**, not just the test you touched.
-4. **Record evidence** at `docs/verify/<YYYY-MM-DD>-<feature-slug>.md`: what you ran, what you saw, and which acceptance criterion each item satisfies.
+4. **Record evidence** at `<artifacts-root>/verify/<YYYY-MM-DD>-<feature-slug>.md`: what you ran, what you saw, and which acceptance criterion each item satisfies (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path).
 
 ## Gate check
 

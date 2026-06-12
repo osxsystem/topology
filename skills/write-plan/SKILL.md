@@ -5,7 +5,7 @@ description: Decompose an approved design into a placeholder-free, step-by-step 
 
 # Write Plan (the plan gate)
 
-Turn the approved design into a plan at `docs/plans/<date>-<feature>.md`. No code until the plan gate passes.
+Turn the approved design into a plan at `<artifacts-root>/plans/<date>-<feature>.md` (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path). No code until the plan gate passes.
 
 ## Process
 
@@ -17,7 +17,7 @@ Turn the approved design into a plan at `docs/plans/<date>-<feature>.md`. No cod
    - the test command and its expected output
    - the commit message
 4. **Confirm a clean baseline.** Tests pass before you start.
-5. **Save** to `docs/plans/<YYYY-MM-DD>-<feature-slug>.md` using `references/plan-template.md`, and commit it.
+5. **Save** to `<artifacts-root>/plans/<YYYY-MM-DD>-<feature-slug>.md` using `references/plan-template.md`, and commit it.
 
 ## Gate check
 
