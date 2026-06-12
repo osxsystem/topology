@@ -351,7 +351,10 @@ fn ac1_append_only_claude_md() {
     // --check must exit 0 after the write.
     let (check_code, _, check_err) =
         run_proj(&fw, &proj, &["adapt", "--harness", "claude", "--check"]);
-    assert_eq!(check_code, 0, "--check must exit 0 after write; stderr:\n{check_err}");
+    assert_eq!(
+        check_code, 0,
+        "--check must exit 0 after write; stderr:\n{check_err}"
+    );
 
     let _ = fs::remove_dir_all(&fw);
     let _ = fs::remove_dir_all(&proj);
@@ -414,20 +417,23 @@ fn ac3_codex_managed_block_round_trip() {
     fs::write(proj.join("AGENTS.md"), &tampered).unwrap();
     let (check_code, _out, _err) =
         run_proj(&fw, &proj, &["adapt", "--harness", "codex", "--check"]);
-    assert_eq!(check_code, 1, "--check must report drift (exit 1) on tampered block");
+    assert_eq!(
+        check_code, 1,
+        "--check must report drift (exit 1) on tampered block"
+    );
 
     // Re-run: block restored, outside content preserved.
     let (code2, _stdout2, stderr2) = run_proj(&fw, &proj, &["adapt", "--harness", "codex"]);
-    assert_eq!(code2, 0, "re-run after tamper must succeed; stderr:\n{stderr2}");
+    assert_eq!(
+        code2, 0,
+        "re-run after tamper must succeed; stderr:\n{stderr2}"
+    );
     let after2 = fs::read_to_string(proj.join("AGENTS.md")).unwrap();
     assert!(
         after2.contains("User-written prose that must survive."),
         "user content outside block must still survive after re-run"
     );
-    assert!(
-        !after2.contains("WRONG"),
-        "tampered body must be replaced"
-    );
+    assert!(!after2.contains("WRONG"), "tampered body must be replaced");
 
     // Edit outside the block: user prose change preserved through adapt.
     let with_extra = after2.replace("User-written prose", "UPDATED user prose");
@@ -528,7 +534,10 @@ fn ac6_scaffold_dirs_exist() {
 
     for subdir in &["research", "specs", "plans", "verify", "reviews"] {
         let p = proj.join(".claude").join("topology").join(subdir);
-        assert!(p.exists(), ".claude/topology/{subdir} must exist after adapt");
+        assert!(
+            p.exists(),
+            ".claude/topology/{subdir} must exist after adapt"
+        );
     }
 
     let _ = fs::remove_dir_all(&fw);

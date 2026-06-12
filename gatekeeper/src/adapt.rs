@@ -151,8 +151,6 @@ fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
 /// - Sets `obj["hooks"] = hooks` (adapt-owned, replaced wholesale).
 /// - Ensures `obj["env"]` is an object; sets `obj["env"]["GATEKEEPER_BIN"] = bin`.
 /// - All other top-level keys and all other `env` keys are preserved.
-// Wired into cmd_adapt in task 4.
-#[allow(dead_code)]
 pub(crate) fn merge_claude_settings(
     existing: Option<serde_json::Value>,
     hooks: serde_json::Value,
@@ -513,30 +511,31 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
     Ok(files)
 }
 
-/// Claude: the source-native harness — emit the `.claude/settings.json` hook wiring `install.sh`
-/// otherwise hand-prints, in the loadable array-of-matcher-groups schema.
-/// Hook command paths are rooted at `framework_root` (where the hooks actually live).
-fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
+/// Build the hooks JSON value for the Claude harness. Hook command paths are rooted at
+/// `framework_root` (where the hooks actually live).
+fn build_claude_hooks(framework_root: &Path) -> Result<serde_json::Value, String> {
     require_agents_md(framework_root)?;
     let root = framework_root;
     let skill_activation = root.join("hooks/skill-activation.sh").display().to_string();
     let security_scan = root.join("hooks/security-scan.sh").display().to_string();
-    let settings = serde_json::json!({
-        "hooks": {
-            "UserPromptSubmit": [
-                { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
-            ],
-            "PreToolUse": [
-                {
-                    "matcher": "Bash|Write|Edit|MultiEdit",
-                    "hooks": [ { "type": "command", "command": security_scan, "timeout": 30 } ]
-                }
-            ]
-        }
-    });
-    let mut json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    json.push('\n');
-    Ok(vec![GenFile::new(".claude/settings.json", json)])
+    Ok(serde_json::json!({
+        "UserPromptSubmit": [
+            { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash|Write|Edit|MultiEdit",
+                "hooks": [ { "type": "command", "command": security_scan, "timeout": 30 } ]
+            }
+        ]
+    }))
+}
+
+/// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
+/// Returns an empty list; the AGENTS.md check is done by build_claude_hooks.
+fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
+    build_claude_hooks(framework_root)?;
+    Ok(Vec::new())
 }
 
 /// Detect the likely default integration branch from git at `repo_root`, used when generating
@@ -815,8 +814,6 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
     };
     match built {
         Ok(mut files) => {
-            // For project installs (read_root != write_root), also generate config.toml
-            // at <artifacts_root>/config.toml if it doesn't already exist.
             // Canonicalize for comparison when both paths are on disk; fall back to plain equality.
             let roots_differ = match (
                 std::fs::canonicalize(read_root),
@@ -825,6 +822,109 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 (Ok(r), Ok(w)) => r != w,
                 _ => read_root != write_root,
             };
+
+            // For the claude harness: merge settings.json rather than emitting whole-file.
+            if harness == "claude" {
+                let hooks = match build_claude_hooks(read_root) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("gatekeeper adapt claude: {e}");
+                        return 2;
+                    }
+                };
+                let bin = read_root
+                    .join("bin")
+                    .join("gatekeeper")
+                    .display()
+                    .to_string();
+                let settings_path = write_root.join(".claude").join("settings.json");
+
+                // Read existing settings (if any).
+                let existing: Option<serde_json::Value> = if settings_path.exists() {
+                    match fs::read_to_string(&settings_path) {
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot parse {}: {e}",
+                                    settings_path.display()
+                                );
+                                return 2;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!(
+                                "gatekeeper adapt: cannot read {}: {e}",
+                                settings_path.display()
+                            );
+                            return 2;
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let merged = match merge_claude_settings(existing.clone(), hooks.clone(), &bin) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("gatekeeper adapt: {e}");
+                        return 2;
+                    }
+                };
+                let mut merged_str =
+                    serde_json::to_string_pretty(&merged).expect("serialization cannot fail");
+                merged_str.push('\n');
+
+                if check {
+                    // --check: compare only hooks and env.GATEKEEPER_BIN (user keys not drift).
+                    let disk_ok = existing
+                        .as_ref()
+                        .and_then(|v| v.as_object())
+                        .map(|obj| {
+                            obj.get("hooks") == Some(&hooks)
+                                && obj
+                                    .get("env")
+                                    .and_then(|e| e.get("GATEKEEPER_BIN"))
+                                    .and_then(|b| b.as_str())
+                                    == Some(bin.as_str())
+                        })
+                        .unwrap_or(false);
+                    if !disk_ok {
+                        println!("DRIFT .claude/settings.json");
+                        // continue to collect other drift — but we'll propagate the code below
+                    }
+                    // Apply remaining whole-file checks.
+                    if roots_differ {
+                        if let Some(cfg_file) = build_project_config(write_root) {
+                            files.push(cfg_file);
+                        }
+                    }
+                    let other_code = apply_or_check(&files, write_root, true);
+                    if !disk_ok {
+                        return if other_code == 2 { 2 } else { 1 };
+                    }
+                    return other_code;
+                } else {
+                    // Write mode: apply merge.
+                    if let Some(parent) = settings_path.parent() {
+                        if let Err(e) = fs::create_dir_all(parent) {
+                            eprintln!("gatekeeper adapt: cannot create {}: {e}", parent.display());
+                            return 2;
+                        }
+                    }
+                    if let Err(e) = fs::write(&settings_path, &merged_str) {
+                        eprintln!(
+                            "gatekeeper adapt: cannot write {}: {e}",
+                            settings_path.display()
+                        );
+                        return 2;
+                    }
+                    println!("wrote .claude/settings.json");
+                }
+            }
+
+            // For project installs (read_root != write_root), also generate config.toml
+            // at <artifacts_root>/config.toml if it doesn't already exist.
             if roots_differ {
                 if let Some(cfg_file) = build_project_config(write_root) {
                     files.push(cfg_file);
@@ -940,14 +1040,18 @@ mod tests {
 
     #[test]
     fn claude_wires_both_hooks() {
+        // build_claude_hooks returns the hooks JSON; merge_claude_settings embeds them.
         let root = fixture("claude");
-        let files = build_claude(&root).unwrap();
-        let s = find(&files, ".claude/settings.json");
-        assert!(s.contents.contains("UserPromptSubmit"));
-        assert!(s.contents.contains("PreToolUse"));
-        assert!(s.contents.contains("security-scan.sh"));
-        assert!(s.contents.contains("skill-activation.sh"));
-        assert!(s.contents.contains("Bash|Write|Edit|MultiEdit"));
+        let hooks = build_claude_hooks(&root).unwrap();
+        let merged = merge_claude_settings(None, hooks, "/fw/bin/gatekeeper").unwrap();
+        let s = serde_json::to_string_pretty(&merged).unwrap();
+        assert!(s.contains("UserPromptSubmit"));
+        assert!(s.contains("PreToolUse"));
+        assert!(s.contains("security-scan.sh"));
+        assert!(s.contains("skill-activation.sh"));
+        assert!(s.contains("Bash|Write|Edit|MultiEdit"));
+        // Framework root is referenced in hook paths.
+        assert!(s.contains(root.to_str().unwrap()));
         let _ = fs::remove_dir_all(&root);
     }
 
