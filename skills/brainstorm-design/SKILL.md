@@ -5,14 +5,14 @@ description: Turn a rough idea into an approved written design before any code i
 
 # Brainstorm & Design (the design gate)
 
-No production code until a design doc exists at `docs/specs/<date>-<feature>.md` and the user has approved it.
+No production code until a design doc exists at `<artifacts-root>/specs/<date>-<feature>.md` and the user has approved it (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path).
 
 ## Process
 
 1. **Explore context.** Read the relevant code and docs first. Don't ask what you can find out.
 2. **Clarify, one question at a time.** Ask Socratic questions until the goal, constraints, and success criteria are unambiguous. One question per turn — don't dump a questionnaire.
 3. **Propose 2–3 approaches.** For each: a one-paragraph sketch, plus trade-offs (complexity, risk, reversibility). Recommend one and say why.
-4. **Write the design doc.** Use `references/design-doc-template.md`. Save to `docs/specs/<YYYY-MM-DD>-<feature-slug>.md`.
+4. **Write the design doc.** Use `references/design-doc-template.md`. Save to `<artifacts-root>/specs/<YYYY-MM-DD>-<feature-slug>.md`.
 5. **Get explicit approval.** Present the written doc. Iterate until the user approves.
 6. **Commit the doc** before moving on.
 

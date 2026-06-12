@@ -24,18 +24,18 @@ research  ──►  brainstorm-design  ──►  write-plan  ──►  tdd-lo
 
 You may not write production code until the **research**, **design**, and **plan** gates pass:
 
-- **Design gate** — an approved design doc exists at `docs/specs/<date>-<feature>.md`.
-  Check: `gatekeeper check design --feature <feature>`
-- **Plan gate** — a placeholder-free plan exists at `docs/plans/<date>-<feature>.md`, and the test baseline is clean.
-  Check: `gatekeeper check plan --feature <feature>`
+- **Design gate** — an approved design doc exists at `{{ARTIFACTS_ROOT}}/specs/<date>-<feature>.md`.
+  Check: `{{GATEKEEPER_CMD}} check design --feature <feature>`
+- **Plan gate** — a placeholder-free plan exists at `{{ARTIFACTS_ROOT}}/plans/<date>-<feature>.md`, and the test baseline is clean.
+  Check: `{{GATEKEEPER_CMD}} check plan --feature <feature>`
 - **TDD gate** — every unit of behavior had a test you watched fail *before* the code existed. Code written before its test gets deleted.
-- **Verify gate** — the original symptom is reproduced-then-resolved with evidence, recorded at `docs/verify/<date>-<feature>.md`.
-  Check: `gatekeeper check verify --feature <feature>`
-- **Review gate** — a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to the merge-base, both rubric dimensions present, no blocking findings), recorded at `docs/reviews/<date>-<feature>.md`.
-  Check: `gatekeeper check review --feature <feature> [--base <ref>]`
+- **Verify gate** — the original symptom is reproduced-then-resolved with evidence, recorded at `{{ARTIFACTS_ROOT}}/verify/<date>-<feature>.md`.
+  Check: `{{GATEKEEPER_CMD}} check verify --feature <feature>`
+- **Review gate** — a fresh-context critic's review artifact passes for the current clean `HEAD` (bound to the merge-base, both rubric dimensions present, no blocking findings), recorded at `{{ARTIFACTS_ROOT}}/reviews/<date>-<feature>.md`.
+  Check: `{{GATEKEEPER_CMD}} check review --feature <feature> [--base <ref>]`
 - **Finish gate** — the full test suite passes.
-  Check: `gatekeeper check finish -- <your test command>`
-- **Security scan** — the deterministic safety floor: a `PreToolUse` and pre-commit veto (`gatekeeper scan`) on secrets and dangerous commands. Tool-writes (`Write`/`Edit`) to its rules, hooks, scanner, or settings wiring are gated behind human approval (`ask`), and Bash commands that mutate that wiring are denied. The veto raises the bar but is not absolute: an agent with arbitrary shell can still disable the floor the same way a human can (`git commit --no-verify`, removing the hook) — that residual path is the documented threat boundary (mistakes, not a determined evader), not a defect.
+  Check: `{{GATEKEEPER_CMD}} check finish -- <your test command>`
+- **Security scan** — the deterministic safety floor: a `PreToolUse` and pre-commit veto (`{{GATEKEEPER_CMD}} scan`) on secrets and dangerous commands. Tool-writes (`Write`/`Edit`) to its rules, hooks, scanner, or settings wiring are gated behind human approval (`ask`), and Bash commands that mutate that wiring are denied. The veto raises the bar but is not absolute: an agent with arbitrary shell can still disable the floor the same way a human can (`git commit --no-verify`, removing the hook) — that residual path is the documented threat boundary (mistakes, not a determined evader), not a defect.
 
 ## Rules vs. gates
 
@@ -68,10 +68,8 @@ artifact **body** (the template's *State* / *Next steps* / *Decisions & gotchas*
 stdin; only the frontmatter fields are flags (`--feature`, `--date`, optional `--status`/`--verified-by`):
 
 ```
-gatekeeper memory write --feature <slug> --date <YYYY-MM-DD> < handoff-body.md
+{{GATEKEEPER_CMD}} memory write --feature <slug> --date <YYYY-MM-DD> < handoff-body.md
 ```
 
-A fresh or compacted session recovers by running the `resume` skill, which calls `gatekeeper memory read --feature <slug>` to restore the above state. Do not re-derive the current slice from scratch — read it back.
-## Framework development
-
-Stack conventions and the skill house format live in `docs/DEVELOPMENT.md` — read it before changing this repo.
+A fresh or compacted session recovers by running the `resume` skill, which calls `{{GATEKEEPER_CMD}} memory read --feature <slug>` to restore the above state. Do not re-derive the current slice from scratch — read it back.
+{{BINARY_NOTE}}

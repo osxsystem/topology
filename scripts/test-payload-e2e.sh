@@ -216,7 +216,8 @@ hooks
 instincts
 scripts
 security
-skills"
+skills
+templates"
 
 _assert_payload_layout() {
   # $1 = fixture project path  $2 = label for messages

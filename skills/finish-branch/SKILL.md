@@ -21,7 +21,7 @@ Only enter after `code-review` passes (which itself follows `verify-before-done`
    - open a PR (summarize the design, the plan, and the verification evidence)
    - keep the branch
    - discard
-4. **On merge/PR**, first commit the review artifact for this `HEAD` (`git add docs/reviews/ && git commit -m "docs(review): <feature> code review"`) so the merge records the review, then write the summary from the design, verify, and review docs so the history is legible.
+4. **On merge/PR**, first commit the review artifact for this `HEAD` (`git add <artifacts-root>/reviews/ && git commit -m "docs(review): <feature> code review"`) so the merge records the review (artifacts root: `docs/` in the framework repo, `.claude/topology/` in governed projects — gate FAIL messages print the resolved path), then write the summary from the design, verify, and review docs so the history is legible.
 5. **Clean up** the worktree/branch if one was created for this work.
 
 ## Don't

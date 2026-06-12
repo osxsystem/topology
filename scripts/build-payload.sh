@@ -100,6 +100,15 @@ cp "$REPO_ROOT/security/rules.toml" "$STAGE_DIR/security/rules.toml"
 mkdir -p "$STAGE_DIR/scripts"
 cp "$REPO_ROOT/scripts/fetch-gatekeeper.sh" "$STAGE_DIR/scripts/fetch-gatekeeper.sh"
 
+# templates/ — contract template (Phase 10); CONTRACT.md slot reserved for Phase 9 inject.
+mkdir -p "$STAGE_DIR/templates"
+SRC_TEMPLATE="$REPO_ROOT/templates/CONTRACT.template.md"
+if [[ ! -f "$SRC_TEMPLATE" ]]; then
+  echo "build-payload: missing required file: templates/CONTRACT.template.md" >&2
+  exit 1
+fi
+cp "$SRC_TEMPLATE" "$STAGE_DIR/templates/CONTRACT.template.md"
+
 # AGENTS.md — root-marker file required by is_marked_root() in main.rs.
 # The unpacked payload tree contains skills/ (shipped above); is_marked_root also
 # requires at least one of ROOT_MARKERS = ["AGENTS.md", "gatekeeper"].

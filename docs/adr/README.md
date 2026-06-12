@@ -21,3 +21,4 @@ a real trade-off**.
 | [0013](0013-payload-read-only-artifacts-root-state.md) | 0013 — The payload is read-only at runtime; mutable state anchors to the artifacts root | Accepted |
 | [0014](0014-dispatch-table-over-clap.md) | 0014 — One dispatch table over clap for the CLI surface | Accepted |
 | [0015](0015-plugin-channel-retirement.md) | 0015 — Plugin channel retired: one install channel, payload-only provisioning | Accepted |
+| [0016](0016-contract-split.md) | 0016 — Contract split: portable template + dev doc + generated AGENTS.md | Accepted |

@@ -355,6 +355,134 @@ fn build_project_config(write_root: &Path) -> Option<GenFile> {
     Some(GenFile::new(config_path, contents))
 }
 
+// ── contract render ────────────────────────────────────────────────────────────
+
+/// Context for rendering `CONTRACT.template.md` into a world-specific contract.
+pub(crate) struct ContractCtx {
+    /// The artifact-path prefix: `docs` (framework) or `.claude/topology` (governed project).
+    pub(crate) artifacts_root: String,
+    /// Wiring note appended at the end: empty for the framework, one sentence for governed
+    /// projects (explaining that `gatekeeper` is wired via `GATEKEEPER_BIN` in `.claude/settings.json`).
+    pub(crate) binary_note: String,
+}
+
+/// The three known template placeholders (order matters for fail-closed check: substituted before
+/// scanning for residual `{{`).
+const KNOWN_PLACEHOLDERS: &[&str] = &[
+    "{{ARTIFACTS_ROOT}}",
+    "{{GATEKEEPER_CMD}}",
+    "{{BINARY_NOTE}}",
+];
+
+/// The gatekeeper invocation word used in both contexts (the binary is always on PATH in the
+/// framework; governed projects will wire it via GATEKEEPER_BIN in Phase 9).
+const GATEKEEPER_CMD: &str = "gatekeeper";
+
+/// Trailer appended to the framework render (after the template body).
+/// Contains the pointer to the dev doc that is NOT part of the portable contract.
+const FRAMEWORK_TRAILER: &str = "\
+## Framework development
+
+Stack conventions and the skill house format live in `docs/DEVELOPMENT.md` — read it before changing this repo.
+";
+
+/// Pure render function — no I/O, fully unit-testable.
+///
+/// Substitutes the three known placeholders into `template`. After substitution any remaining
+/// `{{` is a hard error (fail-closed): returns `Err` naming the first offending placeholder.
+///
+/// Unknown placeholders in the template (i.e. `{{FOO}}` where FOO is not in `KNOWN_PLACEHOLDERS`)
+/// are caught via the residual-`{{` check — after the known substitutions any `{{...}}` left is
+/// necessarily unknown, and the error message names it.
+pub(crate) fn render_contract(template: &str, ctx: &ContractCtx) -> Result<String, String> {
+    let mut out = template.to_owned();
+    out = out.replace("{{ARTIFACTS_ROOT}}", &ctx.artifacts_root);
+    out = out.replace("{{GATEKEEPER_CMD}}", GATEKEEPER_CMD);
+    out = out.replace("{{BINARY_NOTE}}", &ctx.binary_note);
+
+    // Fail-closed: any remaining `{{` is an unresolved (unknown) placeholder.
+    if let Some(pos) = out.find("{{") {
+        // Extract the placeholder token for a useful error message.
+        let rest = &out[pos..];
+        let end = rest.find("}}").unwrap_or(rest.len().min(40));
+        let token = &rest[..end + if end < rest.len() { 2 } else { 0 }];
+        return Err(format!(
+            "unresolved placeholder '{token}' — only {:?} are substituted",
+            KNOWN_PLACEHOLDERS
+        ));
+    }
+
+    Ok(out)
+}
+
+/// Build a `ContractCtx` for the framework world: artifacts live at `docs/`, no binary note.
+fn framework_ctx() -> ContractCtx {
+    ContractCtx {
+        artifacts_root: "docs".to_owned(),
+        binary_note: String::new(),
+    }
+}
+
+/// Wiring sentence for the governed-project render (spec §1): the binary resolves through
+/// `GATEKEEPER_BIN`, never an absolute path baked into the contract. The wiring itself
+/// (`.claude/settings.json` env block) is created by Phase 9's integration.
+const PROJECT_BINARY_NOTE: &str = "In governed projects, `gatekeeper` resolves through the \
+`GATEKEEPER_BIN` environment variable wired in `.claude/settings.json` — no PATH \
+installation is needed.\n";
+
+/// Build a `ContractCtx` for a governed-project world: artifacts at `.claude/topology/`.
+fn project_ctx() -> ContractCtx {
+    ContractCtx {
+        artifacts_root: ".claude/topology".to_owned(),
+        binary_note: PROJECT_BINARY_NOTE.to_owned(),
+    }
+}
+
+/// Render the contract for the given world, printing to stdout (exit 0) or error to stderr (exit 2).
+/// `read_root` is the framework root where `templates/CONTRACT.template.md` lives.
+fn cmd_adapt_contract(world: &str, read_root: &Path) -> i32 {
+    let template_path = read_root.join("templates").join("CONTRACT.template.md");
+    let template = match fs::read_to_string(&template_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "gatekeeper adapt --contract: cannot read {}: {e}",
+                template_path.display()
+            );
+            return 2;
+        }
+    };
+
+    let ctx = match world {
+        "framework" => framework_ctx(),
+        "project" => project_ctx(),
+        other => {
+            eprintln!(
+                "gatekeeper adapt --contract: unknown world '{other}' (expected framework|project)"
+            );
+            return 2;
+        }
+    };
+
+    let rendered = match render_contract(&template, &ctx) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("gatekeeper adapt --contract {world}: render error: {e}");
+            return 2;
+        }
+    };
+
+    // For framework world, append the dev-doc trailer.
+    let output = if world == "framework" {
+        format!("{rendered}{FRAMEWORK_TRAILER}")
+    } else {
+        rendered
+    };
+
+    print!("{output}");
+    0
+}
+
 /// Entry point for `gatekeeper adapt ...`. Returns the process exit code (0 / 1 / 2).
 ///
 /// - `read_root`: the framework root — skills, instincts, and AGENTS.md are read from here;
@@ -365,12 +493,13 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
     if let Some(code) = crate::check_help_or_unknown(
         "adapt",
         args,
-        &["--harness", "--check"],
+        &["--harness", "--check", "--contract"],
         crate::lookup_usage("adapt"),
     ) {
         return code;
     }
     let mut harness: Option<String> = None;
+    let mut contract_world: Option<String> = None;
     let mut check = false;
     let mut i = 0;
     while i < args.len() {
@@ -385,6 +514,16 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     return 2;
                 }
             },
+            "--contract" => match args.get(i + 1) {
+                Some(w) => {
+                    contract_world = Some(w.clone());
+                    i += 2;
+                }
+                None => {
+                    eprintln!("gatekeeper adapt: --contract needs a value (framework|project)");
+                    return 2;
+                }
+            },
             "--check" => {
                 check = true;
                 i += 1;
@@ -395,8 +534,14 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
             }
         }
     }
+
+    // --contract path: print render to stdout, exit 0 / 2 only.
+    if let Some(world) = contract_world {
+        return cmd_adapt_contract(&world, read_root);
+    }
+
     let Some(harness) = harness else {
-        eprintln!("gatekeeper adapt: --harness <codex|cursor|opencode|claude> is required");
+        eprintln!("gatekeeper adapt: --harness <codex|cursor|opencode|claude> or --contract <framework|project> is required");
         return 2;
     };
     // Build generates paths relative to write_root; hook paths embedded in config point at
@@ -580,5 +725,104 @@ mod tests {
         let names: Vec<String> = load_skills(&root).into_iter().map(|s| s.name).collect();
         assert_eq!(names, vec!["brainstorm-design", "getting-started"]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // ── render_contract unit tests (AC-2, AC-3) ───────────────────────────────
+
+    const MINI_TEMPLATE: &str =
+        "Root: {{ARTIFACTS_ROOT}}\nCmd: {{GATEKEEPER_CMD}}\nNote: {{BINARY_NOTE}}\n";
+
+    #[test]
+    fn framework_render_contains_docs_and_no_topology() {
+        let ctx = framework_ctx();
+        let rendered = render_contract(MINI_TEMPLATE, &ctx).unwrap();
+        assert!(
+            rendered.contains("docs"),
+            "framework render must contain 'docs': {rendered}"
+        );
+        assert!(
+            !rendered.contains(".claude/topology"),
+            "framework render must not contain '.claude/topology': {rendered}"
+        );
+        assert!(
+            rendered.contains("gatekeeper"),
+            "must contain gatekeeper cmd"
+        );
+    }
+
+    #[test]
+    fn project_render_contains_topology_and_no_docs_root() {
+        let ctx = project_ctx();
+        let rendered = render_contract(MINI_TEMPLATE, &ctx).unwrap();
+        assert!(
+            rendered.contains(".claude/topology"),
+            "project render must contain '.claude/topology': {rendered}"
+        );
+        // The `docs` literal must NOT appear as an artifact-path prefix in the rendered output.
+        // (MINI_TEMPLATE has no docs/ path, but check the rendered text doesn't re-introduce it.)
+        assert!(
+            !rendered.contains("docs"),
+            "project render must not contain 'docs': {rendered}"
+        );
+        assert!(
+            rendered.contains("GATEKEEPER_BIN"),
+            "project render carries the wiring note (spec §1): {rendered}"
+        );
+    }
+
+    #[test]
+    fn framework_render_has_no_wiring_note() {
+        let rendered = render_contract(MINI_TEMPLATE, &framework_ctx()).unwrap();
+        assert!(
+            !rendered.contains("GATEKEEPER_BIN"),
+            "framework render must not carry the governed wiring note: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_fail_closed_unknown_placeholder() {
+        let bad = "Valid: {{ARTIFACTS_ROOT}}\nBad: {{UNKNOWN_TOKEN}}\n";
+        let ctx = framework_ctx();
+        let err = render_contract(bad, &ctx).unwrap_err();
+        assert!(
+            err.contains("UNKNOWN_TOKEN"),
+            "error must name the offending placeholder: {err}"
+        );
+    }
+
+    #[test]
+    fn render_fail_closed_typo_placeholder() {
+        // A common typo: wrong casing / extra chars.
+        let bad = "Root: {{ARTIFACT_ROOT}}\n"; // missing 'S'
+        let ctx = framework_ctx();
+        let err = render_contract(bad, &ctx).unwrap_err();
+        assert!(
+            err.contains("ARTIFACT_ROOT"),
+            "error must name the typo'd placeholder: {err}"
+        );
+    }
+
+    #[test]
+    fn render_binary_note_substituted() {
+        let ctx = ContractCtx {
+            artifacts_root: "docs".to_owned(),
+            binary_note: "The binary is wired via GATEKEEPER_BIN.\n".to_owned(),
+        };
+        let rendered = render_contract(MINI_TEMPLATE, &ctx).unwrap();
+        assert!(
+            rendered.contains("The binary is wired via GATEKEEPER_BIN."),
+            "binary_note must appear in output: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_empty_binary_note_produces_no_residual() {
+        let ctx = framework_ctx(); // binary_note is empty
+        let rendered = render_contract(MINI_TEMPLATE, &ctx).unwrap();
+        // The {{BINARY_NOTE}} token must be gone (replaced with empty string).
+        assert!(
+            !rendered.contains("{{"),
+            "no residual {{ after render: {rendered}"
+        );
     }
 }
