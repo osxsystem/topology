@@ -127,10 +127,13 @@ fn a_hijack_class_ancestor_no_longer_wins() {
     );
 
     // After the rewrite the ancestor must NOT appear as the framework root.
-    // Resolution falls back → stderr fallback warning is emitted once.
-    assert!(
-        stderr.contains("no framework root found") || stderr.contains("falling back"),
-        "expected fallback warning on stderr; got:\nstdout: {stdout}\nstderr: {stderr}"
+    // Resolution falls back → the stderr warning appears EXACTLY once per process
+    // (spec AC-7), even though doctor resolves the framework root multiple times.
+    let warnings = stderr.matches("no framework root found").count();
+    assert_eq!(
+        warnings, 1,
+        "expected exactly one fallback warning on stderr, got {warnings};\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
     // Doctor F1: the unmarked fallback root must cause a non-zero exit.
     assert_ne!(

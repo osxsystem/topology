@@ -409,10 +409,15 @@ pub(crate) fn resolve_root(
 pub(crate) fn framework_root() -> PathBuf {
     let r = resolved_root();
     if r.source == RootSource::Fallback {
-        eprintln!(
-            "gatekeeper: no framework root found; falling back to {} (run 'gatekeeper doctor')",
-            r.path.display()
-        );
+        // Most commands resolve the framework root more than once per process
+        // (e.g. directly and again via artifacts_root()); warn only on the first.
+        static FALLBACK_WARNING: std::sync::Once = std::sync::Once::new();
+        FALLBACK_WARNING.call_once(|| {
+            eprintln!(
+                "gatekeeper: no framework root found; falling back to {} (run 'gatekeeper doctor')",
+                r.path.display()
+            );
+        });
     }
     r.path
 }
@@ -904,13 +909,10 @@ fn handle_doctor(args: &[String]) -> i32 {
     if let Some(code) = check_help_or_unknown("doctor", args, &[], lookup_usage("doctor")) {
         return code;
     }
+    // No fallback eprintln here: doctor's own report carries `resolved by: fallback (cwd)`
+    // and the F1 FAIL line, and cmd_doctor's internal artifacts_root() call already routes
+    // through the Once-guarded warning in framework_root().
     let rr = resolved_root();
-    if rr.source == RootSource::Fallback {
-        eprintln!(
-            "gatekeeper: no framework root found; falling back to {} (run 'gatekeeper doctor')",
-            rr.path.display()
-        );
-    }
     doctor::cmd_doctor(&rr.path, &rr.source)
 }
 
