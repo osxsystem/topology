@@ -167,7 +167,7 @@ pub(crate) static SUBCOMMANDS: &[SubcommandSpec] = &[
     SubcommandSpec {
         name: "adapt",
         usage: "USAGE:\n  gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]\n  gatekeeper adapt --contract <framework|project>",
-        synopsis: "Generate harness native config from the source, or render the operating contract.",
+        synopsis: "Generate harness native config (and, on a project install, scaffold + deliver the contract append-only), or render the operating contract.",
         known_flags: &["--harness", "--check", "--contract"],
         handler: |args| adapt::cmd_adapt(args, &framework_root(), &project_root()),
     },

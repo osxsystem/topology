@@ -2,6 +2,39 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.9.0 — 2026-06-12
+
+`adapt` v2: project integration (ROADMAP Phase 9). One `gatekeeper adapt` run in a governed project
+now delivers everything the project needs — append-only, idempotent, never clobbering user content.
+
+### Project integration (project installs: framework root ≠ project root)
+
+- **Scaffold** `.claude/topology/{research,specs,plans,verify,reviews}/` (with `.gitkeep`) for the
+  gate artifacts.
+- **`GATEKEEPER_BIN` wiring** — `.claude/settings.json` is now **merged**, not regenerated: the hook
+  wiring and `env.GATEKEEPER_BIN = <framework>/bin/gatekeeper` are set while every other top-level
+  and `env` key the user added is preserved. `gatekeeper check …` resolves with no PATH/sudo step.
+- **Contract delivery, append-only / import-first** — the operating contract is rendered to
+  `.topology/CONTRACT.md`; for `--harness claude` an `@.topology/CONTRACT.md` import line is appended
+  to `CLAUDE.md` (created with just that line if missing); for `--harness codex` a marker-delimited
+  **managed block** is upserted in `AGENTS.md` (re-runs update it in place; malformed markers fail
+  closed). User content in those files is never rewritten.
+- **`--check`** reports drift (exit 1) without writing for all of the above — a missing import line,
+  an out-of-date managed block, or absent scaffold/contract.
+
+### Internals
+
+- Two pure partial-file primitives in `adapt.rs` (`ensure_import_line`, `ensure_managed_block`) plus
+  `merge_claude_settings`, all unit-tested; whole-file generation (`GenFile`/`apply_or_check`) is
+  unchanged for adapt-owned files.
+- The portable contract template gains a gate-shaped **first-session instruction** (bare project
+  stub → write the project's docs above the import, then proceed); `AGENTS.md` regenerated from it.
+
+### Carried to a follow-up (Phase 9.1)
+
+- cursor/opencode contract delivery via their native always-on surface (they already carry the
+  contract through generated rules), and the opt-in `adapt --init-agent` bootstrap.
+
 ## v0.8.0 — 2026-06-12
 
 Contract split: portable template + generated AGENTS.md + skill wording sweep (ROADMAP Phase 10).

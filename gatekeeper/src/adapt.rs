@@ -9,6 +9,258 @@ use std::path::{Path, PathBuf};
 
 use crate::instinct;
 
+/// The outcome of a partial-file edit (user-owned files).
+#[derive(Debug)]
+pub(crate) enum Edit {
+    /// The file already contained the desired content — no write needed.
+    Unchanged,
+    /// The file was missing; the new content is provided.
+    Created(String),
+    /// The file existed and was updated; the new content is provided.
+    Updated(String),
+    /// The file is malformed in a way that makes safe editing impossible; the message names the problem.
+    Failed(String),
+}
+
+/// Ensure `line` is present (exact match after trimming) in `existing`.
+///
+/// - `None` → `Created(line + "\n")`.
+/// - `line` found in any row (trimmed) → `Unchanged`.
+/// - Otherwise → `Updated` with `line` appended on its own line, single trailing newline.
+fn ensure_import_line(existing: Option<&str>, line: &str) -> Edit {
+    let line_trimmed = line.trim();
+    match existing {
+        None => Edit::Created(format!("{line}\n")),
+        Some(text) => {
+            if text.lines().any(|l| l.trim() == line_trimmed) {
+                Edit::Unchanged
+            } else {
+                // Append on its own line, ensuring exactly one trailing newline.
+                let mut out = text.to_owned();
+                // Strip any trailing newlines, then add separator + line + newline.
+                let trimmed_end = out.trim_end_matches('\n');
+                let len = trimmed_end.len();
+                out.truncate(len);
+                // Skip the separator for an empty file so no leading blank line is prepended
+                // (mirrors ensure_managed_block's guard).
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(line);
+                out.push('\n');
+                Edit::Updated(out)
+            }
+        }
+    }
+}
+
+const BLOCK_BEGIN: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
+const BLOCK_END: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
+
+/// Ensure the marker-delimited managed block contains `body`.
+///
+/// - No block → append wrapped body (create file if missing).
+/// - Block present, identical body → `Unchanged`.
+/// - Block present, different body → replace in place, outside content preserved.
+/// - Malformed (begin without end, or duplicate begin) → `Failed` naming the problem.
+fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
+    let wrapped = format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}\n");
+
+    match existing {
+        None => Edit::Created(wrapped),
+        Some(text) => {
+            let begin_count = text.matches(BLOCK_BEGIN).count();
+            let end_count = text.matches(BLOCK_END).count();
+
+            if begin_count > 1 {
+                return Edit::Failed(format!(
+                    "duplicate '{BLOCK_BEGIN}' markers — cannot safely update"
+                ));
+            }
+            if begin_count == 1 && end_count == 0 {
+                return Edit::Failed(format!(
+                    "'{BLOCK_BEGIN}' without '{BLOCK_END}' — malformed block"
+                ));
+            }
+            if begin_count == 0 {
+                // No block; append to existing content.
+                let mut out = text.to_owned();
+                let trimmed_end = out.trim_end_matches('\n');
+                let len = trimmed_end.len();
+                out.truncate(len);
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&wrapped);
+                return Edit::Updated(out);
+            }
+
+            // Block is present and well-formed (1 begin, ≥1 end).
+            let begin_pos = text.find(BLOCK_BEGIN).unwrap();
+            // End marker search starts after begin marker. A lone END *before* BEGIN slips past
+            // both malformed guards (begin_count == 1, end_count == 1), so the search here can come
+            // up empty — fail closed rather than unwrap-panic.
+            let end_search_start = begin_pos + BLOCK_BEGIN.len();
+            let Some(end_rel) = text[end_search_start..].find(BLOCK_END) else {
+                return Edit::Failed(format!(
+                    "'{BLOCK_END}' precedes '{BLOCK_BEGIN}' — malformed block"
+                ));
+            };
+            let end_pos = end_search_start + end_rel;
+            let end_end = end_pos + BLOCK_END.len();
+
+            // Extract the current body (between begin+\n and \n+end).
+            let inner_start = begin_pos + BLOCK_BEGIN.len();
+            // Skip the leading newline after begin marker.
+            let inner_start = if text[inner_start..].starts_with('\n') {
+                inner_start + 1
+            } else {
+                inner_start
+            };
+            // Body ends before the end marker; trim one leading newline before end.
+            let inner_end = if end_pos > 0 && text.as_bytes()[end_pos - 1] == b'\n' {
+                end_pos - 1
+            } else {
+                end_pos
+            };
+            let current_body = &text[inner_start..inner_end];
+
+            if current_body == body {
+                return Edit::Unchanged;
+            }
+
+            // Replace the block in place.
+            let before = &text[..begin_pos];
+            // After the end marker, consume one trailing newline if present.
+            let after_start = if end_end < text.len() && text.as_bytes()[end_end] == b'\n' {
+                end_end + 1
+            } else {
+                end_end
+            };
+            let after = &text[after_start..];
+
+            let out = format!("{before}{wrapped}{after}");
+            Edit::Updated(out)
+        }
+    }
+}
+
+/// Merge hook wiring and `GATEKEEPER_BIN` into an existing (or absent) settings JSON.
+///
+/// - `existing = None` or `null` → start from `{}`.
+/// - Non-object existing → `Err("not a JSON object")`.
+/// - Sets `obj["hooks"] = hooks` (adapt-owned, replaced wholesale).
+/// - Ensures `obj["env"]` is an object; sets `obj["env"]["GATEKEEPER_BIN"] = bin`.
+/// - All other top-level keys and all other `env` keys are preserved.
+pub(crate) fn merge_claude_settings(
+    existing: Option<serde_json::Value>,
+    hooks: serde_json::Value,
+    bin: &str,
+) -> Result<serde_json::Value, String> {
+    let mut obj = match existing {
+        None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+        Some(serde_json::Value::Object(m)) => m,
+        Some(_) => return Err("not a JSON object".to_owned()),
+    };
+
+    obj.insert("hooks".to_owned(), hooks);
+
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(env_map) = env {
+        env_map.insert(
+            "GATEKEEPER_BIN".to_owned(),
+            serde_json::Value::String(bin.to_owned()),
+        );
+    } else {
+        // env exists but is not an object; replace it.
+        let mut env_map = serde_json::Map::new();
+        env_map.insert(
+            "GATEKEEPER_BIN".to_owned(),
+            serde_json::Value::String(bin.to_owned()),
+        );
+        obj.insert("env".to_owned(), serde_json::Value::Object(env_map));
+    }
+
+    Ok(serde_json::Value::Object(obj))
+}
+
+/// Apply or check partial-file edits (for user-owned files).
+///
+/// Write mode: applies Created/Updated, prints what changed.
+/// Check mode: exit 1 on any would-change, exit 2 on any Failed; never writes.
+///
+/// Returns exit code: 0 = up-to-date; 1 = drift; 2 = failed.
+fn apply_edits(edits: &[(String, Edit)], check: bool) -> i32 {
+    let mut drift = false;
+    let mut failed = false;
+
+    for (path, edit) in edits {
+        match edit {
+            Edit::Unchanged => {}
+            Edit::Created(contents) => {
+                if check {
+                    println!("DRIFT {path}");
+                    drift = true;
+                } else {
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            if let Err(e) = fs::create_dir_all(parent) {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot create {}: {e}",
+                                    parent.display()
+                                );
+                                return 2;
+                            }
+                        }
+                    }
+                    if let Err(e) = fs::write(path, contents) {
+                        eprintln!("gatekeeper adapt: cannot write {path}: {e}");
+                        return 2;
+                    }
+                    println!("wrote {path}");
+                }
+            }
+            Edit::Updated(contents) => {
+                if check {
+                    println!("DRIFT {path}");
+                    drift = true;
+                } else {
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            if let Err(e) = fs::create_dir_all(parent) {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot create {}: {e}",
+                                    parent.display()
+                                );
+                                return 2;
+                            }
+                        }
+                    }
+                    if let Err(e) = fs::write(path, contents) {
+                        eprintln!("gatekeeper adapt: cannot write {path}: {e}");
+                        return 2;
+                    }
+                    println!("updated {path}");
+                }
+            }
+            Edit::Failed(msg) => {
+                eprintln!("gatekeeper adapt: {msg} in {path}");
+                failed = true;
+            }
+        }
+    }
+
+    if failed {
+        2
+    } else if drift {
+        1
+    } else {
+        0
+    }
+}
+
 /// A single file an adapter will write, relative to the framework root.
 struct GenFile {
     rel_path: PathBuf,
@@ -258,30 +510,31 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
     Ok(files)
 }
 
-/// Claude: the source-native harness — emit the `.claude/settings.json` hook wiring `install.sh`
-/// otherwise hand-prints, in the loadable array-of-matcher-groups schema.
-/// Hook command paths are rooted at `framework_root` (where the hooks actually live).
-fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
+/// Build the hooks JSON value for the Claude harness. Hook command paths are rooted at
+/// `framework_root` (where the hooks actually live).
+fn build_claude_hooks(framework_root: &Path) -> Result<serde_json::Value, String> {
     require_agents_md(framework_root)?;
     let root = framework_root;
     let skill_activation = root.join("hooks/skill-activation.sh").display().to_string();
     let security_scan = root.join("hooks/security-scan.sh").display().to_string();
-    let settings = serde_json::json!({
-        "hooks": {
-            "UserPromptSubmit": [
-                { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
-            ],
-            "PreToolUse": [
-                {
-                    "matcher": "Bash|Write|Edit|MultiEdit",
-                    "hooks": [ { "type": "command", "command": security_scan, "timeout": 30 } ]
-                }
-            ]
-        }
-    });
-    let mut json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    json.push('\n');
-    Ok(vec![GenFile::new(".claude/settings.json", json)])
+    Ok(serde_json::json!({
+        "UserPromptSubmit": [
+            { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "Bash|Write|Edit|MultiEdit",
+                "hooks": [ { "type": "command", "command": security_scan, "timeout": 30 } ]
+            }
+        ]
+    }))
+}
+
+/// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
+/// Returns an empty list; the AGENTS.md check is done by build_claude_hooks.
+fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
+    build_claude_hooks(framework_root)?;
+    Ok(Vec::new())
 }
 
 /// Detect the likely default integration branch from git at `repo_root`, used when generating
@@ -560,8 +813,6 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
     };
     match built {
         Ok(mut files) => {
-            // For project installs (read_root != write_root), also generate config.toml
-            // at <artifacts_root>/config.toml if it doesn't already exist.
             // Canonicalize for comparison when both paths are on disk; fall back to plain equality.
             let roots_differ = match (
                 std::fs::canonicalize(read_root),
@@ -570,12 +821,161 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 (Ok(r), Ok(w)) => r != w,
                 _ => read_root != write_root,
             };
+
+            // The claude harness *merges* `.claude/settings.json` (hooks + env.GATEKEEPER_BIN)
+            // rather than emitting a whole file, so the user's other keys survive. Its verdict is
+            // carried in `settings_code` and aggregated at the end — never an early return, or the
+            // import / scaffold / contract checks below would be skipped (a hollow `--check`).
+            let mut settings_code = 0;
+            if harness == "claude" {
+                let hooks = match build_claude_hooks(read_root) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("gatekeeper adapt claude: {e}");
+                        return 2;
+                    }
+                };
+                let bin = read_root
+                    .join("bin")
+                    .join("gatekeeper")
+                    .display()
+                    .to_string();
+                let settings_path = write_root.join(".claude").join("settings.json");
+
+                let existing: Option<serde_json::Value> = if settings_path.exists() {
+                    match fs::read_to_string(&settings_path) {
+                        Ok(s) => match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot parse {}: {e}",
+                                    settings_path.display()
+                                );
+                                return 2;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!(
+                                "gatekeeper adapt: cannot read {}: {e}",
+                                settings_path.display()
+                            );
+                            return 2;
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // Drift = our two managed keys absent or wrong; the user's other keys are never drift.
+                let disk_ok = existing
+                    .as_ref()
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.get("hooks") == Some(&hooks)
+                            && obj
+                                .get("env")
+                                .and_then(|e| e.get("GATEKEEPER_BIN"))
+                                .and_then(|b| b.as_str())
+                                == Some(bin.as_str())
+                    })
+                    .unwrap_or(false);
+
+                if check {
+                    if !disk_ok {
+                        println!("DRIFT .claude/settings.json");
+                        settings_code = 1;
+                    }
+                } else if !disk_ok {
+                    let merged = match merge_claude_settings(existing, hooks, &bin) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("gatekeeper adapt: {e}");
+                            return 2;
+                        }
+                    };
+                    let mut merged_str =
+                        serde_json::to_string_pretty(&merged).expect("serialization cannot fail");
+                    merged_str.push('\n');
+                    if let Some(parent) = settings_path.parent() {
+                        if let Err(e) = fs::create_dir_all(parent) {
+                            eprintln!("gatekeeper adapt: cannot create {}: {e}", parent.display());
+                            return 2;
+                        }
+                    }
+                    if let Err(e) = fs::write(&settings_path, &merged_str) {
+                        eprintln!(
+                            "gatekeeper adapt: cannot write {}: {e}",
+                            settings_path.display()
+                        );
+                        return 2;
+                    }
+                    println!("wrote .claude/settings.json");
+                }
+            }
+
+            // For project installs (roots differ): config.toml (never overwrites), the artifact
+            // scaffold, the rendered contract, and the contract pointer into the harness-native
+            // surface (append-only import for claude / managed block for codex).
+            let mut edits: Vec<(String, Edit)> = Vec::new();
             if roots_differ {
                 if let Some(cfg_file) = build_project_config(write_root) {
                     files.push(cfg_file);
                 }
+
+                for subdir in &["research", "specs", "plans", "verify", "reviews"] {
+                    files.push(GenFile::new(
+                        format!(".claude/topology/{subdir}/.gitkeep"),
+                        String::new(),
+                    ));
+                }
+
+                let template_path = read_root.join("templates").join("CONTRACT.template.md");
+                match fs::read_to_string(&template_path) {
+                    Ok(template) => match render_contract(&template, &project_ctx()) {
+                        Ok(rendered) => files.push(GenFile::new(".topology/CONTRACT.md", rendered)),
+                        Err(e) => {
+                            eprintln!("gatekeeper adapt: contract render error: {e}");
+                            return 2;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!(
+                            "gatekeeper adapt: cannot read {}: {e}",
+                            template_path.display()
+                        );
+                        return 2;
+                    }
+                }
+
+                // cursor/opencode deliver the contract via their own always-on surface (Phase 9.1).
+                match harness.as_str() {
+                    "claude" => {
+                        let p = write_root.join("CLAUDE.md");
+                        let existing = fs::read_to_string(&p).ok();
+                        edits.push((
+                            p.to_string_lossy().into_owned(),
+                            ensure_import_line(existing.as_deref(), "@.topology/CONTRACT.md"),
+                        ));
+                    }
+                    "codex" => {
+                        const CODEX_BLOCK_BODY: &str = "See `.topology/CONTRACT.md` for the Topology operating contract (gate sequence, conduct rules).";
+                        let p = write_root.join("AGENTS.md");
+                        let existing = fs::read_to_string(&p).ok();
+                        edits.push((
+                            p.to_string_lossy().into_owned(),
+                            ensure_managed_block(existing.as_deref(), CODEX_BLOCK_BODY),
+                        ));
+                    }
+                    _ => {}
+                }
             }
-            apply_or_check(&files, write_root, check)
+
+            let files_code = apply_or_check(&files, write_root, check);
+            let edits_code = apply_edits(&edits, check);
+            // Aggregate: a hard failure (2) dominates drift (1) dominates success (0).
+            [settings_code, files_code, edits_code]
+                .into_iter()
+                .fold(0, |acc, c| if acc == 2 || c == 2 { 2 } else { acc.max(c) })
         }
         Err(e) => {
             eprintln!("gatekeeper adapt {harness}: {e}");
@@ -685,14 +1085,18 @@ mod tests {
 
     #[test]
     fn claude_wires_both_hooks() {
+        // build_claude_hooks returns the hooks JSON; merge_claude_settings embeds them.
         let root = fixture("claude");
-        let files = build_claude(&root).unwrap();
-        let s = find(&files, ".claude/settings.json");
-        assert!(s.contents.contains("UserPromptSubmit"));
-        assert!(s.contents.contains("PreToolUse"));
-        assert!(s.contents.contains("security-scan.sh"));
-        assert!(s.contents.contains("skill-activation.sh"));
-        assert!(s.contents.contains("Bash|Write|Edit|MultiEdit"));
+        let hooks = build_claude_hooks(&root).unwrap();
+        let merged = merge_claude_settings(None, hooks, "/fw/bin/gatekeeper").unwrap();
+        let s = serde_json::to_string_pretty(&merged).unwrap();
+        assert!(s.contains("UserPromptSubmit"));
+        assert!(s.contains("PreToolUse"));
+        assert!(s.contains("security-scan.sh"));
+        assert!(s.contains("skill-activation.sh"));
+        assert!(s.contains("Bash|Write|Edit|MultiEdit"));
+        // Framework root is referenced in hook paths.
+        assert!(s.contains(root.to_str().unwrap()));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -824,5 +1228,240 @@ mod tests {
             !rendered.contains("{{"),
             "no residual {{ after render: {rendered}"
         );
+    }
+
+    // ── Task 1: red fixtures for partial-file primitives ──────────────────────
+
+    // ensure_import_line tests
+
+    #[test]
+    fn import_line_none_creates_file_with_line() {
+        let result = ensure_import_line(None, "@.topology/CONTRACT.md");
+        match result {
+            Edit::Created(contents) => {
+                assert_eq!(contents, "@.topology/CONTRACT.md\n");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_line_already_present_is_unchanged() {
+        let existing = "# My file\n\n@.topology/CONTRACT.md\n\nSome content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "expected Unchanged, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn import_line_absent_appended_preserving_content() {
+        let existing = "# My project\n\nSome user content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        match result {
+            Edit::Updated(contents) => {
+                assert!(
+                    contents.starts_with("# My project\n"),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.contains("Some user content."),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.ends_with("@.topology/CONTRACT.md\n"),
+                    "import appended at end"
+                );
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_line_trimmed_match_counts_as_present() {
+        // Line present but with trailing whitespace in the existing file.
+        let existing = "# My file\n@.topology/CONTRACT.md   \nOther content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "trimmed match → Unchanged, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn import_line_empty_file_has_no_leading_newline() {
+        // Some("") is an empty-but-existing file: no separator blank line should be prepended
+        // (mirrors ensure_managed_block's `if !out.is_empty()` guard).
+        let result = ensure_import_line(Some(""), "@.topology/CONTRACT.md");
+        match result {
+            Edit::Updated(contents) => assert_eq!(
+                contents, "@.topology/CONTRACT.md\n",
+                "empty file → import with no leading newline"
+            ),
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    // ensure_managed_block tests
+
+    const BEGIN_MARKER: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
+    const END_MARKER: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
+
+    #[test]
+    fn managed_block_none_creates_wrapped_body() {
+        let body = "See `.topology/CONTRACT.md` for the operating contract.";
+        let result = ensure_managed_block(None, body);
+        match result {
+            Edit::Created(contents) => {
+                assert!(contents.contains(BEGIN_MARKER));
+                assert!(contents.contains(END_MARKER));
+                assert!(contents.contains(body));
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_absent_appended_to_existing_content() {
+        let existing = "# Prior content\n\nSome user text.\n";
+        let body = "See `.topology/CONTRACT.md`.";
+        let result = ensure_managed_block(Some(existing), body);
+        match result {
+            Edit::Updated(contents) => {
+                assert!(
+                    contents.starts_with("# Prior content\n"),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.contains("Some user text."),
+                    "prior content preserved"
+                );
+                assert!(contents.contains(BEGIN_MARKER));
+                assert!(contents.contains(END_MARKER));
+                assert!(contents.contains(body));
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_identical_body_is_unchanged() {
+        let body = "See `.topology/CONTRACT.md`.";
+        let existing = format!("# Prior\n\n{BEGIN_MARKER}\n{body}\n{END_MARKER}\n");
+        let result = ensure_managed_block(Some(&existing), body);
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "identical body → Unchanged, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn managed_block_differing_body_replaces_in_place() {
+        let old_body = "Old content.";
+        let new_body = "New content.";
+        let outside_before = "# Prior\n\nUser content above.\n";
+        let outside_after = "\nUser content below.\n";
+        let existing =
+            format!("{outside_before}{BEGIN_MARKER}\n{old_body}\n{END_MARKER}{outside_after}");
+        let result = ensure_managed_block(Some(&existing), new_body);
+        match result {
+            Edit::Updated(contents) => {
+                assert!(
+                    contents.contains("User content above."),
+                    "content before preserved"
+                );
+                assert!(
+                    contents.contains("User content below."),
+                    "content after preserved"
+                );
+                assert!(contents.contains(new_body), "new body present");
+                assert!(!contents.contains(old_body), "old body removed");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_malformed_begin_without_end_is_failed() {
+        let existing = format!("# Something\n{BEGIN_MARKER}\nNo end marker here.\n");
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "malformed → Failed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn managed_block_reversed_markers_is_failed() {
+        // END precedes BEGIN: both malformed guards miss it (begin_count == 1, end_count == 1),
+        // so control reaches the well-formed path. The END search (which starts after BEGIN) finds
+        // nothing — must fail closed, never panic.
+        let existing = format!("# Something\n{END_MARKER}\nstuff\n{BEGIN_MARKER}\n");
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "reversed markers should fail-closed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn managed_block_duplicate_begin_is_failed() {
+        let existing = format!(
+            "# Something\n{BEGIN_MARKER}\nsome content\n{BEGIN_MARKER}\nmore\n{END_MARKER}\n"
+        );
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "duplicate begin → Failed, got {result:?}"
+        );
+    }
+
+    // merge_claude_settings tests
+
+    #[test]
+    fn merge_settings_none_existing_sets_hooks_and_env() {
+        let hooks = serde_json::json!({"UserPromptSubmit": []});
+        let result = merge_claude_settings(None, hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(result["hooks"], hooks);
+        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
+    }
+
+    #[test]
+    fn merge_settings_preserves_user_model_key() {
+        let existing = serde_json::json!({"model": "claude-opus-4-5", "other": "value"});
+        let hooks = serde_json::json!({"PreToolUse": []});
+        let result =
+            merge_claude_settings(Some(existing), hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(
+            result["model"], "claude-opus-4-5",
+            "user model key preserved"
+        );
+        assert_eq!(result["other"], "value", "other key preserved");
+        assert_eq!(result["hooks"], hooks);
+        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
+    }
+
+    #[test]
+    fn merge_settings_preserves_other_env_keys() {
+        let existing = serde_json::json!({
+            "env": {"MY_VAR": "hello", "GATEKEEPER_BIN": "old_path"}
+        });
+        let hooks = serde_json::json!({});
+        let result = merge_claude_settings(Some(existing), hooks, "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
+        assert_eq!(
+            result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper",
+            "BIN updated"
+        );
+    }
+
+    #[test]
+    fn merge_settings_non_object_existing_is_err() {
+        let existing = serde_json::json!([1, 2, 3]);
+        let result = merge_claude_settings(Some(existing), serde_json::json!({}), "/bin/gk");
+        assert!(result.is_err(), "non-object existing → Err");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("not a JSON object"), "error message: {msg}");
     }
 }

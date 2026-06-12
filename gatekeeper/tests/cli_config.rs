@@ -159,12 +159,18 @@ fn finish_no_cmd_no_config_exits_2_with_config_hint() {
 
 // ── review gate + config.base_branch ─────────────────────────────────────────
 
-/// Build a minimal framework dir (skills/ + AGENTS.md, no .git).
+/// Build a minimal framework dir (skills/ + AGENTS.md + templates/, no .git).
 fn scratch_fw(tag: &str) -> PathBuf {
     let fw = std::env::temp_dir().join(format!("topo_cfg_fw_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&fw);
     fs::create_dir_all(fw.join("skills")).unwrap();
+    fs::create_dir_all(fw.join("templates")).unwrap();
     fs::write(fw.join("AGENTS.md"), "").unwrap();
+    fs::write(
+        fw.join("templates").join("CONTRACT.template.md"),
+        "# Contract\nRoot: {{ARTIFACTS_ROOT}}\nCmd: {{GATEKEEPER_CMD}}\n{{BINARY_NOTE}}",
+    )
+    .unwrap();
     fw
 }
 
