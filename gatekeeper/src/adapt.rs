@@ -1279,6 +1279,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn import_line_empty_file_has_no_leading_newline() {
+        // Some("") is an empty-but-existing file: no separator blank line should be prepended
+        // (mirrors ensure_managed_block's `if !out.is_empty()` guard).
+        let result = ensure_import_line(Some(""), "@.topology/CONTRACT.md");
+        match result {
+            Edit::Updated(contents) => assert_eq!(
+                contents, "@.topology/CONTRACT.md\n",
+                "empty file → import with no leading newline"
+            ),
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
     // ensure_managed_block tests
 
     const BEGIN_MARKER: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
@@ -1365,6 +1379,19 @@ mod tests {
         assert!(
             matches!(result, Edit::Failed(_)),
             "malformed → Failed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn managed_block_reversed_markers_is_failed() {
+        // END precedes BEGIN: both malformed guards miss it (begin_count == 1, end_count == 1),
+        // so control reaches the well-formed path. The END search (which starts after BEGIN) finds
+        // nothing — must fail closed, never panic.
+        let existing = format!("# Something\n{END_MARKER}\nstuff\n{BEGIN_MARKER}\n");
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "reversed markers should fail-closed, got {result:?}"
         );
     }
 
