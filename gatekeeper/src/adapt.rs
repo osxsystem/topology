@@ -812,7 +812,11 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 _ => read_root != write_root,
             };
 
-            // For the claude harness: merge settings.json rather than emitting whole-file.
+            // The claude harness *merges* `.claude/settings.json` (hooks + env.GATEKEEPER_BIN)
+            // rather than emitting a whole file, so the user's other keys survive. Its verdict is
+            // carried in `settings_code` and aggregated at the end — never an early return, or the
+            // import / scaffold / contract checks below would be skipped (a hollow `--check`).
+            let mut settings_code = 0;
             if harness == "claude" {
                 let hooks = match build_claude_hooks(read_root) {
                     Ok(h) => h,
@@ -828,7 +832,6 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     .to_string();
                 let settings_path = write_root.join(".claude").join("settings.json");
 
-                // Read existing settings (if any).
                 let existing: Option<serde_json::Value> = if settings_path.exists() {
                     match fs::read_to_string(&settings_path) {
                         Ok(s) => match serde_json::from_str(&s) {
@@ -853,48 +856,36 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     None
                 };
 
-                let merged = match merge_claude_settings(existing.clone(), hooks.clone(), &bin) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln!("gatekeeper adapt: {e}");
-                        return 2;
-                    }
-                };
-                let mut merged_str =
-                    serde_json::to_string_pretty(&merged).expect("serialization cannot fail");
-                merged_str.push('\n');
+                // Drift = our two managed keys absent or wrong; the user's other keys are never drift.
+                let disk_ok = existing
+                    .as_ref()
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.get("hooks") == Some(&hooks)
+                            && obj
+                                .get("env")
+                                .and_then(|e| e.get("GATEKEEPER_BIN"))
+                                .and_then(|b| b.as_str())
+                                == Some(bin.as_str())
+                    })
+                    .unwrap_or(false);
 
                 if check {
-                    // --check: compare only hooks and env.GATEKEEPER_BIN (user keys not drift).
-                    let disk_ok = existing
-                        .as_ref()
-                        .and_then(|v| v.as_object())
-                        .map(|obj| {
-                            obj.get("hooks") == Some(&hooks)
-                                && obj
-                                    .get("env")
-                                    .and_then(|e| e.get("GATEKEEPER_BIN"))
-                                    .and_then(|b| b.as_str())
-                                    == Some(bin.as_str())
-                        })
-                        .unwrap_or(false);
                     if !disk_ok {
                         println!("DRIFT .claude/settings.json");
-                        // continue to collect other drift — but we'll propagate the code below
+                        settings_code = 1;
                     }
-                    // Apply remaining whole-file checks.
-                    if roots_differ {
-                        if let Some(cfg_file) = build_project_config(write_root) {
-                            files.push(cfg_file);
+                } else if !disk_ok {
+                    let merged = match merge_claude_settings(existing, hooks, &bin) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("gatekeeper adapt: {e}");
+                            return 2;
                         }
-                    }
-                    let other_code = apply_or_check(&files, write_root, true);
-                    if !disk_ok {
-                        return if other_code == 2 { 2 } else { 1 };
-                    }
-                    return other_code;
-                } else {
-                    // Write mode: apply merge.
+                    };
+                    let mut merged_str =
+                        serde_json::to_string_pretty(&merged).expect("serialization cannot fail");
+                    merged_str.push('\n');
                     if let Some(parent) = settings_path.parent() {
                         if let Err(e) = fs::create_dir_all(parent) {
                             eprintln!("gatekeeper adapt: cannot create {}: {e}", parent.display());
@@ -912,14 +903,15 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 }
             }
 
-            // For project installs (read_root != write_root), also generate config.toml
-            // at <artifacts_root>/config.toml if it doesn't already exist.
+            // For project installs (roots differ): config.toml (never overwrites), the artifact
+            // scaffold, the rendered contract, and the contract pointer into the harness-native
+            // surface (append-only import for claude / managed block for codex).
+            let mut edits: Vec<(String, Edit)> = Vec::new();
             if roots_differ {
                 if let Some(cfg_file) = build_project_config(write_root) {
                     files.push(cfg_file);
                 }
 
-                // Scaffold the five artifact subdirectories with .gitkeep files.
                 for subdir in &["research", "specs", "plans", "verify", "reviews"] {
                     files.push(GenFile::new(
                         format!(".claude/topology/{subdir}/.gitkeep"),
@@ -927,13 +919,10 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     ));
                 }
 
-                // Render and deliver the project contract (whole-file GenFile).
                 let template_path = read_root.join("templates").join("CONTRACT.template.md");
                 match fs::read_to_string(&template_path) {
                     Ok(template) => match render_contract(&template, &project_ctx()) {
-                        Ok(rendered) => {
-                            files.push(GenFile::new(".topology/CONTRACT.md", rendered));
-                        }
+                        Ok(rendered) => files.push(GenFile::new(".topology/CONTRACT.md", rendered)),
                         Err(e) => {
                             eprintln!("gatekeeper adapt: contract render error: {e}");
                             return 2;
@@ -948,41 +937,35 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     }
                 }
 
-                // Deliver the contract pointer into the harness-native surface.
-                // claude: append @.topology/CONTRACT.md import to CLAUDE.md.
-                // codex: upsert managed block in AGENTS.md.
-                // cursor/opencode: unchanged from v1 (Phase 9.1).
+                // cursor/opencode deliver the contract via their own always-on surface (Phase 9.1).
                 match harness.as_str() {
                     "claude" => {
-                        let claude_md_path = write_root.join("CLAUDE.md");
-                        let existing = fs::read_to_string(&claude_md_path).ok();
-                        let edit =
-                            ensure_import_line(existing.as_deref(), "@.topology/CONTRACT.md");
-                        let edits = vec![(claude_md_path.to_string_lossy().into_owned(), edit)];
-                        let code = apply_edits(&edits, check);
-                        if code != 0 {
-                            // Exit early on error; on drift (code=1) still report and return.
-                            let files_code = apply_or_check(&files, write_root, check);
-                            return if code == 2 || files_code == 2 { 2 } else { 1 };
-                        }
+                        let p = write_root.join("CLAUDE.md");
+                        let existing = fs::read_to_string(&p).ok();
+                        edits.push((
+                            p.to_string_lossy().into_owned(),
+                            ensure_import_line(existing.as_deref(), "@.topology/CONTRACT.md"),
+                        ));
                     }
                     "codex" => {
-                        let agents_md_path = write_root.join("AGENTS.md");
-                        let existing = fs::read_to_string(&agents_md_path).ok();
-                        const CODEX_BLOCK_BODY: &str =
-                            "See `.topology/CONTRACT.md` for the Topology operating contract (gate sequence, conduct rules).";
-                        let edit = ensure_managed_block(existing.as_deref(), CODEX_BLOCK_BODY);
-                        let edits = vec![(agents_md_path.to_string_lossy().into_owned(), edit)];
-                        let code = apply_edits(&edits, check);
-                        if code != 0 {
-                            let files_code = apply_or_check(&files, write_root, check);
-                            return if code == 2 || files_code == 2 { 2 } else { 1 };
-                        }
+                        const CODEX_BLOCK_BODY: &str = "See `.topology/CONTRACT.md` for the Topology operating contract (gate sequence, conduct rules).";
+                        let p = write_root.join("AGENTS.md");
+                        let existing = fs::read_to_string(&p).ok();
+                        edits.push((
+                            p.to_string_lossy().into_owned(),
+                            ensure_managed_block(existing.as_deref(), CODEX_BLOCK_BODY),
+                        ));
                     }
                     _ => {}
                 }
             }
-            apply_or_check(&files, write_root, check)
+
+            let files_code = apply_or_check(&files, write_root, check);
+            let edits_code = apply_edits(&edits, check);
+            // Aggregate: a hard failure (2) dominates drift (1) dominates success (0).
+            [settings_code, files_code, edits_code]
+                .into_iter()
+                .fold(0, |acc, c| if acc == 2 || c == 2 { 2 } else { acc.max(c) })
         }
         Err(e) => {
             eprintln!("gatekeeper adapt {harness}: {e}");

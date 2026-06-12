@@ -365,6 +365,58 @@ fn ac1_append_only_claude_md() {
     let _ = fs::remove_dir_all(&proj);
 }
 
+/// AC-1c (regression): claude `--check` must detect a removed import line. Guards against the
+/// settings-merge path early-returning before the import / scaffold / contract deliveries are
+/// checked — a false "up to date" would be exactly the hollow-gate failure Topology forbids.
+#[test]
+fn ac1c_check_detects_removed_import() {
+    let fw = scratch_fw_with_template("ac1c");
+    let proj = scratch_proj("ac1c");
+
+    let (code, _, err) = run_proj(&fw, &proj, &["adapt", "--harness", "claude"]);
+    assert_eq!(code, 0, "initial adapt must succeed; stderr:\n{err}");
+
+    // Tamper: strip the import line from the user-owned CLAUDE.md.
+    let claude_md = proj.join("CLAUDE.md");
+    let stripped: String = fs::read_to_string(&claude_md)
+        .unwrap()
+        .lines()
+        .filter(|l| l.trim() != "@.topology/CONTRACT.md")
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&claude_md, &stripped).unwrap();
+
+    let (check_code, out, err) = run_proj(&fw, &proj, &["adapt", "--harness", "claude", "--check"]);
+    assert_eq!(
+        check_code, 1,
+        "--check must detect the missing import; stdout:\n{out}\nstderr:\n{err}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
+/// AC-6b (regression): claude `--check` must detect a deleted `.topology/CONTRACT.md`.
+#[test]
+fn ac6b_check_detects_missing_contract() {
+    let fw = scratch_fw_with_template("ac6b");
+    let proj = scratch_proj("ac6b");
+
+    let (code, _, err) = run_proj(&fw, &proj, &["adapt", "--harness", "claude"]);
+    assert_eq!(code, 0, "initial adapt must succeed; stderr:\n{err}");
+
+    fs::remove_file(proj.join(".topology").join("CONTRACT.md")).unwrap();
+
+    let (check_code, out, err) = run_proj(&fw, &proj, &["adapt", "--harness", "claude", "--check"]);
+    assert_eq!(
+        check_code, 1,
+        "--check must detect the missing contract; stdout:\n{out}\nstderr:\n{err}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
 /// AC-2: CLAUDE.md created if missing, containing only the import line.
 #[test]
 fn ac2_create_if_missing_claude_md() {
