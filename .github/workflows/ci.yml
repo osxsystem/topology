@@ -37,7 +37,7 @@ jobs:
         run: cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync
 
   installer:
-    name: Offline installer tests (test-payload, test-fetch, test-e2e)
+    name: Offline installer tests (test-payload, test-fetch, test-e2e, test-e2e-reference)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -57,7 +57,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Offline installer test suite
-        run: just test-payload && just test-fetch && just test-e2e
+        run: just test-payload && just test-fetch && just test-e2e && just test-e2e-reference
 
   network:
     name: Network gates (deny, links) — non-blocking
