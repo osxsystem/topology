@@ -176,7 +176,7 @@ fi
 if grep -qF "\"GATEKEEPER_BIN\": \"$GK_BIN\"" "$SETTINGS"; then
   pass "O2: settings.json env.GATEKEEPER_BIN points at the installed binary"
 else
-  fail "O2: settings.json env.GATEKEEPER_BIN not set to $GK_BIN (settings: $(cat "$SETTINGS" 2>/dev/null | tr -d '\n' | head -c 300))"
+  fail "O2: settings.json env.GATEKEEPER_BIN not set to $GK_BIN (settings: $(tr -d '\n' < "$SETTINGS" 2>/dev/null | head -c 300))"
 fi
 # Invoke --version from the project with PATH scrubbed of any gatekeeper.
 O2_VERSION_OUT="$(cd "$PROJ_DIR" && env PATH=/usr/bin:/bin "$GK_BIN" --version 2>&1)" || true
@@ -262,7 +262,7 @@ fi
 # ── O5: design artifact lands under the project ─────────────────────────────────
 # doctor (run from the project) names the project artifacts root.
 O5_ARTIFACTS_EXPECTED="$PROJ_DIR/.claude/topology"
-O5_DOCTOR_OUT="$(cd "$PROJ_DIR" && TOPOLOGY_ROOT="$PROJ_DIR/.topology" "$GK_BIN" doctor 2>&1 || true)"
+O5_DOCTOR_OUT="$(cd "$PROJ_DIR" && TOPOLOGY_ROOT="$PROJ_DIR/.topology" "$GK_BIN" doctor 2>&1)" || true
 # doctor canonicalizes the path (e.g. /tmp -> /private/tmp on macOS); compare against the
 # resolved real path of the expected artifacts root.
 O5_ARTIFACTS_REAL="$(cd "$PROJ_DIR" && pwd -P)/.claude/topology"
@@ -335,8 +335,8 @@ GLOBAL_NEUTRAL_CWD="$(mktempdir)"
 GLOBAL_DOCTOR_OUT="$(
   cd "$GLOBAL_NEUTRAL_CWD" \
     && env -u TOPOLOGY_ROOT -u TOPOLOGY_HOME -u GATEKEEPER_BIN \
-       PATH=/usr/bin:/bin HOME="$GLOBAL_HOME" "$GK_EXTERNAL" doctor 2>&1 || true
-)"
+       PATH=/usr/bin:/bin HOME="$GLOBAL_HOME" "$GK_EXTERNAL" doctor 2>&1
+)" || true
 if echo "$GLOBAL_DOCTOR_OUT" | grep -qE '^resolved by: global ~/\.topology$'; then
   pass "global: doctor from a separate project resolves the framework root via GlobalHome"
 else
