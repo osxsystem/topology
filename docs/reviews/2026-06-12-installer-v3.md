@@ -1,12 +1,13 @@
 VERDICT: pass
-HEAD: 2803163fb9cc83edd1c60a50205a854deda6239c
+HEAD: 8b661795099d5d59e086aee6d8d76791df13d655
 BASE: 87301c09c607e5a597a05bfcef3c8af2649abcaa
 
 # Code review — installer-v3 (Phase 8, v0.7.0)
 
-Branch: `feat/installer-v3`, reviewed 2026-06-12; **revision 2** after the human review on
-PR #43 (revision 1 reviewed `9da8ace…`; the §Revision 2 section below covers the response
-commits `43f6230` + `2803163`).
+Branch: `feat/installer-v3`, reviewed 2026-06-12; **revision 3** after two human review
+rounds on PR #43 (revision 1 reviewed `9da8ace…`; §Revision 2 covers the first-round
+response `43f6230` + `2803163`; §Revision 3 covers the standards-round response
+`1d2f0d5` + `8b66179`).
 Reviewer: orchestrator pass (Fable 5 main loop) over the delegated implementation
 (Sonnet subagent), per the standing review focus on fabricated interfaces and
 overclaimed guarantees.
@@ -91,3 +92,36 @@ Spec `docs/specs/2026-06-12-installer-v3.md`, plan `docs/plans/2026-06-12-instal
   response commit as designed; recommitted `--no-verify` with the documented override per
   the Track 2 grant. ✔
 - Suite stays offline: test K's prompt input is a file via the seam, not a tty. ✔
+
+## Revision 3 — response to the standards review round
+
+### Spec/plan
+
+- **Hard violation 1 (ADR layer) fixed:** new [ADR-0015](../adr/0015-plugin-channel-retirement.md)
+  records the retirement (deletions, guard narrowing, `ROOT_MARKERS`, latest-with-pin version
+  resolution, global payload + backup rescue, ADR-0012 §4 alignment); ADR-0010/0011 statuses
+  amended in part with the surviving decisions named; README index updated (docs lint R2
+  guards the links). ✔
+- **Hard violation 2 (rescue gap) fixed in code, not a decision note:** both rescue
+  functions now cover clone-era `memory/artifacts/*` exactly as ADR-0013's consequence
+  names — local into `.claude/topology/memory/`, global into the backup dir — with
+  sentinel assertions in both legacy e2e scenarios. ✔
+- **Judgement call 3:** global installs name `$ROOT (global payload)` in the closing
+  manifest, symmetric with local scope. ✔
+- **Judgement call 4 adopted as behavior, recorded in ADR-0015 §6:**
+  `_handle_existing_root` decides-then-acts; headless without `--yes` refuses with a remedy
+  (the printed default is "N" — ADR-0012 §4), rescue + delete run only on confirmed
+  replacement, and a refusal leaves no backup litter. New e2e test L (headless refusal,
+  clone untouched) plus a no-backup assertion in test K. ✔
+- Reviewer's trivial notes: AC-4 letter-vs-spirit accepted as-is; the spec §3 "post-install
+  notes" gap stands covered by the doctor health check (no new note added — Phase 9 owns
+  the `GATEKEEPER_BIN` wiring story). ✔
+
+### Standards
+
+- Independently re-run at this head: `just check` (461/6 + docs lint incl. the new ADR
+  links), `just test-e2e` (53/0), `just test-payload` (26/0); verify gate static +
+  `GATEKEEPER_SHADOW=replay` PASS. ✔
+- The non-interactive behavior change (delete → refuse) is a deliberate safety inversion
+  recorded in ADR-0015 §6; all e2e install invocations use `--yes` or the seam, so no
+  scenario relied on the old destructive default. ✔
