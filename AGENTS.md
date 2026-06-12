@@ -55,20 +55,6 @@ The gate sequence governs the lifecycle. These govern moment-to-moment conduct *
 
 Goal-driven execution needs no new gate: Topology already encodes it. "Fix the bug" → reproduce-then-resolve is the **verify gate**; "add behavior" → watch the test fail first is the **tdd gate**. Those two already convert weak goals ("make it work") into checkable ones.
 
-## Stack conventions for this repo
-
-- **Rust**: the `gatekeeper` crate. Run `cargo fmt` and `cargo clippy -- -D warnings` before finishing. Tests live alongside code in `#[cfg(test)]` modules.
-- **Bash**: all scripts start with `set -euo pipefail`. Keep them POSIX-friendly where practical; they are the portable glue.
-- **Markdown**: skills follow the house description format (see below). Keep each `SKILL.md` body under ~5k tokens; push detail into `references/`.
-
-## Skill description house format
-
-Every skill's `description` frontmatter:
-
-> `<verb phrase: what it does>. Use when <concrete user-facing trigger conditions and keywords>.`
-
-Third person, one line, real user vocabulary, slightly pushy (agents under-trigger). When a skill fails to trigger, widen its trigger language; when it over-triggers, narrow its scope.
-
 ## Compact Instructions
 
 When the context window is compacted (auto or manual), the compacted summary **must retain**:
@@ -86,3 +72,6 @@ gatekeeper memory write --feature <slug> --date <YYYY-MM-DD> < handoff-body.md
 ```
 
 A fresh or compacted session recovers by running the `resume` skill, which calls `gatekeeper memory read --feature <slug>` to restore the above state. Do not re-derive the current slice from scratch — read it back.
+## Framework development
+
+Stack conventions and the skill house format live in `docs/DEVELOPMENT.md` — read it before changing this repo.

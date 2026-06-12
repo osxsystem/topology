@@ -176,7 +176,6 @@ fn unknown_placeholder_exits_2_and_names_it() {
 /// `gatekeeper adapt --contract framework` (which appends the dev-doc trailer).
 /// This guards against hand-edits or template drift.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn agents_md_byte_equal_to_framework_render() {
     // Use the real repo root (not a scratch dir) — this is the dogfood assertion.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
