@@ -825,4 +825,174 @@ mod tests {
             "no residual {{ after render: {rendered}"
         );
     }
+
+    // ── Task 1: red fixtures for partial-file primitives ──────────────────────
+
+    // ensure_import_line tests
+
+    #[test]
+    fn import_line_none_creates_file_with_line() {
+        let result = ensure_import_line(None, "@.topology/CONTRACT.md");
+        match result {
+            Edit::Created(contents) => {
+                assert_eq!(contents, "@.topology/CONTRACT.md\n");
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_line_already_present_is_unchanged() {
+        let existing = "# My file\n\n@.topology/CONTRACT.md\n\nSome content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        assert!(matches!(result, Edit::Unchanged), "expected Unchanged, got {result:?}");
+    }
+
+    #[test]
+    fn import_line_absent_appended_preserving_content() {
+        let existing = "# My project\n\nSome user content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        match result {
+            Edit::Updated(contents) => {
+                assert!(contents.starts_with("# My project\n"), "prior content preserved");
+                assert!(contents.contains("Some user content."), "prior content preserved");
+                assert!(contents.ends_with("@.topology/CONTRACT.md\n"), "import appended at end");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_line_trimmed_match_counts_as_present() {
+        // Line present but with trailing whitespace in the existing file.
+        let existing = "# My file\n@.topology/CONTRACT.md   \nOther content.\n";
+        let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
+        assert!(matches!(result, Edit::Unchanged), "trimmed match → Unchanged, got {result:?}");
+    }
+
+    // ensure_managed_block tests
+
+    const BEGIN_MARKER: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
+    const END_MARKER: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
+
+    #[test]
+    fn managed_block_none_creates_wrapped_body() {
+        let body = "See `.topology/CONTRACT.md` for the operating contract.";
+        let result = ensure_managed_block(None, body);
+        match result {
+            Edit::Created(contents) => {
+                assert!(contents.contains(BEGIN_MARKER));
+                assert!(contents.contains(END_MARKER));
+                assert!(contents.contains(body));
+            }
+            other => panic!("expected Created, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_absent_appended_to_existing_content() {
+        let existing = "# Prior content\n\nSome user text.\n";
+        let body = "See `.topology/CONTRACT.md`.";
+        let result = ensure_managed_block(Some(existing), body);
+        match result {
+            Edit::Updated(contents) => {
+                assert!(contents.starts_with("# Prior content\n"), "prior content preserved");
+                assert!(contents.contains("Some user text."), "prior content preserved");
+                assert!(contents.contains(BEGIN_MARKER));
+                assert!(contents.contains(END_MARKER));
+                assert!(contents.contains(body));
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_identical_body_is_unchanged() {
+        let body = "See `.topology/CONTRACT.md`.";
+        let existing = format!(
+            "# Prior\n\n{BEGIN_MARKER}\n{body}\n{END_MARKER}\n"
+        );
+        let result = ensure_managed_block(Some(&existing), body);
+        assert!(matches!(result, Edit::Unchanged), "identical body → Unchanged, got {result:?}");
+    }
+
+    #[test]
+    fn managed_block_differing_body_replaces_in_place() {
+        let old_body = "Old content.";
+        let new_body = "New content.";
+        let outside_before = "# Prior\n\nUser content above.\n";
+        let outside_after = "\nUser content below.\n";
+        let existing = format!(
+            "{outside_before}{BEGIN_MARKER}\n{old_body}\n{END_MARKER}{outside_after}"
+        );
+        let result = ensure_managed_block(Some(&existing), new_body);
+        match result {
+            Edit::Updated(contents) => {
+                assert!(contents.contains("User content above."), "content before preserved");
+                assert!(contents.contains("User content below."), "content after preserved");
+                assert!(contents.contains(new_body), "new body present");
+                assert!(!contents.contains(old_body), "old body removed");
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_block_malformed_begin_without_end_is_failed() {
+        let existing = format!("# Something\n{BEGIN_MARKER}\nNo end marker here.\n");
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(matches!(result, Edit::Failed(_)), "malformed → Failed, got {result:?}");
+    }
+
+    #[test]
+    fn managed_block_duplicate_begin_is_failed() {
+        let existing = format!(
+            "# Something\n{BEGIN_MARKER}\nsome content\n{BEGIN_MARKER}\nmore\n{END_MARKER}\n"
+        );
+        let result = ensure_managed_block(Some(&existing), "body");
+        assert!(matches!(result, Edit::Failed(_)), "duplicate begin → Failed, got {result:?}");
+    }
+
+    // merge_claude_settings tests
+
+    #[test]
+    fn merge_settings_none_existing_sets_hooks_and_env() {
+        let hooks = serde_json::json!({"UserPromptSubmit": []});
+        let result = merge_claude_settings(None, hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(result["hooks"], hooks);
+        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
+    }
+
+    #[test]
+    fn merge_settings_preserves_user_model_key() {
+        let existing = serde_json::json!({"model": "claude-opus-4-5", "other": "value"});
+        let hooks = serde_json::json!({"PreToolUse": []});
+        let result =
+            merge_claude_settings(Some(existing), hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(result["model"], "claude-opus-4-5", "user model key preserved");
+        assert_eq!(result["other"], "value", "other key preserved");
+        assert_eq!(result["hooks"], hooks);
+        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
+    }
+
+    #[test]
+    fn merge_settings_preserves_other_env_keys() {
+        let existing = serde_json::json!({
+            "env": {"MY_VAR": "hello", "GATEKEEPER_BIN": "old_path"}
+        });
+        let hooks = serde_json::json!({});
+        let result =
+            merge_claude_settings(Some(existing), hooks, "/fw/bin/gatekeeper").unwrap();
+        assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
+        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper", "BIN updated");
+    }
+
+    #[test]
+    fn merge_settings_non_object_existing_is_err() {
+        let existing = serde_json::json!([1, 2, 3]);
+        let result = merge_claude_settings(Some(existing), serde_json::json!({}), "/bin/gk");
+        assert!(result.is_err(), "non-object existing → Err");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("not a JSON object"), "error message: {msg}");
+    }
 }
