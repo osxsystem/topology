@@ -559,3 +559,53 @@ fn presence_mode_shadow_result_is_static() {
     );
     let _ = fs::remove_dir_all(&root);
 }
+
+// ── Measurement trigger must not leak into replayed children (D5) ─────────────
+
+/// A replayed command's process must NOT inherit GATEKEEPER_SHADOW from the
+/// engine's own environment: execution is explicit, never implied (D5), and a
+/// leaked trigger distorts nested gatekeeper invocations (e.g. a replayed
+/// `cargo test` whose integration tests assert default-mode static behavior).
+///
+/// `printenv GATEKEEPER_SHADOW` exits 0 iff the variable is present in the
+/// child env — so with the scrub in place its per-command SHADOW result must
+/// be "fail" (non-zero exit because the var is absent).
+#[test]
+fn shadow_env_not_inherited_by_replayed_children() {
+    let root = setup_verify_root(
+        "env_scrub",
+        "env-scrub",
+        "[verify]\nallowed_command_prefixes = [\"printenv\"]\n",
+        "# Verify\n\n```evidence\n$ printenv GATEKEEPER_SHADOW\n```\n",
+    );
+    let (code, _out, err) = run3_env(
+        &root,
+        "GATEKEEPER_SHADOW",
+        "replay",
+        &["check", "verify", "--feature", "env-scrub"],
+    );
+    // Env-triggered replay never changes the presence-mode exit code.
+    assert_eq!(code, 0, "presence exit code must stand; stderr: {err}");
+    let mut saw_command = false;
+    for line in err.lines() {
+        if let Some(rest) = line.strip_prefix("SHADOW ") {
+            let v: serde_json::Value = serde_json::from_str(rest).unwrap();
+            if v["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("printenv"))
+            {
+                saw_command = true;
+                assert_eq!(
+                    v["result"].as_str(),
+                    Some("fail"),
+                    "printenv must NOT see GATEKEEPER_SHADOW in the child env; line: {line}"
+                );
+            }
+        }
+    }
+    assert!(
+        saw_command,
+        "expected a SHADOW line for the printenv command; stderr: {err}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

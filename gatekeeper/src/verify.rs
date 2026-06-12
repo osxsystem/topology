@@ -549,6 +549,10 @@ fn spawn_child(program: &str, args: &[&str], cwd: &Path) -> std::io::Result<Chil
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
+        // D5: execution requires an *explicit* GATEKEEPER_SHADOW — a replayed command's
+        // descendants (e.g. a `cargo test` whose integration tests invoke gatekeeper)
+        // must not inherit the measurement trigger from this engine's own run.
+        .env_remove("GATEKEEPER_SHADOW")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
@@ -560,6 +564,7 @@ fn spawn_child(program: &str, args: &[&str], cwd: &Path) -> std::io::Result<Chil
     Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .env_remove("GATEKEEPER_SHADOW")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
