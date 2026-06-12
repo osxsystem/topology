@@ -41,7 +41,11 @@ fn ensure_import_line(existing: Option<&str>, line: &str) -> Edit {
                 let trimmed_end = out.trim_end_matches('\n');
                 let len = trimmed_end.len();
                 out.truncate(len);
-                out.push('\n');
+                // Skip the separator for an empty file so no leading blank line is prepended
+                // (mirrors ensure_managed_block's guard).
+                if !out.is_empty() {
+                    out.push('\n');
+                }
                 out.push_str(line);
                 out.push('\n');
                 Edit::Updated(out)
@@ -93,9 +97,15 @@ fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
 
             // Block is present and well-formed (1 begin, ≥1 end).
             let begin_pos = text.find(BLOCK_BEGIN).unwrap();
-            // End marker search starts after begin marker.
+            // End marker search starts after begin marker. A lone END *before* BEGIN slips past
+            // both malformed guards (begin_count == 1, end_count == 1), so the search here can come
+            // up empty — fail closed rather than unwrap-panic.
             let end_search_start = begin_pos + BLOCK_BEGIN.len();
-            let end_rel = text[end_search_start..].find(BLOCK_END).unwrap();
+            let Some(end_rel) = text[end_search_start..].find(BLOCK_END) else {
+                return Edit::Failed(format!(
+                    "'{BLOCK_END}' precedes '{BLOCK_BEGIN}' — malformed block"
+                ));
+            };
             let end_pos = end_search_start + end_rel;
             let end_end = end_pos + BLOCK_END.len();
 
