@@ -100,7 +100,7 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
     if !is_marked_root(root) {
         println!(
             "framework root: FAIL: {} is not a marked topology root \
-             (missing skills/ + one of AGENTS.md / gatekeeper/ / .claude-plugin/); \
+             (missing skills/ + one of AGENTS.md / gatekeeper/); \
              run 'gatekeeper doctor' after 'gatekeeper adapt --harness claude' or set TOPOLOGY_ROOT",
             root.display()
         );

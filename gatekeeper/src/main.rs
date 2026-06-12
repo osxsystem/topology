@@ -294,7 +294,7 @@ fn print_help() {
     println!();
 }
 
-const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper", ".claude-plugin"];
+const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper"];
 
 pub(crate) fn is_marked_root(dir: &Path) -> bool {
     dir.join("skills").is_dir() && ROOT_MARKERS.iter().any(|m| dir.join(m).exists())
@@ -2661,7 +2661,6 @@ mod tests {
     /// This test starts #[ignore] (red fixture); it is un-ignored in task 3 once
     /// ROOT_MARKERS is updated to ["AGENTS.md", "gatekeeper"].
     #[test]
-    #[ignore = "red fixture: un-ignored in task 3 when ROOT_MARKERS drops .claude-plugin"]
     fn skills_and_claude_plugin_alone_is_not_a_marked_root() {
         let base = env::temp_dir().join("topology_test_plugin_not_root");
         let _ = fs::remove_dir_all(&base);

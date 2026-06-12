@@ -136,41 +136,10 @@ After install, if a `gatekeeper` binary on PATH has a different version (e.g. an
 `gatekeeper doctor` also appends an informational version-skew note to its `PATH gatekeeper:` probe
 (it stays exit 0 — the note is a flag, not a failure).
 
-**Put `gatekeeper` on your `PATH`** (optional but recommended, so you can call it from anywhere):
-
-```bash
-sudo ln -sf "$HOME/.topology/bin/gatekeeper" /usr/local/bin/gatekeeper
-```
-
-### Option B — As a Claude Code plugin (binary self-provisions)
-
-Topology also ships as a Claude Code plugin. The binary **self-provisions on the first session** via
-the `SessionStart` hook — no separate build step required:
-
-```bash
-/plugin marketplace add osxsystem/topology    # run inside Claude Code
-/plugin install topology@topology
-```
-
-The plugin wires three hooks via `${CLAUDE_PLUGIN_ROOT}`:
-
-- `SessionStart` → `ensure-gatekeeper.sh`: silently exits if any binary resolves; otherwise calls
-  `fetch-gatekeeper.sh` to download and verify the prebuilt binary into
-  `${CLAUDE_PLUGIN_DATA}/bin/gatekeeper`, and reports the installed path. Fail-open: on download
-  failure it prints an advisory (naming `scripts/install.sh` and `cargo build` as remedies) and
-  exits 0 so the session still starts.
-- `UserPromptSubmit` → `skill-activation.sh`: skill routing (advisory, exits 0 with message if no
-  binary).
-- `PreToolUse` → `security-scan.sh`: security veto (fail-closed: denies when no binary resolves).
-
-Plugin installs register the `skills/` directory natively via Claude Code's auto-discovery — there
-is no `"skills"` field in `plugin.json`. Adding such a field would risk double-registration
-(documented in ADR-0011).
-
-### Option C — Generate native config for another harness
+### Option B — Generate native config for another harness
 
 If you use Codex, Cursor, or OpenCode, generate that harness's native config from the one Markdown
-source (these coexist with the plugin — they don't replace it):
+source:
 
 ```bash
 gatekeeper adapt --harness codex      # .codex/config.toml      (AGENTS.md carries the contract)
@@ -213,9 +182,8 @@ can never stand in for the veto, while skill routing (advisory) accepts `PATH` f
 |---|---|---|
 | 1 | `$GATEKEEPER_BIN` (env override) | Explicit override; wins when set and executable |
 | 2 | `$ROOT/bin/gatekeeper` | Installer-placed prebuilt (explicit local choice) |
-| 3 | `$CLAUDE_PLUGIN_DATA/bin/gatekeeper` | Plugin-provisioned prebuilt (automatic fallback) |
-| 4–6 | `security-scan.sh`: repo release build → repo debug build → `PATH` | The veto trusts the repo build first |
-| 4–6 | `skill-activation.sh`: `PATH` → repo release build → repo debug build | Routing accepts a system-wide install first |
+| 3–5 | `security-scan.sh`: repo release build → repo debug build → `PATH` | The veto trusts the repo build first |
+| 3–5 | `skill-activation.sh`: `PATH` → repo release build → repo debug build | Routing accepts a system-wide install first |
 
 **Fail policies differ by hook:**
 
@@ -225,9 +193,6 @@ can never stand in for the veto, while skill routing (advisory) accepts `PATH` f
   `AGENTS.md`.)
 - `skill-activation.sh` (UserPromptSubmit): **fail-open** — when no binary resolves, prints an
   advisory message and exits 0. Skill routing is advisory; a session must still start.
-- `ensure-gatekeeper.sh` (SessionStart): **fail-open** — attempts to provision the binary; prints
-  an advisory on failure and exits 0. The security floor is unaffected because `security-scan.sh`
-  keeps denying while the binary is absent.
 
 ### Environment variables
 
@@ -252,7 +217,7 @@ locations the binary can justify — not on arbitrary directory ancestry:
 1. **`$TOPOLOGY_ROOT`** — explicit env pin, returned verbatim (obeyed first; `doctor` will report
    if the pinned path is missing its markers).
 2. **Self-governed project** — if the nearest `.git` ancestor of the current directory is itself a
-   marked Topology root (has `skills/` + one of `AGENTS.md` / `gatekeeper/` / `.claude-plugin/`),
+   marked Topology root (has `skills/` + one of `AGENTS.md` / `gatekeeper/`),
    it resolves there. Covers the framework dev checkout and forks that govern themselves.
 3. **Binary-adjacent** — walks up from the binary's own path and stops at the first marked root.
    An installed binary at `<root>/bin/gatekeeper` resolves `<root>`; a dev build in
@@ -313,14 +278,6 @@ rm -rf .cursor/rules .opencode
 
 Remove the hook config you pasted into `.claude/settings.json` (delete the `UserPromptSubmit`
 and `PreToolUse` entries you added).
-
-**Claude Code plugin**, from inside Claude Code (the self-provisioned binary lives in the plugin
-data dir, which Claude Code removes with the plugin):
-
-```text
-/plugin uninstall topology@topology
-/plugin marketplace remove topology
-```
 
 **Working from a development checkout of this repo:**
 

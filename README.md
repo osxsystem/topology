@@ -26,9 +26,6 @@ A methodology serves as a structured framework that defines roles, responsibilit
 topology/
 ├── AGENTS.md                  # the agent definition + bootstrap (portable across clients)
 ├── CLAUDE.md                  # symlink -> AGENTS.md (so Claude Code reads the same source)
-├── .claude-plugin/
-│   ├── plugin.json            # Claude Code plugin manifest
-│   └── marketplace.json       # marketplace listing (source "./")
 ├── skills/                    # Markdown skills (the methodology + meta skills)
 │   ├── _getting-started/
 │   ├── brainstorm-design/
@@ -126,29 +123,11 @@ git mv docs/reviews   .claude/topology/reviews
 git commit -m "chore: migrate gate artifacts to .claude/topology/"
 ```
 
-## Install as a Claude Code plugin
-
-Topology also ships as a Claude Code plugin. The `gatekeeper` binary **self-provisions on the first session** — no separate build step required:
-
-```bash
-/plugin marketplace add osxsystem/topology    # in Claude Code
-/plugin install topology@topology
-```
-
-The plugin wires three hooks via `${CLAUDE_PLUGIN_ROOT}`: `SessionStart` ensures the binary is available (downloads it silently if needed), `UserPromptSubmit` → skill routing, `PreToolUse` → the security scan.
-
-```bash
-gatekeeper --version    # gatekeeper X.Y.Z (rules schema vN)
-gatekeeper doctor       # read-only health check: which binary resolves, plus rules/skills/hooks status
-```
-
-`doctor` surfaces *which* `gatekeeper` the hooks resolve (the full resolution order: `$GATEKEEPER_BIN` → `bin/` → plugin data → repo build → `PATH`); the hooks themselves stay silent on success.
-
 ## Make it yours
 
 1. **Pick your gates.** Topology gates on design docs + TDD. Swap in type-checking, an API contract, a coverage threshold — whatever fits your discipline. Edit `gatekeeper/src/main.rs`.
 2. **Tune the voice.** The tone and strictness live in `AGENTS.md` and each `SKILL.md`.
-3. **Choose your portability surface.** Claude-Code-only? Drop `AGENTS.md`/hooks complexity. Many clients? Keep one `SKILL.md` source and add per-platform packaging next to `.claude-plugin/`.
+3. **Choose your portability surface.** Claude-Code-only? Drop `AGENTS.md`/hooks complexity. Many clients? Keep one `SKILL.md` source and generate per-harness configs with `gatekeeper adapt`.
 
 ## Stack rationale
 

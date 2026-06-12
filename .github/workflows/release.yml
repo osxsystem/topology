@@ -21,27 +21,15 @@ jobs:
         with:
           workspaces: gatekeeper
 
-      - name: Assert tag == all three manifests
+      - name: Assert tag == Cargo.toml
         run: |
           tag_ver="${GITHUB_REF_NAME#v}"
           cargo_ver="$(grep -m1 '^version = ' gatekeeper/Cargo.toml | sed -E 's/.*"([^"]*)".*/\1/')"
-          plugin_ver="$(grep -m1 '"version"' .claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
-          market_ver="$(grep -m1 '"version"' .claude-plugin/marketplace.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
-          echo "tag=$tag_ver  Cargo.toml=$cargo_ver  plugin.json=$plugin_ver  marketplace.json=$market_ver"
-          fail=0
+          echo "tag=$tag_ver  Cargo.toml=$cargo_ver"
           if [ "$cargo_ver" != "$tag_ver" ]; then
             echo "::error::gatekeeper/Cargo.toml version $cargo_ver != tag $tag_ver"
-            fail=1
+            exit 1
           fi
-          if [ "$plugin_ver" != "$tag_ver" ]; then
-            echo "::error::.claude-plugin/plugin.json version $plugin_ver != tag $tag_ver"
-            fail=1
-          fi
-          if [ "$market_ver" != "$tag_ver" ]; then
-            echo "::error::.claude-plugin/marketplace.json version $market_ver != tag $tag_ver"
-            fail=1
-          fi
-          exit $fail
 
       - name: README/USER-GUIDE↔help sync (cli_doc_sync)
         run: cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync

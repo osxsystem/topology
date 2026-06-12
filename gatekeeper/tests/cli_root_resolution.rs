@@ -19,7 +19,7 @@ use std::process::Command;
 
 /// Create a minimal marked root at `dir`.
 /// A marked root satisfies `is_marked_root`: has `skills/` + at least one of
-/// `AGENTS.md` / `gatekeeper/` / `.claude-plugin/`.
+/// `AGENTS.md` / `gatekeeper/`.
 fn make_marked_root(dir: &Path) {
     fs::create_dir_all(dir.join("skills")).unwrap();
     fs::write(dir.join("AGENTS.md"), "# agents\n").unwrap();
