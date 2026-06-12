@@ -4,6 +4,21 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
+TDD red-green replay engine (ROADMAP Phase 15, ADR-0017) — the FM2 substance fix. **Ships
+shadow-first; the default→enforce flip is deferred to Phase 14 burn-in.**
+
+- New `[tdd] mode = "history" | "replay"` (default `history`) in `config.toml`, plus optional
+  `[tdd] replay_test_command` (timeout reuses `replay_timeout_secs`). In `replay` mode the gate, after
+  the commit-sequence heuristic passes, checks out the first test-only commit's test files onto the
+  merge-base in a detached worktree and runs the test command there: a test that passes at the base
+  (e.g. `assert!(true)`) is **vacuous** and the gate fails (exit 1). `history` mode logs the would-be
+  verdict as a `SHADOW tdd/replay` line without changing the exit code.
+- Fail-closed: `mode = "replay"` with no `test_command` → exit 2; a malformed `[tdd]` config → exit 2.
+- An RAII guard removes each replay worktree on every exit path; `doctor` reports orphaned
+  `gatekeeper-replay/` worktrees. The `hollow_c` (`assert!(true)`) scoreboard fixture is now caught.
+- Documented soft spot (carried to Phase 17): a test red-at-base only via a compile error passes
+  replay while asserting nothing.
+
 End-to-end re-verification (ROADMAP Phase 12) — **closes Track 2 (Distribution)**. No binary change,
 no version bump.
 
