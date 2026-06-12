@@ -2,6 +2,102 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.5.0 — 2026-06-12
+
+Hollow-pass kills + drift-proof CLI surface
+([spec](docs/specs/2026-06-11-hollow-pass-kills.md), ROADMAP Phase 14).
+
+### Dispatch table + ADR-0014 (FM3)
+
+- Replaced the hand-rolled `match` block and all nine `USAGE_*` constants in
+  `gatekeeper/src/main.rs` with a static `SUBCOMMANDS` dispatch table
+  (`grep -c 'const USAGE' gatekeeper/src/main.rs` → 0).
+- Longest-prefix match: two-word keys (e.g. `"check verify"`) win over single-word
+  prefixes. Group-level `check` behavior preserved exactly.
+- Recorded as **ADR-0014 "dispatch table over clap"** (four-dep constraint, ADR-0007).
+
+### CLI / doc sync safeguard (FM3)
+
+- `gatekeeper/tests/cli_doc_sync.rs`: spawns `gatekeeper --help`, extracts
+  in-scope `gatekeeper …` backtick spans from `## Command reference` in
+  `docs/USER-GUIDE.md` and the gate table in `README.md`, and asserts bidirectional
+  coverage with no ghost commands and no flag-spelling mismatches.
+- Wired into `ci.yml` (`gate` job) and `release.yml` (`version-guard`) as
+  `cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync` — the v0.4.0
+  doc-drift class dies at the tag.
+
+### Verify gate — evidence replay (FM2, shadow)
+
+- New fenced `evidence` block format in verify artifacts: `$ command` steps with
+  optional `# expect:` / `# expect-re:` directives.
+- `mode = "replay"` enforces fail-closed: zero blocks = fail; malformed directive = fail;
+  metachar / env-assignment / non-allowlisted / timed-out commands = fail.
+- Default (`mode = "presence"`): static analysis only — no commands ever executed.
+  Results emitted as `SHADOW` JSONL lines on stderr (`result: "static"`).
+- `GATEKEEPER_SHADOW=replay` env var triggers actual execution for baseline measurement
+  without changing the exit code. No-op when `mode = "replay"` is already enforced.
+- Config: `[verify]` table — `mode`, `replay_timeout_secs` (default 300),
+  `allowed_command_prefixes` (token-boundary, read-only git defaults).
+- Kills hollow fixture **(b)** (empty verify file).
+
+### Design gate — substance floor + human-commit approval (FM2, shadow)
+
+- `[design] substance_floor = true`: spec must have ≥ 2 `## ` headings and ≥ 1 body
+  line. Shadow-computed when off. Kills fixture **(a)** (approval-marker-only spec).
+- `[design] approval = "human-commit"`: traces the approval line through
+  `git log -L` to its authoring commit; fails if any `Co-Authored-By:` value matches
+  `agent_trailer_patterns`. Requires git ≥ 2.15, non-shallow clone, committed and
+  clean spec. Obstacles fail closed when enforced, log `skip` in shadow.
+- Default `agent_trailer_patterns` covers Claude, Copilot, Cursor, Codex, Gemini,
+  Devin, Aider, `[bot]`.
+- Negative dogfood: the spec's own approval commit (agent-executed at recorded
+  maintainer direction) fails `human-commit` mode — demonstrating the check catches
+  exactly the delegated-approval practice it exists to reject.
+
+### Finish gate — zero-test floor (FM2, shadow)
+
+- `[finish] require_test_count = true`: finish gate fails when the test command
+  produces no recognised runner summary or a recognised zero-test summary.
+- Applies to both `test_command` (config) and `-- <cmd>` (CLI) invocations.
+- Built-in patterns (first-match-wins): cargo (`test result: ok. N passed`), pytest
+  (`N passed … in Xs`, `pytest -q`-compatible, no `===` anchor).
+- `extra_count_patterns`: escape hatch for custom runners (one capture group each).
+  Go and jest count support deferred to a later release; `extra_count_patterns` is the
+  workaround.
+- Shadow-computed when off. Kills fixtures **(e)** (unrecognised summary) and **(g)**
+  (recognised zero-test summary).
+
+### Hollow fixture scoreboard
+
+Seven adversarial fixtures define the FM2 track. Four killed this release:
+
+| # | Fixture | Killed by | Status |
+|---|---------|-----------|--------|
+| a | spec containing only `Status: approved` | design substance floor | killed |
+| b | empty verify file | verify evidence replay | killed |
+| c | `assert!(true)` test-only commit | Phase 15 red-green replay | `#[ignore]` |
+| d | review body "Looks fine." | Phase 17 judge | `#[ignore]` |
+| e | `test_command = "true"` (no recognisable summary) | finish zero-test floor | killed |
+| f | plan dodging the denylist with synonyms | Phase 17 judge | `#[ignore]` |
+| g | runner emitting zero-test summary | finish zero-test floor | killed |
+
+### USER-GUIDE additions (AC-9)
+
+- Hardened-gate config tables: `[verify]`, `[design]`, `[finish]` with types, defaults,
+  and one-line meanings.
+- Evidence grammar: block format, directive rules, execution model, metachar/allowlist
+  rejections, read-only/idempotent requirement, output capture and 1 MiB tail-cap.
+- SHADOW JSONL schema: all seven fields (`gate`, `check`, `configured`, `artifact`,
+  `command`, `result`, `detail`) with valid values; per-check semantics table.
+- `GATEKEEPER_SHADOW=replay` semantics; documented `jq` aggregation procedure.
+- Deferred-Go note for the finish floor.
+
+### Also in this release (merged to main after v0.4.1, attributed separately)
+
+- `just setup` now installs the pre-commit hook in the framework clone;
+  `gatekeeper doctor` probes for it and reports the result (fix for issue #38,
+  merged to main via PR #39 — not part of Phase 14).
+
 ## v0.4.1 — 2026-06-11
 
 Payload-only patch: scan-rule additions and their regression harness. No gatekeeper code changes

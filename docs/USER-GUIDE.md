@@ -386,6 +386,137 @@ The config file lives at:
 - `<project>/.claude/topology/config.toml` (governed projects)
 - `docs/config.toml` (when working inside the framework repo itself)
 
+#### Hardened-gate config (v0.5.0)
+
+Three optional sub-tables harden the verify, design, and finish gates. **All hardened
+keys default OFF.** When a key is off the check still runs and its outcome is emitted as
+a `SHADOW` line on stderr; only the exit code is unchanged. Turning a key on is a
+deliberate opt-in — defaults are never altered by a version upgrade.
+
+A **malformed `config.toml`** (unparsable TOML) causes `check verify`, `check design`,
+and `check finish` to exit `2` with an actionable message rather than silently reverting
+to defaults — warn-and-default there would reopen the exact fail-open class these checks
+exist to reject. Unknown keys are silently ignored (forward compatibility); the `doctor` command lists unrecognised keys under the known tables to catch typos.
+
+**`[verify]`** — evidence replay
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `mode` | `"presence"` \| `"replay"` | `"presence"` | `presence`: gate passes when the artifact file exists (no commands executed). `replay`: artifact must contain at least one `evidence` block; every step must exit `0` and satisfy all its `expect` directives. |
+| `replay_timeout_secs` | integer | `300` | Wall-clock timeout per evidence step. On timeout the child process group is killed (Unix: SIGKILL via `kill -9 -- -<pgid>`; non-Unix: direct child only — documented residual). |
+| `allowed_command_prefixes` | array of strings | `["cargo test", "cargo run", "just", "git diff", "git log", "git show", "git status"]` | Token-boundary allowlist for evidence commands. Matching is on leading argv tokens, not raw-prefix substring: `"cargo test"` allows `cargo test --manifest-path …` but not `cargo testfoo`. The default `git` entries are read-only subcommands; a bare `"git"` entry would also permit `git push`. Widen deliberately. |
+
+**`[design]`** — substance floor and approval provenance
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `substance_floor` | boolean | `false` | When `true`: the spec must have ≥ 2 `## ` headings and ≥ 1 body line — non-empty after trim, not a heading, not the `Status:` line, not inside an HTML comment. Kills a spec that is only an approval marker. |
+| `approval` | `"status-line"` \| `"human-commit"` | `"status-line"` | `status-line` (default): gate passes when the spec contains a `Status: approved` marker anywhere. `human-commit`: additionally traces the approval line through `git log -L` to its authoring commit and fails if any `Co-Authored-By:` value matches an entry in `agent_trailer_patterns`. Requires git ≥ 2.15, a non-shallow clone, and no uncommitted spec edits — any obstacle fails closed when enforced, logs `skip` in shadow. Honest residual: this defends against sycophantic self-approval, not a determined operator forging authorship. |
+| `agent_trailer_patterns` | array of regex strings | `["(?i)claude", "(?i)copilot", "(?i)cursor", "(?i)codex", "(?i)gemini", "(?i)devin", "(?i)aider", "(?i)\\[bot\\]"]` | Regex patterns matched against `Co-Authored-By:` values in the approval commit. Any match fails the check. |
+
+**`[finish]`** — zero-test floor
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `require_test_count` | boolean | `false` | When `true`: the finish gate fails if the test command produces no recognised runner summary or a recognised summary with 0 tests. Applies to both `test_command` (config) and `-- <cmd>` (CLI) invocations. |
+| `extra_count_patterns` | array of regex strings | `[]` | Escape hatch for custom runners. Each pattern must contain exactly one capture group matching the test count. Tried in order after the built-in cargo and pytest patterns; first pattern with ≥ 1 match wins. |
+
+**Built-in runner patterns** (tried in order, first-match-wins):
+
+1. cargo: `(?m)^test result: \w+\. (\d+) passed` — matches one line per test binary; counts summed.
+2. pytest (no `===` fence anchor, so `pytest -q` parses too): `(?m)(\d+) passed[^\n]* in [0-9.]+s`
+3. `extra_count_patterns` entries, in listed order.
+
+Go and jest count support is deferred to a later release. Use `extra_count_patterns` as the
+escape hatch for any runner not listed above.
+
+#### Evidence grammar (verify artifacts)
+
+In `mode = "replay"` the gate looks for fenced `evidence` blocks inside the verify artifact.
+A block opens with a `` ```evidence `` fence line and closes with the matching `` ``` `` fence.
+Example of a complete evidence block:
+
+```
+$ cargo test --manifest-path gatekeeper/Cargo.toml --test cli_hollow
+# expect: test result: ok
+# expect-re: \d+ passed
+```
+
+**Block rules (exact):**
+
+- A line starting with `$ ` opens a step; everything after `$ ` is the raw command.
+- Zero or more directive lines bind to the preceding step:
+  - `# expect: <text>` — literal substring match (trimmed) against the merged stdout+stderr transcript.
+  - `# expect-re: <pattern>` — `regex`-crate pattern compiled with `(?m)` anchoring.
+- **Malformed-directive rule:** inside an evidence block, any line matching `^#\s*[\w-]+\s*:` that is not a recognised directive (`# expect:` or `# expect-re:`), and any directive not directly following a step or another directive, makes the block **malformed** and fails the gate in replay mode. Silent demotion to comment is the same downgrade class config strictness rejects. Lines not matching that shape are plain comments and ignored. Note: `# <word>:`-shaped lines are **reserved** inside evidence blocks — an innocent `# note: flaky on CI` will fail the gate.
+- A block with no `$ ` step line is malformed.
+- Every step must exit `0` **and** satisfy all its `expect` lines. Zero evidence blocks = fail (fail-closed).
+
+**Execution model:**
+
+Commands are split on whitespace into argv and run via `Command::new(argv[0]).args(&argv[1..])` from the **project root** — no shell ever. There is no root `Cargo.toml` in this repository, so commands must use `--manifest-path gatekeeper/Cargo.toml` or route through `just`.
+
+Fail-closed rejections (gate fails in replay mode):
+
+- Raw command text contains any metachar (pipe, ampersand, semicolon, angle brackets, dollar, backtick, backslash, parentheses, double-quote, single-quote).
+- Leading token matches `NAME=value` env-assignment form.
+- Leading argv tokens do not match any `allowed_command_prefixes` entry (token-boundary, not raw-prefix).
+- Step exceeds `replay_timeout_secs`.
+
+**Read-only / idempotent evidence requirement:** replay re-executes evidence on every enforcing gate run. Evidence commands must be safe to re-run without side effects. The default `git` allowlist entries (`git diff`, `git log`, `git show`, `git status`) are all read-only; widen the allowlist deliberately and only to commands that are safe to repeat.
+
+**Output capture:** stdout and stderr are drained by two reader threads and merged line-granular into one transcript; `expect` patterns match the merged result with `(?m)` anchoring. The capture is tail-capped at 1 MiB; when truncation occurred any expect-failure message says `(output truncated to last 1 MiB)`.
+
+#### SHADOW JSONL lines
+
+Every hardened check emits one `SHADOW` line to stderr on each gate run, whether the key is configured or not. Each line has the prefix `SHADOW ` followed by a single JSON object:
+
+```
+SHADOW {"gate":"verify","check":"replay","configured":"default","artifact":"docs/verify/x.md","command":null,"result":"static","detail":"2 evidence block(s), 3 command(s), all allowlisted: true"}
+```
+
+**Schema — all seven fields are always present:**
+
+| Field | Type | Values | Meaning |
+|---|---|---|---|
+| `gate` | string | `"verify"`, `"design"`, `"finish"` | Which gate emitted the line |
+| `check` | string | `"replay"`, `"substance_floor"`, `"approval_provenance"`, `"zero_test_floor"` | Which check within the gate |
+| `configured` | string | `"default"`, `"off"`, `"on"`, `"shadow-env"` | Whether the key is at its default (never set), explicitly off, explicitly on, or triggered by `GATEKEEPER_SHADOW=replay` env var — distinguishes never-configured from explicitly-opted-out so burn-in data is not polluted |
+| `artifact` | string or `null` | path string or `null` | Path to the artifact file; `null` for checks with no per-artifact scope (finish floor) |
+| `command` | string or `null` | command string or `null` | The specific command being reported, for per-command lines; `null` for block-level lines |
+| `result` | string | `"pass"`, `"fail"`, `"skip"`, `"static"` | Outcome: `pass`/`fail` = check ran and determined a result; `skip` = an obstacle prevented the check (e.g. dirty spec, old git); `static` = verify in presence mode — no commands executed, static analysis only |
+| `detail` | string | free text | Human-readable explanation of the result |
+
+**Per-check shadow semantics:**
+
+| Check | Default-mode gate run | `result` values |
+|---|---|---|
+| `design substance_floor` | full check (text analysis, no side effects) | `pass` / `fail` |
+| `design approval_provenance` | full check (git reads, no side effects) | `pass` / `fail` / `skip` (obstacle) |
+| `finish zero_test_floor` | full check (parses already-captured output) | `pass` / `fail` |
+| `verify replay` | **static analysis only** — counts blocks, parses commands, checks allowlist; never executes | `static` |
+
+**Aggregating SHADOW output** — collect the replay baseline across all verify artifacts:
+
+```bash
+# Run with the shadow env var to actually execute legacy commands (does not change exit code):
+for f in docs/verify/*.md; do
+  GATEKEEPER_SHADOW=replay gatekeeper check verify --feature "$(basename "$f" .md)" 2>&1 \
+    | grep '^SHADOW ' | sed 's/^SHADOW //'
+done | jq -s '
+  [ .[] | select(.gate == "verify" and .check == "replay") ]
+  | {
+      total:     length,
+      pass:      (map(select(.result == "pass"))  | length),
+      fail:      (map(select(.result == "fail"))  | length),
+      skip:      (map(select(.result == "skip"))  | length),
+      static:    (map(select(.result == "static"))| length)
+    }
+'
+```
+
+**`GATEKEEPER_SHADOW=replay` semantics:** setting this env var causes `check verify` to actually execute evidence replay (and legacy `$ `-line extraction for artifacts without evidence blocks), emitting per-command `SHADOW` lines with real `pass`/`fail` results. The gate exit code remains presence-mode's — the env var is a measurement trigger, never a demotion. When `mode = "replay"` is already enforced, the env var is a **no-op**: replay executes and its enforcing exit code stands. The env var can never downgrade an enforcing project to presence exit codes.
+
 ### Security scanning — `gatekeeper scan`
 
 Deterministically vetoes secrets and dangerous commands. Exit `0` = clean, `1` = veto, `2` = fail-closed.
