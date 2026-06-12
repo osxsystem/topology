@@ -407,6 +407,88 @@ fn doctor_no_git_repo_pre_commit_is_na() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// ── Task 5: orphaned replay-worktree probe (informational) ────────────────
+
+#[test]
+fn doctor_warns_on_orphaned_replay_worktree() {
+    // The replay engine nests worktrees under temp_dir()/gatekeeper-replay/<feature>-<pid>.
+    // An orphan is any child left under that parent. Pre-create one with a UNIQUE name so
+    // concurrent test runs (whose live worktrees may also sit under this parent) cannot make
+    // the assertion flaky: we assert presence (count >= 1), not an exact count.
+    let root = scratch_root("orphan_replay");
+    let parent = std::env::temp_dir().join("gatekeeper-replay");
+    let unique = format!("orphan-test-{}-{}", std::process::id(), line!());
+    let orphan = parent.join(&unique);
+    fs::create_dir_all(&orphan).unwrap();
+
+    let (code, out) = run(&root, &["doctor"]);
+
+    // The orphan probe is INFORMATIONAL: an otherwise-healthy root must still exit 0
+    // even though an orphan exists under the replay parent.
+    assert_eq!(
+        code, 0,
+        "orphaned replay worktree is informational, must not change exit code; out:\n{out}"
+    );
+
+    // Output must contain an informational line about replay worktrees that names a
+    // nonzero count — not "0" and not "ok" — because at least one orphan is present.
+    assert!(
+        out.contains("replay worktrees:"),
+        "output must contain a 'replay worktrees:' informational line; got:\n{out}"
+    );
+    let replay_line = out
+        .lines()
+        .find(|l| l.contains("replay worktrees:"))
+        .unwrap_or("");
+    assert!(
+        !replay_line.contains(" 0 ") && !replay_line.contains("ok"),
+        "with an orphan present the replay-worktrees line must name a nonzero count \
+         (not '0', not 'ok'); got line: {replay_line:?}\nfull out:\n{out}"
+    );
+
+    // Cleanup the orphan we created (leave any sibling live worktrees alone).
+    let _ = fs::remove_dir_all(&orphan);
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── Task 5: [tdd] config section is recognized ────────────────────────────
+
+#[test]
+fn doctor_recognizes_tdd_config_section() {
+    let root = scratch_root("tdd_config");
+    // artifacts_root() == <root>/docs when project root == framework root (dev checkout).
+    let docs = root.join("docs");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(
+        docs.join("config.toml"),
+        "[tdd]\nmode = \"replay\"\nreplay_test_command = \"cargo test\"\n",
+    )
+    .unwrap();
+
+    let (_code, out) = run(&root, &["doctor"]);
+
+    // Doctor must NOT flag `tdd` as an unrecognized top-level key.
+    let flags_tdd_top = out
+        .lines()
+        .any(|l| (l.contains("unrecognized") || l.contains("unknown")) && l.contains("tdd"));
+    assert!(
+        !flags_tdd_top,
+        "doctor must not flag 'tdd' as an unrecognized top-level key; got:\n{out}"
+    );
+
+    // Doctor must NOT flag the [tdd] sub-keys `mode` / `replay_test_command` as unknown.
+    let flags_tdd_subkeys = out.lines().any(|l| {
+        (l.contains("unrecognized") || l.contains("unknown"))
+            && (l.contains("mode") || l.contains("replay_test_command"))
+    });
+    assert!(
+        !flags_tdd_subkeys,
+        "doctor must not flag [tdd] sub-keys 'mode'/'replay_test_command' as unknown; got:\n{out}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Collect all file paths under `root` for before/after comparison.
