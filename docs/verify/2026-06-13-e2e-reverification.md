@@ -70,6 +70,32 @@ The Phase 12 diff (`d088830..HEAD`) touches only `scripts/test-e2e-reference.sh`
   than driving a live Claude Code session — the documented spec non-goal; a live-session smoke test
   is a possible follow-up.
 
+## Review-driven hardening (post-PR, fresh-context critic on `6af6229`)
+
+A fresh-context adversarial review (mutation testing at PR head) found three assertions whose
+*green* did not depend on the behavior they claimed to prove. All three are now anchored on the
+real signal and re-proven red-under-mutation, green-on-revert:
+
+- **O2 `check design` ran (was a false-green).** `grep -qiE 'gate|PASS|FAIL|…'` was satisfied by the
+  `gatekeeper` substring in *any* error text (the path contains "gate"), so a missing binary —
+  `env: …/gatekeeper-missing: No such file` — still passed. Now `grep -qE '(PASS|FAIL) design gate'`
+  (case-sensitive, anchored on the gate verdict line). Mutation M2 (point `GK_BIN` at a missing
+  binary post-install): assertion now **FAIL** (was PASS).
+- **O3 skill-activation behaved (was a conditional false-green).** The advisory hook is exit-0 by
+  design, so the output grep was the only signal; `grep -qiE 'Topology|skill|instinct'` matched the
+  word "skill" in any self-referencing degraded output. Now `grep -qF 'Topology: evaluate your
+  skills'` (exact first line of the advisory). Mutation M3b (replace the hook with an exit-0 stub
+  printing `skill-activation: degraded`): assertion now **FAIL** (was PASS).
+- **cleanup trap was a silent no-op.** `mktempdir` appended to `TMP_DIRS` inside a command
+  substitution (a subshell), so the parent array the EXIT trap iterated was always empty — fixtures
+  leaked (2 `react-weather-app` dirs per run, observed). Now one parent-owned `WORK_ROOT` created in
+  the parent shell, every fixture nested under it, removed in one `rm -rf` on EXIT. Post-fix: a run
+  leaves **0** new harness dirs in `$TMPDIR`. (Spec §1's "removes all tempdirs" is now true.)
+
+Re-verified after the fix: `just test-e2e-reference` → **25 passed, 0 failed**, exit 0; `shellcheck`
+clean; diff still touches no `gatekeeper/src/**`/`Cargo.*` (AC-9). Nits (O3 event→script binding not
+asserted; degraded summary suppression on `set -e`) noted and left as smoke-test scope.
+
 ## Gate status
 
 research ✓ · design ✓ (PASS) · plan ✓ (PASS, baseline 501) · tdd ✓ (harness red baseline → green;

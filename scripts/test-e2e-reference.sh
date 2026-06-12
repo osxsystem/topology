@@ -42,22 +42,13 @@ _planted_secret() {
 }
 
 # ── Tempdir tracking + cleanup trap (covers failure paths too) ─────────────────
-TMP_DIRS=()
-cleanup() {
-  local d
-  for d in "${TMP_DIRS[@]:-}"; do
-    [[ -n "$d" && -d "$d" ]] && rm -rf "$d"
-  done
-  # Return success so a falsy final guard above does not become the script's exit code.
-  return 0
-}
-trap cleanup EXIT
-mktempdir() {
-  local d
-  d="$(mktemp -d)"
-  TMP_DIRS+=("$d")
-  printf '%s' "$d"
-}
+# One parent-owned root; every fixture nests under it. mktempdir() runs inside a
+# command substitution (a subshell), so a per-call array append would never reach
+# the parent shell the EXIT trap runs in — a single pre-created root sidesteps that
+# trap and removes every tempdir (including on failure paths) in one rm.
+WORK_ROOT="$(mktemp -d)"
+trap 'rm -rf "$WORK_ROOT"' EXIT
+mktempdir() { mktemp -d "$WORK_ROOT/sub.XXXXXXXX"; }
 
 # ── Reference fixture builder (spec 1a) ────────────────────────────────────────
 _make_reference_project() {
@@ -188,7 +179,7 @@ fi
 # check design with PATH scrubbed: the binary must RUN (it may exit non-zero for a missing
 # artifact — that is fine; the point is no "command not found" / PATH dependency).
 O2_DESIGN_OUT="$(cd "$PROJ_DIR" && env PATH=/usr/bin:/bin TOPOLOGY_ROOT="$PROJ_DIR/.topology" "$GK_BIN" check design --feature x 2>&1)" || true
-if echo "$O2_DESIGN_OUT" | grep -qiE 'gate|PASS|FAIL|spec|design|missing|approved|artifact'; then
+if echo "$O2_DESIGN_OUT" | grep -qE '(PASS|FAIL) design gate'; then
   pass "O2: \"\$GATEKEEPER_BIN\" check design ran with PATH scrubbed (no PATH/sudo step)"
 else
   fail "O2: check design did not run with PATH scrubbed (output: $O2_DESIGN_OUT)"
@@ -209,7 +200,7 @@ fi
 SKILL_HOOK="$PROJ_DIR/.topology/hooks/skill-activation.sh"
 SKILL_EXIT=0
 SKILL_OUT="$(echo "add a users table" | GATEKEEPER_BIN="$GK_BIN" TOPOLOGY_ROOT="$PROJ_DIR/.topology" bash "$SKILL_HOOK" 2>&1)" || SKILL_EXIT=$?
-if [[ "$SKILL_EXIT" -eq 0 ]] && echo "$SKILL_OUT" | grep -qiE 'Topology|skill|instinct'; then
+if [[ "$SKILL_EXIT" -eq 0 ]] && echo "$SKILL_OUT" | grep -qF 'Topology: evaluate your skills'; then
   pass "O3: skill-activation.sh emits an advisory block and exits 0"
 else
   fail "O3: skill-activation.sh did not behave (exit=$SKILL_EXIT, output: ${SKILL_OUT:0:200})"
