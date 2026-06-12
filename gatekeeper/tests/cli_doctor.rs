@@ -248,6 +248,143 @@ fn doctor_non_executable_hook_exits_1() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// ── pre-commit hook probe (git repo present) ─────────────────────────────
+
+/// Build a scratch root that is also a git repository (for pre-commit probe tests).
+fn scratch_root_with_git(tag: &str) -> PathBuf {
+    let root = scratch_root(tag);
+    // Initialise a git repo so `git rev-parse --git-path hooks` works.
+    std::process::Command::new("git")
+        .args(["-C", root.to_str().unwrap(), "init"])
+        .output()
+        .expect("git init failed");
+    // Configure git identity so commits work (needed if we ever make a commit in tests).
+    std::process::Command::new("git")
+        .args([
+            "-C",
+            root.to_str().unwrap(),
+            "config",
+            "user.email",
+            "test@example.com",
+        ])
+        .output()
+        .expect("git config user.email failed");
+    std::process::Command::new("git")
+        .args(["-C", root.to_str().unwrap(), "config", "user.name", "Test"])
+        .output()
+        .expect("git config user.name failed");
+    root
+}
+
+/// Install a hook into the scratch root's .git/hooks/pre-commit.
+fn install_pre_commit_hook(root: &Path, content: &str) {
+    let hooks_dir = root.join(".git").join("hooks");
+    fs::create_dir_all(&hooks_dir).unwrap();
+    let pc = hooks_dir.join("pre-commit");
+    fs::write(&pc, content).unwrap();
+    fs::set_permissions(&pc, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn doctor_pre_commit_present_exits_0() {
+    let root = scratch_root_with_git("pc_present");
+    install_pre_commit_hook(
+        &root,
+        "#!/usr/bin/env bash\n# Topology pre-commit hook\nexec gatekeeper scan --staged\n",
+    );
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(code, 0, "hook present should exit 0; out:\n{out}");
+    assert!(
+        out.contains(".git/hooks/pre-commit: ok"),
+        "output should confirm hook ok; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_pre_commit_missing_in_git_repo_exits_1() {
+    let root = scratch_root_with_git("pc_missing");
+    // No pre-commit hook installed.
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(
+        code, 1,
+        "missing hook in a git repo should exit 1; out:\n{out}"
+    );
+    assert!(
+        out.contains("FAIL"),
+        "output should contain FAIL for missing pre-commit; got:\n{out}"
+    );
+    assert!(
+        out.contains(".git/hooks/pre-commit"),
+        "output should name the probe; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_pre_commit_missing_in_framework_repo_names_just_setup() {
+    // When framework root == project root (no VERSION file → dev checkout),
+    // the FAIL message must mention `just setup`.
+    let root = scratch_root_with_git("pc_framework");
+    // No pre-commit hook installed; no VERSION file → dev checkout.
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(
+        code, 1,
+        "missing hook in framework dev checkout should exit 1; out:\n{out}"
+    );
+    assert!(
+        out.contains("just setup"),
+        "FAIL message must mention 'just setup' for framework dev checkout; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_pre_commit_missing_in_governed_project_names_install_sh() {
+    // When framework root != project root (VERSION file present → payload install),
+    // the FAIL message must NOT mention `just setup` — it should name scripts/install.sh.
+    let root = scratch_root_with_git("pc_governed");
+    // Add a VERSION file to make doctor treat this as a payload install (framework ≠ project).
+    let my_version = env!("CARGO_PKG_VERSION");
+    fs::write(
+        root.join("VERSION"),
+        format!("version = \"{my_version}\"\nrules_schema = 1\n"),
+    )
+    .unwrap();
+    // No pre-commit hook installed.
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(
+        code, 1,
+        "missing hook in governed project should exit 1; out:\n{out}"
+    );
+    assert!(
+        out.contains("FAIL"),
+        "output should contain FAIL; got:\n{out}"
+    );
+    assert!(
+        !out.contains("just setup"),
+        "governed project FAIL must not mention 'just setup'; got:\n{out}"
+    );
+    assert!(
+        out.contains("scripts/install.sh"),
+        "governed project FAIL must mention 'scripts/install.sh'; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_no_git_repo_pre_commit_is_na() {
+    // The existing scratch_root() has no .git at all → n/a.
+    let root = scratch_root("pc_norepo");
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(code, 0, "no git repo should exit 0; out:\n{out}");
+    assert!(
+        out.contains(".git/hooks/pre-commit: n/a"),
+        "output should say n/a when no git repo; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Collect all file paths under `root` for before/after comparison.

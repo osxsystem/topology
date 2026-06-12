@@ -232,24 +232,45 @@ pub fn cmd_doctor(root: &Path) -> i32 {
     // The hook must guard the repo the developer COMMITS to — the project root. In the
     // framework repo project == framework, so this matches the old behavior; in a governed
     // project, checking the vendored clone's own .git would report "ok" while the
-    // developer's commits go entirely unscanned. Only checked when .git/ is present (a
-    // PATH/plugin install with no repo → n/a).
+    // developer's commits go entirely unscanned.
+    //
+    // We resolve the live hooks directory via `git rev-parse --git-path hooks` so this
+    // probe works correctly in linked worktrees (where `.git` is a file, not a directory,
+    // and hooks live in the main worktree's object store) as well as normal checkouts.
     let commit_repo = crate::project_root();
-    let git_dir = commit_repo.join(".git");
-    if git_dir.is_dir() {
-        let pc = git_dir.join("hooks").join("pre-commit");
-        if pc.is_file() && is_executable(&pc) {
-            println!(".git/hooks/pre-commit: ok ({})", pc.display());
-        } else {
-            println!(
-                ".git/hooks/pre-commit: FAIL: not installed in {} (run scripts/install.sh or \
-                 gatekeeper adapt --harness claude)",
-                commit_repo.display()
-            );
-            failures += 1;
+    // Detect whether we are running inside the framework dev checkout itself.
+    let is_framework_dev_checkout = {
+        use std::fs;
+        let same = match (fs::canonicalize(&commit_repo), fs::canonicalize(root)) {
+            (Ok(p), Ok(f)) => p == f,
+            _ => commit_repo == root,
+        };
+        same && !is_payload_install
+    };
+    match resolve_git_hooks_dir(&commit_repo) {
+        Some(hooks_dir) => {
+            let pc = hooks_dir.join("pre-commit");
+            if pc.is_file() && is_executable(&pc) {
+                println!(".git/hooks/pre-commit: ok ({})", pc.display());
+            } else if is_framework_dev_checkout {
+                println!(
+                    ".git/hooks/pre-commit: FAIL: not installed in {} \
+                     (framework dev clone missing its own hook — run: just setup)",
+                    commit_repo.display()
+                );
+                failures += 1;
+            } else {
+                println!(
+                    ".git/hooks/pre-commit: FAIL: not installed in {} (run scripts/install.sh or \
+                     gatekeeper adapt --harness claude)",
+                    commit_repo.display()
+                );
+                failures += 1;
+            }
         }
-    } else {
-        println!(".git/hooks/pre-commit: n/a (no .git directory — plugin/PATH install)");
+        None => {
+            println!(".git/hooks/pre-commit: n/a (no git repository — plugin/PATH install)");
+        }
     }
 
     // ── Summary ─────────────────────────────────────────────────────────────
@@ -263,6 +284,46 @@ pub fn cmd_doctor(root: &Path) -> i32 {
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+/// Resolve the live git hooks directory for the repo at `repo_root`.
+///
+/// Uses `git rev-parse --git-path hooks` so the result is correct for both
+/// normal checkouts (`.git/hooks`) and linked worktrees (where `.git` is a
+/// file and hooks live in the main worktree's object store).
+///
+/// Returns `None` when `repo_root` is not a git repository (no `.git` entry at
+/// all) so the caller can emit `n/a` rather than a spurious FAIL.
+pub fn resolve_git_hooks_dir(repo_root: &Path) -> Option<std::path::PathBuf> {
+    // Fast-path: if there is no `.git` entry whatsoever (file or dir), this is
+    // not a git repo — return None without running git.
+    let git_entry = repo_root.join(".git");
+    if !git_entry.exists() {
+        return None;
+    }
+    // Use `git rev-parse --git-path hooks` for correctness in worktrees.
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-path", "hooks"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let p = std::path::PathBuf::from(trimmed);
+    // `git rev-parse --git-path hooks` may return a relative path — resolve it
+    // relative to repo_root so callers always get an absolute path.
+    if p.is_absolute() {
+        Some(p)
+    } else {
+        Some(repo_root.join(p))
+    }
+}
 
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -515,6 +576,48 @@ mod tests {
         assert!(
             matches!(probe, VersionProbe::ParseError(_)),
             "malformed TOML must return ParseError, got: {probe:?}"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── resolve_git_hooks_dir unit tests ──────────────────────────────────────
+
+    #[test]
+    fn resolve_git_hooks_dir_no_git_entry_returns_none() {
+        let base = env::temp_dir().join("topology_doctor_hooks_none");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        // No .git at all — must return None without calling git.
+        assert!(
+            resolve_git_hooks_dir(&base).is_none(),
+            "directory without .git must return None"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_git_hooks_dir_normal_repo_returns_git_hooks() {
+        let base = env::temp_dir().join("topology_doctor_hooks_normal");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        // Initialise a real git repo.
+        let status = std::process::Command::new("git")
+            .args(["-C", base.to_str().unwrap(), "init"])
+            .output()
+            .expect("git init failed");
+        assert!(status.status.success(), "git init must succeed");
+
+        let result = resolve_git_hooks_dir(&base);
+        assert!(
+            result.is_some(),
+            "normal git repo must return Some(hooks_dir)"
+        );
+        let hooks_dir = result.unwrap();
+        // In a normal checkout the hooks dir lives inside .git/.
+        assert!(
+            hooks_dir.ends_with("hooks"),
+            "hooks dir must end with 'hooks'; got: {}",
+            hooks_dir.display()
         );
         let _ = fs::remove_dir_all(&base);
     }

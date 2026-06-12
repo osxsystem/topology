@@ -7,6 +7,26 @@
 default:
     @just --list
 
+# Install hooks/pre-commit.sh as the git pre-commit hook in this framework clone.
+# Copies (does not symlink) the hook so it survives in-place edits to the source.
+# Stops with an error if a non-topology pre-commit hook already exists.
+setup:
+    @HOOKS_DIR="$(git rev-parse --git-path hooks)" && \
+    DEST="$HOOKS_DIR/pre-commit" && \
+    if [ -f "$DEST" ]; then \
+        if grep -q "Topology pre-commit" "$DEST" 2>/dev/null; then \
+            cp hooks/pre-commit.sh "$DEST" && chmod +x "$DEST" && \
+            echo "setup: updated $DEST"; \
+        else \
+            echo "setup: $DEST already exists and does not appear to be a topology hook." >&2; \
+            echo "       Remove it manually and re-run 'just setup' to install the topology hook." >&2; \
+            exit 1; \
+        fi; \
+    else \
+        cp hooks/pre-commit.sh "$DEST" && chmod +x "$DEST" && \
+        echo "setup: installed $DEST"; \
+    fi
+
 # Format Rust sources in place.
 fmt:
     cargo fmt --manifest-path gatekeeper/Cargo.toml
