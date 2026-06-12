@@ -8,19 +8,22 @@ implementation (Sonnet subagent) at the branch head.
 
 ## AC-1/AC-2/AC-3 — global payload installs, checksum refusal, legacy rescue (offline e2e)
 
-The e2e suite gained 19 global-scope scenarios (piped install against a `file://` release
-fixture with remapped `HOME`/`TOPOLOGY_HOME`; corrupted-checksum refusal leaving an existing
-root untouched; checkout assembly where the checkout is not `ROOT`; in-place re-run upgrade
-asserting the re-run's own exit code + upgrade marker; legacy-clone rescue into
-`${ROOT}-backup-<ts>/` with ledger + handoff contents; `--yes` replacement;
-no-`PROJECT_PATH`-writes guard; the trailing-slash `TOPOLOGY_HOME` data-loss regression from
-the PR #43 review, proven red without the one-line fix — 47/1 — and green with it; the AC-3
-interactive-refusal branch via the `PROMPT_INPUT_FD` seam) alongside the 29 pre-existing
-local-scope scenarios, which ran unmodified as the regression net:
+The e2e suite gained 23 global-scope/review-driven scenarios (piped install against a
+`file://` release fixture with remapped `HOME`/`TOPOLOGY_HOME`; corrupted-checksum refusal
+leaving an existing root untouched; checkout assembly where the checkout is not `ROOT`;
+in-place re-run upgrade asserting the re-run's own exit code + upgrade marker; legacy-clone
+rescue into `${ROOT}-backup-<ts>/` with ledger + handoff + clone-era `memory/artifacts/*`
+contents (ADR-0013); `--yes` replacement; no-`PROJECT_PATH`-writes guard; the trailing-slash
+`TOPOLOGY_HOME` data-loss regression from the PR #43 review, proven red without the one-line
+fix — 47/1 — and green with it; the AC-3 interactive-refusal branch via the
+`PROMPT_INPUT_FD` seam, including no-backup-littered-on-refusal; the headless-without-`--yes`
+refusal applying the printed "N" default per ADR-0012 §4) plus a clone-era-handoff assertion
+in the local legacy scenario, alongside the 29 pre-existing local-scope scenarios as the
+regression net:
 
 ```evidence
 $ just test-e2e
-# expect: test-payload-e2e: 48 passed, 0 failed
+# expect: test-payload-e2e: 53 passed, 0 failed
 ```
 
 ## AC-4/AC-5 — plugin channel retired
