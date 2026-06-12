@@ -242,22 +242,35 @@ pub fn parse_evidence_block(block_body: &str) -> BlockParseResult {
                     "directive '# expect:' with no preceding step".to_string(),
                 );
             }
+            let value = rest.trim();
+            if value.is_empty() {
+                // An empty expectation matches everything — a hollow assertion.
+                return BlockParseResult::Malformed(
+                    "directive '# expect:' with empty value".to_string(),
+                );
+            }
             steps
                 .last_mut()
                 .unwrap()
                 .expect_literal
-                .push(rest.trim().to_string());
+                .push(value.to_string());
         } else if let Some(rest) = line.strip_prefix("# expect-re: ") {
             if steps.is_empty() {
                 return BlockParseResult::Malformed(
                     "directive '# expect-re:' with no preceding step".to_string(),
                 );
             }
+            let value = rest.trim();
+            if value.is_empty() {
+                return BlockParseResult::Malformed(
+                    "directive '# expect-re:' with empty value".to_string(),
+                );
+            }
             steps
                 .last_mut()
                 .unwrap()
                 .expect_regex
-                .push(rest.trim().to_string());
+                .push(value.to_string());
         } else if line == "# expect:" || line == "# expect-re:" {
             // directive with no value — treat as malformed
             if steps.is_empty() {
@@ -1091,6 +1104,27 @@ mod tests {
         let body = "# expect: something\n$ cargo test\n";
         let result = parse_evidence_block(body);
         assert!(matches!(result, BlockParseResult::Malformed(_)));
+    }
+
+    #[test]
+    fn parse_empty_expect_value_is_malformed() {
+        // `# expect: ` with only whitespace would match everything — hollow assertion.
+        let body = "$ cargo test\n# expect: \n";
+        let result = parse_evidence_block(body);
+        assert!(
+            matches!(result, BlockParseResult::Malformed(_)),
+            "empty '# expect:' value must be malformed"
+        );
+    }
+
+    #[test]
+    fn parse_empty_expect_re_value_is_malformed() {
+        let body = "$ cargo test\n# expect-re:  \n";
+        let result = parse_evidence_block(body);
+        assert!(
+            matches!(result, BlockParseResult::Malformed(_)),
+            "empty '# expect-re:' value must be malformed"
+        );
     }
 
     #[test]

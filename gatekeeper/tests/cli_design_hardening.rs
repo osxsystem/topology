@@ -590,3 +590,41 @@ fn negative_dogfood_own_spec_fails_agent_trailer() {
         "failure message must cite the agent trailer; combined: {combined}"
     );
 }
+
+/// D7: a dirty spec is an *obstacle*, not a determination — under default
+/// (status-line) config the gate passes and the approval_provenance SHADOW
+/// line must report result "skip", never "fail" (Phase 15 burn-in pipelines
+/// classify on this field).
+#[test]
+fn shadow_dirty_spec_obstacle_logs_skip() {
+    let root = base_root_with_research("hc_shadow_skip", "hc-shadow-skip");
+    // No config.toml — approval stays at its status-line default.
+
+    let specs_dir = root.join("docs").join("specs");
+    write_substantial_spec(&specs_dir, "hc-shadow-skip");
+
+    git_init(&root);
+    git(&root, &["add", "."]);
+    git(
+        &root,
+        &["commit", "-q", "-m", "docs(spec): approve hc-shadow-skip"],
+    );
+
+    // Unstaged edit after the approval commit → obstacle.
+    let spec_path = specs_dir.join("2026-06-11-hc-shadow-skip.md");
+    let mut current = fs::read_to_string(&spec_path).unwrap();
+    current.push_str("\n<!-- unstaged edit after approval -->\n");
+    fs::write(&spec_path, &current).unwrap();
+
+    let (code, out, err) = run_full(&root, &["check", "design", "--feature", "hc-shadow-skip"]);
+    assert_eq!(code, 0, "default mode must pass; out: {out}, err: {err}");
+    let prov_line = err
+        .lines()
+        .find(|l| l.starts_with("SHADOW ") && l.contains("approval_provenance"))
+        .unwrap_or_else(|| panic!("expected approval_provenance SHADOW line; stderr: {err}"));
+    assert!(
+        prov_line.contains("\"result\":\"skip\""),
+        "dirty-spec obstacle must log skip, not fail; line: {prov_line}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}

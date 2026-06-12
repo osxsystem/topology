@@ -1313,7 +1313,7 @@ fn design_check_human_commit(
             ));
         }
         Ok(out) if !out.status.success() => {
-            return DesignApprovalResult::Fail(format!(
+            return DesignApprovalResult::Skip(format!(
                 "approval_provenance: spec {relpath} is untracked — commit the spec file \
                  to enable the human-commit check"
             ));
@@ -1340,7 +1340,7 @@ fn design_check_human_commit(
             ));
         }
         Ok(s) if !s.success() => {
-            return DesignApprovalResult::Fail(format!(
+            return DesignApprovalResult::Skip(format!(
                 "approval_provenance: spec {relpath} has unstaged changes — \
                  commit all edits before running the human-commit check"
             ));
@@ -1366,7 +1366,7 @@ fn design_check_human_commit(
             ));
         }
         Ok(s) if !s.success() => {
-            return DesignApprovalResult::Fail(format!(
+            return DesignApprovalResult::Skip(format!(
                 "approval_provenance: spec {relpath} has staged (index) changes — \
                  commit or unstage all edits before running the human-commit check"
             ));
