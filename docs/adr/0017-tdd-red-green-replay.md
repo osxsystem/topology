@@ -26,10 +26,11 @@ requires it to fail there.
 2. **Replay algorithm** (`tdd.rs`), layered *after* the existing heuristic passes: resolve the
    merge-base `B` and the first test-only commit `T`; `git worktree add --detach <tmp> B`;
    `git -C <tmp> checkout T -- <T's test paths>`; run the test command in `<tmp>` via
-   `verify::execute_step` (the single shared spawn/timeout path — no second executor). **Nonzero exit
-   (or timeout) ⟹ red at base ⟹ Pass; zero exit ⟹ green at base ⟹ Fail** (`vacuous test: passed at
-   merge-base`). The `assert!(true)` choreography dies here: it compiles and passes at `B`, so the
-   gate rejects it.
+   `verify::execute_step` (the single shared spawn/timeout path — no second executor). The verdict has
+   three states: a command that **ran and exited nonzero ⟹ red at base ⟹ Pass**; **ran and exited zero
+   ⟹ green at base ⟹ Fail** (`vacuous test: passed at merge-base`); anything that **could not establish
+   red ⟹ Indeterminate** (see point 4). The `assert!(true)` choreography dies here: it compiles and
+   passes at `B`, so the gate rejects it.
 
 3. **Shadow-first rollout** (ADR-aligned with the verify gate). The replay verdict is emitted as one
    seven-field `SHADOW {gate:"tdd",check:"replay",…}` line. In `history` mode (default) the verdict is
@@ -38,8 +39,13 @@ requires it to fail there.
    (`GATEKEEPER_SHADOW=replay`), or `Default` (history). The default→enforce flip is **deferred** and
    gated on Phase 14 burn-in (<2% false-block, ≥50 evaluations) — never the calendar.
 
-4. **Fail-closed.** `mode = "replay"` with no resolvable test command → exit 2
-   (`replay mode requires a test_command`); a malformed `config.toml` (e.g. bad `[tdd] mode`) →
+4. **Fail-closed on "cannot prove red" (`Indeterminate`).** A replay that cannot establish red is never
+   treated as a pass. This covers: a test command that **could not run** (not in
+   `allowed_command_prefixes`, a metachar/env-assignment prefix, or a spawn failure) and a **timeout**.
+   In `replay` mode an `Indeterminate` verdict **fails closed → exit 2** (`cannot prove red (replay
+   indeterminate)`); in `history` mode it is recorded as a `Skip` shadow line (never a phantom `pass`,
+   so the burn-in log stays honest). Likewise `mode = "replay"` with no resolvable test command → exit 2
+   (`replay mode requires a test_command`), and a malformed `config.toml` (e.g. bad `[tdd] mode`) →
    `ParseFailed` → exit 2 in the handler (strict `load_result`).
 
 5. **Worktree hygiene.** An RAII `ReplayWorktree` guard removes the worktree (`git worktree remove
@@ -59,5 +65,8 @@ requires it to fail there.
 - Replay runs the full test suite at the merge-base per check (≈ seconds for this repo);
   `replay_test_command` scopes it for slow suites. Kill switch: `mode = "history"`.
 - The gate stays **CLI-check-only** — no new hook/pre-commit wiring in this phase.
-- Non-allowlisted/erroring test commands are treated as red (lenient). With the default cargo/just/git
-  allowlist and the shadow-first default this is acceptable; tightening it is a future option.
+- A test command that cannot run (not allowlisted, metachar/env-prefix, spawn failure) or times out is
+  **Indeterminate**, not red — the gate fails closed (exit 2 in `replay` mode; a `Skip` shadow record in
+  `history` mode) rather than certify a vacuous test or poison the burn-in log with a phantom pass.
+  Trade-off: a genuinely slow legitimate test under `replay` mode exits 2 (raise `replay_timeout_secs`
+  or scope `replay_test_command`) rather than passing on a timeout — the conservative, sound default.

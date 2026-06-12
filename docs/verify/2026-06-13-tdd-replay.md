@@ -29,7 +29,7 @@ caught (no longer `#[ignore]`'d):
 
 ```evidence
 $ cargo test --release --test cli_tdd_replay
-# expect: 6 passed
+# expect: 8 passed
 ```
 
 ```evidence
@@ -44,7 +44,13 @@ $ cargo test --release --test cli_hollow hollow_c
 - **`history_mode_skips_replay`** — same vacuous repo in `history` mode → exit 0 (unchanged) **and** a
   `SHADOW {"gate":"tdd","check":"replay",…}` line is emitted.
 - **`replay_cleans_up_worktree`** — no `gatekeeper-replay/*` worktree remains after a run.
-- **fail-closed** — `replay` mode without a `test_command` → exit 2; malformed `[tdd]` config → exit 2.
+- **fail-closed (no command / bad config)** — `replay` mode without a `test_command` → exit 2; malformed
+  `[tdd]` config → exit 2.
+- **fail-closed (cannot prove red)** — `replay_nonallowlisted_command_fails_closed`: `replay` mode with a
+  non-allowlisted `test_command` (e.g. `make test`) → exit 2 (`cannot prove red`), not a phantom pass.
+  `history_nonallowlisted_logs_skip_not_pass`: same in `history` mode → exit 0 with a `SHADOW` line whose
+  `result` is `skip`, never `pass` — the burn-in log is not poisoned. (Indeterminate covers
+  not-allowlisted / metachar / env-prefix / spawn failure / timeout.)
 - **`hollow_c_assert_true_red_commit`** — the FM2 scoreboard fixture, rebuilt as a real cargo crate
   with `mode=replay`, now **green** (the gate rejects the hollow test).
 
