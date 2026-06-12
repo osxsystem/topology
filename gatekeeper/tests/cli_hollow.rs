@@ -9,7 +9,7 @@
 //! Un-ignoring a fixture is the definition of progress for each gate hardening:
 //!   (a) un-ignored by task 7  — design substance floor (spec §4)
 //!   (b) un-ignored by task 6  — verify evidence replay (spec §3)
-//!   (c) stays ignored          — Phase 15 red-green replay
+//!   (c) ACTIVE (Phase 15)      — caught by the red-green replay engine
 //!   (d) stays ignored          — Phase 17 review judge
 //!   (e) un-ignored by task 8  — finish zero-test floor (spec §5)
 //!   (f) stays ignored          — Phase 17 plan judge
@@ -149,22 +149,44 @@ fn hollow_b_empty_verify_file() {
 // ── (c) TDD gate: assert!(true) red commit ────────────────────────────────────
 
 #[test]
-#[ignore = "red until Phase 15 red-green replay checks test quality"]
 fn hollow_c_assert_true_red_commit() {
-    // The TDD gate's current heuristic only checks that a test-file-only commit
-    // precedes the first production commit; it does not inspect test content.  A
-    // test commit whose body is `assert!(true)` satisfies the heuristic today and
-    // the gate passes.  Phase 15 will add red-green replay that detects a test that
-    // cannot fail (i.e. never actually "red").
+    // The TDD gate's legacy heuristic only checks that a test-file-only commit
+    // precedes the first production commit; it does not inspect test content, so a
+    // test commit whose body is `assert!(true)` satisfies the heuristic and the gate
+    // passes.  Phase 15's red-green replay engine now CATCHES this: it checks the
+    // test-only commit out onto the merge-base and runs it.  `assert!(true)` passes
+    // at the merge-base (it never needed the production code), so replay rejects it
+    // as vacuous and the gate exits nonzero — no longer a HOLLOW PASS.
+    //
+    // For replay to fire, the scratch project must be a real cargo crate (so
+    // `cargo test` runs inside the replay worktree checked out at the merge-base)
+    // AND carry `docs/config.toml` with `[tdd] mode = "replay"` plus a runnable
+    // `test_command`.  This mirrors `cli_tdd_replay.rs::build_replay_crate`.
     let root = scratch_root("c_tdd");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("docs")).unwrap();
 
-    // git repo: initial commit on `main` (becomes the merge-base).
+    // Minimal cargo crate so `cargo test` runs inside the replay worktree.
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"replayfix\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn placeholder() {}\n").unwrap();
+
+    // config.toml: replay mode + a runnable test command (else replay never fires).
+    fs::write(
+        root.join("docs").join("config.toml"),
+        "test_command = \"cargo test\"\n\n[tdd]\nmode = \"replay\"\n",
+    )
+    .unwrap();
+
+    // git repo: initial commit on `main` = the crate skeleton (becomes the merge-base).
     git(&root, &["init", "-q", "-b", "main"]);
     git(&root, &["config", "user.email", "t@t.t"]);
     git(&root, &["config", "user.name", "t"]);
-    fs::write(root.join("README.md"), "# hollow-c\n").unwrap();
     git(&root, &["add", "."]);
-    git(&root, &["commit", "-q", "-m", "init"]);
+    git(&root, &["commit", "-q", "-m", "init: crate skeleton"]);
 
     // Record the merge-base sha for --base.
     let base = head_sha(&root);
@@ -172,7 +194,7 @@ fn hollow_c_assert_true_red_commit() {
     // Switch to feature branch.
     git(&root, &["checkout", "-q", "-b", "feature"]);
 
-    // "Red" commit: test-only file, but the test body is `assert!(true)` (never fails).
+    // Commit T — test-only file, but the test body is `assert!(true)` (never fails).
     fs::create_dir_all(root.join("tests")).unwrap();
     fs::write(
         root.join("tests").join("hollow_c_test.rs"),
@@ -190,8 +212,7 @@ fn hollow_c_assert_true_red_commit() {
         ],
     );
 
-    // Production commit.
-    fs::create_dir_all(root.join("src")).unwrap();
+    // Production commit (keeps the heuristic's test-before-prod sequence intact).
     fs::write(root.join("src").join("hollow_c.rs"), "pub fn hollow() {}\n").unwrap();
     git(&root, &["add", "src/hollow_c.rs"]);
     git(
@@ -205,7 +226,8 @@ fn hollow_c_assert_true_red_commit() {
     );
     assert_ne!(
         code, 0,
-        "HOLLOW PASS: assert!(true) test-only commit was accepted as a valid red commit; out: {out}"
+        "REGRESSION: assert!(true) test passes at the merge-base, so the replay \
+         engine must reject it as vacuous (nonzero exit); out: {out}"
     );
 
     let _ = fs::remove_dir_all(&root);

@@ -370,6 +370,12 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
     let art_root_for_cfg = crate::artifacts_root();
     probe_config_unknown_keys(&art_root_for_cfg);
 
+    // ── orphaned replay worktrees (informational) ────────────────────────────
+    // The replay engine nests worktrees under temp_dir()/gatekeeper-replay/<feature>-<pid>.
+    // Leftovers (from a killed run) are harmless but waste disk; report them so the
+    // operator can prune. Informational only — never flips doctor to a failure.
+    probe_orphaned_replay_worktrees();
+
     // ── Summary ─────────────────────────────────────────────────────────────
     if failures == 0 {
         println!("doctor: all probes ok");
@@ -381,10 +387,20 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
 }
 
 /// Known top-level config keys.
-const KNOWN_TOP_KEYS: &[&str] = &["base_branch", "test_command", "verify", "design", "finish"];
+const KNOWN_TOP_KEYS: &[&str] = &[
+    "base_branch",
+    "test_command",
+    "verify",
+    "design",
+    "finish",
+    "tdd",
+];
 
 /// Known [verify] sub-keys.
 const KNOWN_VERIFY_KEYS: &[&str] = &["mode", "replay_timeout_secs", "allowed_command_prefixes"];
+
+/// Known [tdd] sub-keys.
+const KNOWN_TDD_KEYS: &[&str] = &["mode", "replay_test_command"];
 
 /// Known [design] sub-keys.
 const KNOWN_DESIGN_KEYS: &[&str] = &["substance_floor", "approval", "agent_trailer_patterns"];
@@ -434,6 +450,7 @@ fn probe_config_unknown_keys(artifacts_root: &Path) {
         ("verify", KNOWN_VERIFY_KEYS),
         ("design", KNOWN_DESIGN_KEYS),
         ("finish", KNOWN_FINISH_KEYS),
+        ("tdd", KNOWN_TDD_KEYS),
     ];
     for (table_name, known) in sub_checks {
         if let Some(sub) = table.get(*table_name).and_then(|v| v.as_table()) {
@@ -450,6 +467,25 @@ fn probe_config_unknown_keys(artifacts_root: &Path) {
                 );
             }
         }
+    }
+}
+
+/// Report any leftover replay worktrees under `temp_dir()/gatekeeper-replay`.
+/// Informational only: it prints a single line and never touches the failure
+/// count, so an otherwise-healthy doctor run stays at exit 0.
+fn probe_orphaned_replay_worktrees() {
+    let parent = std::env::temp_dir().join("gatekeeper-replay");
+    let count = match fs::read_dir(&parent) {
+        Ok(rd) => rd.flatten().count(),
+        // Parent absent (or unreadable) → nothing orphaned.
+        Err(_) => 0,
+    };
+    if count == 0 {
+        println!("replay worktrees: ok (none orphaned)");
+    } else {
+        println!(
+            "replay worktrees: {count} present (informational — remove with: git worktree prune)"
+        );
     }
 }
 

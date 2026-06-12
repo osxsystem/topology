@@ -843,9 +843,26 @@ fn handle_check_tdd(args: &[String]) -> i32 {
     ) {
         return code;
     }
-    let cfg = config::ProjectConfig::load(&artifacts_root());
-    let base = base_arg_from(args).or(cfg.base_branch);
-    tdd::gate_tdd(&project_root(), &feature_arg_from(args), base.as_deref())
+    // Config strictness: a parse failure exits 2 (mirror the verify handler).
+    let load_result = config::ProjectConfig::load_result(&artifacts_root());
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check tdd: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+    let base = base_arg_from(args).or_else(|| cfg.base_branch.clone());
+    tdd::gate_tdd(
+        &project_root(),
+        &feature_arg_from(args),
+        base.as_deref(),
+        &cfg,
+    )
 }
 
 fn handle_check_review(args: &[String]) -> i32 {
