@@ -15,8 +15,9 @@ a real trade-off**.
 | [0007](0007-security-scanner-dependencies.md) | The security scanner adopts vetted crates (regex/serde/serde_json/toml) and retires the hand-rolled JSON parser | Accepted |
 | [0008](0008-cross-harness-adapter-mappings.md) | 0008 — Cross-harness adapter mappings | Accepted |
 | [0009](0009-memory-research-first-hardening.md) | 0009 — Memory artifacts as markdown; research as a gated stage | Accepted |
-| [0010](0010-packaging-distribution.md) | 0010 — Packaging & distribution: system-PATH binary, CI mirrors the justfile, hand-authored plugin | Accepted |
-| [0011](0011-prebuilt-binary-distribution.md) | 0011 — Prebuilt-first binary distribution: release matrix, installer download, plugin self-provisioning | Accepted |
+| [0010](0010-packaging-distribution.md) | 0010 — Packaging & distribution: system-PATH binary, CI mirrors the justfile, hand-authored plugin | Accepted, amended by 0015 |
+| [0011](0011-prebuilt-binary-distribution.md) | 0011 — Prebuilt-first binary distribution: release matrix, installer download, plugin self-provisioning | Accepted, amended by 0015 |
 | [0012](0012-project-root-vs-framework-root.md) | 0012 — Project root vs framework root: artifacts move to `.claude/topology/` in governed projects | Accepted |
 | [0013](0013-payload-read-only-artifacts-root-state.md) | 0013 — The payload is read-only at runtime; mutable state anchors to the artifacts root | Accepted |
 | [0014](0014-dispatch-table-over-clap.md) | 0014 — One dispatch table over clap for the CLI surface | Accepted |
+| [0015](0015-plugin-channel-retirement.md) | 0015 — Plugin channel retired: one install channel, payload-only provisioning | Accepted |

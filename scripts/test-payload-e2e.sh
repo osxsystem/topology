@@ -372,6 +372,10 @@ git -C "$TMPDIR_FIXTURE_LEGACY/.topology" config user.email "test@example.com"
 # Plant a ledger with a sentinel line so we can verify rescue.
 mkdir -p "$TMPDIR_FIXTURE_LEGACY/.topology/docs/learn"
 echo "sentinel-ledger-content" > "$TMPDIR_FIXTURE_LEGACY/.topology/docs/learn/ledger.md"
+# Plant a clone-era handoff in memory/artifacts/ (the pre-docs/memory location
+# ADR-0013 names explicitly for the installer-v3 rescue).
+mkdir -p "$TMPDIR_FIXTURE_LEGACY/.topology/memory/artifacts"
+echo "sentinel-clone-era-handoff" > "$TMPDIR_FIXTURE_LEGACY/.topology/memory/artifacts/old.handoff.md"
 touch "$TMPDIR_FIXTURE_LEGACY/.topology/placeholder"
 git -C "$TMPDIR_FIXTURE_LEGACY/.topology" add -A
 git -C "$TMPDIR_FIXTURE_LEGACY/.topology" commit -q -m "legacy"
@@ -389,6 +393,14 @@ if [[ -f "$RESCUED_LEDGER" ]] && grep -qF "sentinel-ledger-content" "$RESCUED_LE
   pass "legacy migration: ledger sentinel rescued to $RESCUED_LEDGER"
 else
   fail "legacy migration: ledger sentinel not found at $RESCUED_LEDGER (install output: ${INSTALL_LEGACY_OUT:0:400})"
+fi
+
+# Clone-era memory/artifacts/* must land in the canonical memory dir (ADR-0013).
+RESCUED_ARTIFACT="$TMPDIR_FIXTURE_LEGACY/.claude/topology/memory/old.handoff.md"
+if [[ -f "$RESCUED_ARTIFACT" ]] && grep -qF "sentinel-clone-era-handoff" "$RESCUED_ARTIFACT"; then
+  pass "legacy migration: clone-era memory/artifacts handoff rescued"
+else
+  fail "legacy migration: clone-era handoff not found at $RESCUED_ARTIFACT (install output: ${INSTALL_LEGACY_OUT:0:400})"
 fi
 
 # New .topology must not have .git.
@@ -440,6 +452,389 @@ if [[ -n "$manifest_pos" && -n "$hint_pos" && "$hint_pos" -gt "$manifest_pos" ]]
 else
   fail "commit hint: hint position check failed (manifest_pos='$manifest_pos', hint_pos='$hint_pos')"
 fi
+
+# ── Global-scope scenarios (Phase 8) ─────────────────────────────────────────
+#
+# These scenarios exercise the global payload path introduced in Phase 8. They
+# were committed red-first behind a PHASE8_RED=1 guard, removed once the
+# production code landed.
+#
+# Interactive branches are exercised via the PROMPT_INPUT_FD seam: can_prompt()
+# treats a set-and-readable PROMPT_INPUT_FD as promptable and ask() reads from
+# it, so the legacy-clone refusal branch (test K) runs without a tty. Production
+# behavior is unchanged when the variable is unset.
+
+# ── Global test F: piped global offline install via file:// ──────────────────
+# Verifies that a piped --global install (BASH_SOURCE unset, no tty) uses the
+# payload download path, extracts into TOPOLOGY_HOME, and produces: VERSION
+# present, no .git, no *.rs files, no docs/ directory.
+TMPDIR_GLOBAL_HOME="$(mktemp -d)"
+cleanup_all_global() {
+  rm -rf "$TMPDIR_STAGE" "$TMPDIR_WORK" "$TMPDIR_RELEASE" "$TMPDIR_TOPOLOGY" \
+         "$TMPDIR_FIXTURE_PIPED" "${TMPDIR_FIXTURE_CHECKOUT:-}" "${TMPDIR_FIXTURE_LEGACY:-}" \
+         "${TMPDIR_FIXTURE_HINT:-}" "$TMPDIR_GLOBAL_HOME" \
+         "${TMPDIR_GLOBAL_CHECKOUT_HOME:-}" "${TMPDIR_GLOBAL_LEGACY_HOME:-}" \
+         "${TMPDIR_CORRUPT_HOME:-}" "${TMPDIR_CORRUPT_RELEASE:-}" \
+         "${TMPDIR_SLASH_HOME:-}" "${TMPDIR_REFUSE_HOME:-}" "${TMPDIR_HEADLESS_HOME:-}"
+}
+trap cleanup_all_global EXIT
+
+GLOBAL_ROOT="$TMPDIR_GLOBAL_HOME/.topology"
+
+INSTALL_GLOBAL_OUT="$(
+  HOME="$TMPDIR_GLOBAL_HOME" \
+  TOPOLOGY_HOME="$GLOBAL_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --yes --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || true
+
+# VERSION present in the global root.
+if [[ -f "$GLOBAL_ROOT/VERSION" ]]; then
+  pass "global piped install: VERSION present at TOPOLOGY_HOME"
+else
+  fail "global piped install: VERSION missing at $GLOBAL_ROOT (output: ${INSTALL_GLOBAL_OUT:0:400})"
+fi
+
+# No .git directory in the installed root.
+if [[ ! -d "$GLOBAL_ROOT/.git" ]]; then
+  pass "global piped install: no .git in installed root"
+else
+  fail "global piped install: .git present in installed root — should be payload-only"
+fi
+
+# No *.rs files (no source tree leaked into the payload).
+RS_COUNT="$(find "$GLOBAL_ROOT" -name '*.rs' 2>/dev/null | wc -l | tr -d ' ')"
+if [[ "$RS_COUNT" -eq 0 ]]; then
+  pass "global piped install: no *.rs files in installed root"
+else
+  fail "global piped install: found $RS_COUNT *.rs file(s) — source tree must not be in payload"
+fi
+
+# No docs/ directory.
+if [[ ! -d "$GLOBAL_ROOT/docs" ]]; then
+  pass "global piped install: no docs/ in installed root"
+else
+  fail "global piped install: docs/ present in installed root — must be payload-only"
+fi
+
+# ── Global test G: corrupted-checksum refusal ─────────────────────────────────
+# A tampered tarball must be refused and must not touch an existing root.
+TMPDIR_CORRUPT_HOME="$(mktemp -d)"
+CORRUPT_ROOT="$TMPDIR_CORRUPT_HOME/.topology"
+
+# Plant an existing good VERSION file to prove it is untouched after refusal.
+mkdir -p "$CORRUPT_ROOT"
+echo 'version = "sentinel-v999"' > "$CORRUPT_ROOT/VERSION"
+
+# Build a corrupt release: valid SHA256SUMS but corrupted tarball content.
+TMPDIR_CORRUPT_RELEASE="$(mktemp -d)"
+mkdir -p "$TMPDIR_CORRUPT_RELEASE/latest/download"
+echo "this is not a valid tarball" > "$TMPDIR_CORRUPT_RELEASE/latest/download/topology-payload.tar.gz"
+# Write a SHA256SUMS that does NOT match the corrupt file.
+(
+  cd "$TMPDIR_CORRUPT_RELEASE/latest/download"
+  # Use the real tarball's checksum so verification detects the mismatch.
+  $SHASUM_CMD "$TMPDIR_RELEASE/latest/download/topology-payload.tar.gz" \
+    | sed 's|.*/topology-payload.tar.gz|topology-payload.tar.gz|' > SHA256SUMS
+)
+
+CORRUPT_EXIT=0
+  HOME="$TMPDIR_CORRUPT_HOME" \
+  TOPOLOGY_HOME="$CORRUPT_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_CORRUPT_RELEASE" \
+    bash -s -- --global --yes --harness none \
+      < "$SCRIPT_DIR/install.sh" >/dev/null 2>&1 || CORRUPT_EXIT=$?
+
+# Install must fail (non-zero exit).
+if [[ "$CORRUPT_EXIT" -ne 0 ]]; then
+  pass "corrupted-checksum: install exits non-zero ($CORRUPT_EXIT)"
+else
+  fail "corrupted-checksum: install exited 0 — should have refused corrupt tarball"
+fi
+
+# The pre-existing VERSION must be untouched.
+if [[ -f "$CORRUPT_ROOT/VERSION" ]] && grep -qF "sentinel-v999" "$CORRUPT_ROOT/VERSION"; then
+  pass "corrupted-checksum: existing root untouched after refusal"
+else
+  fail "corrupted-checksum: existing root was modified despite corrupt tarball"
+fi
+
+rm -rf "$TMPDIR_CORRUPT_RELEASE" "$TMPDIR_CORRUPT_HOME"
+
+# ── Global test H: checkout global assembles payload into ~/.topology ─────────
+# When install.sh is invoked via BASH_SOURCE (not piped) with --global, the
+# checkout must NOT become ROOT itself; instead the payload is assembled into
+# TOPOLOGY_HOME via build-payload.sh, just like --project checkout mode.
+TMPDIR_GLOBAL_CHECKOUT_HOME="$(mktemp -d)"
+GLOBAL_CHECKOUT_ROOT="$TMPDIR_GLOBAL_CHECKOUT_HOME/.topology"
+
+INSTALL_GLOBAL_CHECKOUT_OUT="$(
+  HOME="$TMPDIR_GLOBAL_CHECKOUT_HOME" \
+  TOPOLOGY_HOME="$GLOBAL_CHECKOUT_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash "$SCRIPT_DIR/install.sh" \
+      --global --yes --harness none 2>&1
+)" || true
+
+# VERSION present.
+if [[ -f "$GLOBAL_CHECKOUT_ROOT/VERSION" ]]; then
+  pass "global checkout install: VERSION present at TOPOLOGY_HOME"
+else
+  fail "global checkout install: VERSION missing at $GLOBAL_CHECKOUT_ROOT (output: ${INSTALL_GLOBAL_CHECKOUT_OUT:0:400})"
+fi
+
+# No .git (payload, not the checkout itself).
+if [[ ! -d "$GLOBAL_CHECKOUT_ROOT/.git" ]]; then
+  pass "global checkout install: no .git in installed root (checkout is not ROOT)"
+else
+  fail "global checkout install: .git present — checkout must not be used as ROOT"
+fi
+
+# Re-run (upgrade in place). Assert on the re-run's own exit code and the
+# in-place-upgrade marker — VERSION-still-present alone is guaranteed by run 1
+# and could not fail even if the re-run died before touching anything.
+RERUN_EXIT=0
+RERUN_OUT="$(
+  HOME="$TMPDIR_GLOBAL_CHECKOUT_HOME" \
+  TOPOLOGY_HOME="$GLOBAL_CHECKOUT_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash "$SCRIPT_DIR/install.sh" \
+      --global --yes --harness none 2>&1
+)" || RERUN_EXIT=$?
+
+if [[ $RERUN_EXIT -eq 0 ]] && grep -qF "Upgrading existing payload" <<<"$RERUN_OUT" \
+   && [[ -f "$GLOBAL_CHECKOUT_ROOT/VERSION" ]]; then
+  pass "global checkout install re-run: upgraded in place (exit 0)"
+else
+  fail "global checkout install re-run: exit=$RERUN_EXIT (output: ${RERUN_OUT:0:400})"
+fi
+
+# ── Global test I: legacy global clone rescue with --yes ─────────────────────
+# Pre-plant a .git-based ~/.topology (legacy global clone) containing a sentinel
+# ledger file. With --yes the installer must: rescue the ledger into a timestamped
+# backup sibling, then replace the clone with the payload.
+TMPDIR_GLOBAL_LEGACY_HOME="$(mktemp -d)"
+GLOBAL_LEGACY_ROOT="$TMPDIR_GLOBAL_LEGACY_HOME/.topology"
+
+# Plant a fake global legacy clone.
+mkdir -p "$GLOBAL_LEGACY_ROOT"
+git -C "$GLOBAL_LEGACY_ROOT" init -q
+git -C "$GLOBAL_LEGACY_ROOT" config user.name  "Test User"
+git -C "$GLOBAL_LEGACY_ROOT" config user.email "test@example.com"
+mkdir -p "$GLOBAL_LEGACY_ROOT/docs/learn"
+echo "global-sentinel-ledger" > "$GLOBAL_LEGACY_ROOT/docs/learn/ledger.md"
+mkdir -p "$GLOBAL_LEGACY_ROOT/docs/memory"
+echo "global-sentinel-handoff" > "$GLOBAL_LEGACY_ROOT/docs/memory/phase8.handoff.md"
+mkdir -p "$GLOBAL_LEGACY_ROOT/memory/artifacts"
+echo "global-sentinel-clone-era" > "$GLOBAL_LEGACY_ROOT/memory/artifacts/old.handoff.md"
+touch "$GLOBAL_LEGACY_ROOT/placeholder"
+git -C "$GLOBAL_LEGACY_ROOT" add -A
+git -C "$GLOBAL_LEGACY_ROOT" commit -q -m "legacy"
+
+INSTALL_GLOBAL_LEGACY_OUT="$(
+  HOME="$TMPDIR_GLOBAL_LEGACY_HOME" \
+  TOPOLOGY_HOME="$GLOBAL_LEGACY_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --yes --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || true
+
+# Backup dir must exist as a sibling of GLOBAL_LEGACY_ROOT (${ROOT}-backup-<ts>/).
+BACKUP_DIR="$(find "$TMPDIR_GLOBAL_LEGACY_HOME" -maxdepth 1 -name '.topology-backup-*' -type d 2>/dev/null | head -1)"
+if [[ -n "$BACKUP_DIR" ]]; then
+  pass "global legacy rescue: backup directory created at ${BACKUP_DIR##*/}"
+else
+  fail "global legacy rescue: no .topology-backup-<ts> directory found in $TMPDIR_GLOBAL_LEGACY_HOME (output: ${INSTALL_GLOBAL_LEGACY_OUT:0:400})"
+fi
+
+# Ledger must be in the backup.
+if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/docs/learn/ledger.md" ]] && \
+   grep -qF "global-sentinel-ledger" "$BACKUP_DIR/docs/learn/ledger.md"; then
+  pass "global legacy rescue: ledger rescued to backup dir"
+else
+  fail "global legacy rescue: ledger not found in backup dir"
+fi
+
+# Handoff must be in the backup.
+if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/docs/memory/phase8.handoff.md" ]] && \
+   grep -qF "global-sentinel-handoff" "$BACKUP_DIR/docs/memory/phase8.handoff.md"; then
+  pass "global legacy rescue: handoff rescued to backup dir"
+else
+  fail "global legacy rescue: handoff not found in backup dir"
+fi
+
+# Clone-era memory/artifacts/* must be in the backup too (ADR-0013).
+if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/memory/artifacts/old.handoff.md" ]] && \
+   grep -qF "global-sentinel-clone-era" "$BACKUP_DIR/memory/artifacts/old.handoff.md"; then
+  pass "global legacy rescue: clone-era memory/artifacts handoff rescued"
+else
+  fail "global legacy rescue: clone-era handoff not found in backup dir"
+fi
+
+# The clone must be replaced with a payload (no .git).
+if [[ ! -d "$GLOBAL_LEGACY_ROOT/.git" ]]; then
+  pass "global legacy rescue --yes: legacy clone replaced with payload (no .git)"
+else
+  fail "global legacy rescue --yes: .git still present — clone not replaced"
+fi
+
+# New install must have VERSION.
+if [[ -f "$GLOBAL_LEGACY_ROOT/VERSION" ]]; then
+  pass "global legacy rescue --yes: VERSION present in new payload"
+else
+  fail "global legacy rescue --yes: VERSION missing from new payload"
+fi
+
+# Belt-and-suspenders: the rescue must not write any .claude/ under the remapped
+# HOME. (An empty-PROJECT_PATH regression would target /.claude/topology at the
+# filesystem root, which this can't see — but that variant dies loudly anyway:
+# the root-level mkdir -p fails on permissions under set -e.)
+if [[ ! -d "$TMPDIR_GLOBAL_LEGACY_HOME/.claude" ]]; then
+  pass "global legacy rescue: no PROJECT_PATH writes (no .claude/ created)"
+else
+  fail "global legacy rescue: .claude/ was created — PROJECT_PATH guard failed"
+fi
+
+rm -rf "$TMPDIR_GLOBAL_LEGACY_HOME"
+
+# ── Global test J: trailing slash on TOPOLOGY_HOME must not eat the backup ───
+# Regression for the review-found data-loss bug: with TOPOLOGY_HOME ending in
+# "/", ${ROOT}-backup-<ts> was computed as a CHILD of ROOT ("…/.topology/-backup-…"),
+# so rm -rf "$ROOT" deleted the freshly written backup — after printing
+# "rescued: …". The installer now strips the trailing slash; the backup must
+# survive as a true sibling.
+TMPDIR_SLASH_HOME="$(mktemp -d)"
+SLASH_ROOT="$TMPDIR_SLASH_HOME/.topology"
+
+mkdir -p "$SLASH_ROOT"
+git -C "$SLASH_ROOT" init -q
+git -C "$SLASH_ROOT" config user.name  "Test User"
+git -C "$SLASH_ROOT" config user.email "test@example.com"
+mkdir -p "$SLASH_ROOT/docs/learn"
+echo "slash-sentinel-ledger" > "$SLASH_ROOT/docs/learn/ledger.md"
+git -C "$SLASH_ROOT" add -A
+git -C "$SLASH_ROOT" commit -q -m "legacy"
+
+# Note the trailing slash on TOPOLOGY_HOME — tab completion produces this routinely.
+INSTALL_SLASH_OUT="$(
+  HOME="$TMPDIR_SLASH_HOME" \
+  TOPOLOGY_HOME="$SLASH_ROOT/" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --yes --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || true
+
+SLASH_BACKUP_DIR="$(find "$TMPDIR_SLASH_HOME" -maxdepth 1 -name '.topology-backup-*' -type d 2>/dev/null | head -1)"
+if [[ -n "$SLASH_BACKUP_DIR" && -f "$SLASH_BACKUP_DIR/docs/learn/ledger.md" ]] && \
+   grep -qF "slash-sentinel-ledger" "$SLASH_BACKUP_DIR/docs/learn/ledger.md"; then
+  pass "trailing-slash TOPOLOGY_HOME: backup survives as a sibling"
+else
+  fail "trailing-slash TOPOLOGY_HOME: backup missing — data loss regression (output: ${INSTALL_SLASH_OUT:0:400})"
+fi
+
+if [[ -f "$SLASH_ROOT/VERSION" && ! -d "$SLASH_ROOT/.git" ]]; then
+  pass "trailing-slash TOPOLOGY_HOME: clone replaced with payload"
+else
+  fail "trailing-slash TOPOLOGY_HOME: payload not installed at normalized root"
+fi
+
+rm -rf "$TMPDIR_SLASH_HOME"
+
+# ── Global test K: interactive refusal leaves the legacy clone intact ────────
+# AC-3's refusal branch, exercised via the PROMPT_INPUT_FD seam: answering "n"
+# to "replace legacy clone …?" must abort (exit 1) and leave the clone untouched.
+TMPDIR_REFUSE_HOME="$(mktemp -d)"
+REFUSE_ROOT="$TMPDIR_REFUSE_HOME/.topology"
+
+mkdir -p "$REFUSE_ROOT"
+git -C "$REFUSE_ROOT" init -q
+git -C "$REFUSE_ROOT" config user.name  "Test User"
+git -C "$REFUSE_ROOT" config user.email "test@example.com"
+mkdir -p "$REFUSE_ROOT/docs/learn"
+echo "refuse-sentinel-ledger" > "$REFUSE_ROOT/docs/learn/ledger.md"
+git -C "$REFUSE_ROOT" add -A
+git -C "$REFUSE_ROOT" commit -q -m "legacy"
+
+printf 'n\n' > "$TMPDIR_REFUSE_HOME/answers"
+
+REFUSE_EXIT=0
+REFUSE_OUT="$(
+  HOME="$TMPDIR_REFUSE_HOME" \
+  TOPOLOGY_HOME="$REFUSE_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+  PROMPT_INPUT_FD="$TMPDIR_REFUSE_HOME/answers" \
+    bash -s -- --global --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || REFUSE_EXIT=$?
+
+if [[ $REFUSE_EXIT -ne 0 ]] && grep -qF "legacy clone left intact" <<<"$REFUSE_OUT"; then
+  pass "interactive refusal: install aborts non-zero with intact-clone message"
+else
+  fail "interactive refusal: exit=$REFUSE_EXIT (output: ${REFUSE_OUT:0:400})"
+fi
+
+if [[ -d "$REFUSE_ROOT/.git" ]] && grep -qF "refuse-sentinel-ledger" "$REFUSE_ROOT/docs/learn/ledger.md"; then
+  pass "interactive refusal: legacy clone left intact (ledger + .git untouched)"
+else
+  fail "interactive refusal: clone was modified despite refusal"
+fi
+
+# A refusal must not litter a backup dir either (rescue runs only on replacement).
+REFUSE_BACKUP="$(find "$TMPDIR_REFUSE_HOME" -maxdepth 1 -name '.topology-backup-*' -type d 2>/dev/null | head -1)"
+if [[ -z "$REFUSE_BACKUP" ]]; then
+  pass "interactive refusal: no backup dir littered"
+else
+  fail "interactive refusal: backup dir $REFUSE_BACKUP created despite refusal"
+fi
+
+rm -rf "$TMPDIR_REFUSE_HOME"
+
+# ── Global test L: headless without --yes refuses to touch a legacy clone ────
+# ADR-0012 §4: non-interactive runs apply the printed default. The legacy-clone
+# prompt defaults to "N", so a headless run (no tty seam, no --yes) must exit
+# non-zero with a remedy and leave the clone untouched — never silently delete.
+TMPDIR_HEADLESS_HOME="$(mktemp -d)"
+HEADLESS_ROOT="$TMPDIR_HEADLESS_HOME/.topology"
+
+mkdir -p "$HEADLESS_ROOT"
+git -C "$HEADLESS_ROOT" init -q
+git -C "$HEADLESS_ROOT" config user.name  "Test User"
+git -C "$HEADLESS_ROOT" config user.email "test@example.com"
+mkdir -p "$HEADLESS_ROOT/docs/learn"
+echo "headless-sentinel-ledger" > "$HEADLESS_ROOT/docs/learn/ledger.md"
+git -C "$HEADLESS_ROOT" add -A
+git -C "$HEADLESS_ROOT" commit -q -m "legacy"
+
+HEADLESS_EXIT=0
+HEADLESS_OUT="$(
+  HOME="$TMPDIR_HEADLESS_HOME" \
+  TOPOLOGY_HOME="$HEADLESS_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || HEADLESS_EXIT=$?
+
+if [[ $HEADLESS_EXIT -ne 0 ]] && grep -qF "requires confirmation to replace" <<<"$HEADLESS_OUT"; then
+  pass "headless no --yes: refuses with remedy (exit $HEADLESS_EXIT)"
+else
+  fail "headless no --yes: exit=$HEADLESS_EXIT — must refuse, not delete (output: ${HEADLESS_OUT:0:400})"
+fi
+
+if [[ -d "$HEADLESS_ROOT/.git" ]] && grep -qF "headless-sentinel-ledger" "$HEADLESS_ROOT/docs/learn/ledger.md"; then
+  pass "headless no --yes: legacy clone left untouched"
+else
+  fail "headless no --yes: clone was modified — destructive non-interactive default regressed"
+fi
+
+rm -rf "$TMPDIR_HEADLESS_HOME"
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""

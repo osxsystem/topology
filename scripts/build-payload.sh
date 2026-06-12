@@ -102,11 +102,11 @@ cp "$REPO_ROOT/scripts/fetch-gatekeeper.sh" "$STAGE_DIR/scripts/fetch-gatekeeper
 
 # AGENTS.md — root-marker file required by is_marked_root() in main.rs.
 # The unpacked payload tree contains skills/ (shipped above); is_marked_root also
-# requires at least one of ROOT_MARKERS = ["AGENTS.md", "gatekeeper", ".claude-plugin"].
+# requires at least one of ROOT_MARKERS = ["AGENTS.md", "gatekeeper"].
 # AGENTS.md is the right choice: it is a real, human-readable install-doc that makes
 # sense at the payload root, unlike the "gatekeeper" binary (not yet present at unpack
-# time) or ".claude-plugin" (plugin-only, excluded on purpose).  Without this marker
-# the binary walks up to $HOME or further when TOPOLOGY_ROOT is unset.
+# time).  Without this marker the binary walks up to $HOME or further when TOPOLOGY_ROOT
+# is unset.
 SRC_AGENTS="$REPO_ROOT/AGENTS.md"
 if [[ ! -f "$SRC_AGENTS" ]]; then
   echo "build-payload: missing required marker file: AGENTS.md" >&2

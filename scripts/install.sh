@@ -5,8 +5,8 @@
 #   1. Piped/sourced — no BASH_SOURCE file: downloads (or re-downloads) the distribution
 #      payload tarball from GitHub releases, verifies its SHA-256 checksum, and unpacks it
 #      into the target directory.
-#   2. Inside a checkout — BASH_SOURCE resolves to a real file: uses that checkout directly
-#      for global scope; builds the payload from the checkout for local scope (no clone).
+#   2. Inside a checkout — BASH_SOURCE resolves to a real file: builds the payload from the
+#      checkout for both scopes (no clone; the checkout is never used as the install root).
 #
 # Options:
 #   --harness <claude|codex|cursor|opencode|none>
@@ -19,7 +19,7 @@
 #   --build-from-source   Skip the prebuilt download; build with cargo instead.
 #
 # Test seams:
-#   TOPOLOGY_HOME                 Override the global clone destination (default $HOME/.topology).
+#   TOPOLOGY_HOME                 Override the global install destination (default $HOME/.topology).
 #   TOPOLOGY_RELEASE_BASE_URL     Override the binary/payload download URL prefix (file:// works).
 #   TOPOLOGY_VERSION              Override the pinned version.
 #   PROMPT_INPUT_FD               Override the fd used for interactive prompts (default /dev/tty).
@@ -40,18 +40,30 @@ Options:
 USAGE
 }
 
+# Interactive prompts read from /dev/tty by default; the PROMPT_INPUT_FD test seam
+# (already used by the stale-PATH repair) substitutes a readable path so the e2e
+# suite can exercise interactive branches without a tty. Production behavior is
+# unchanged when the variable is unset.
 can_prompt() {
+  if [[ -n "${PROMPT_INPUT_FD:-}" && -r "${PROMPT_INPUT_FD}" ]]; then
+    return 0
+  fi
   ( : < /dev/tty ) 2>/dev/null
 }
 
-# Read one line from /dev/tty; if unavailable, echo the default.
-# Usage: ask "question" "default"  → prints result to stdout
+# Read one line from /dev/tty (or $PROMPT_INPUT_FD when set); if unavailable, echo
+# the default. Usage: ask "question" "default"  → prints result to stdout
 ask() {
   local question="$1"
   local default="$2"
-  printf '%s [%s]: ' "$question" "$default" > /dev/tty
   local answer
-  read -r answer < /dev/tty
+  if [[ -n "${PROMPT_INPUT_FD:-}" && -r "${PROMPT_INPUT_FD}" ]]; then
+    printf '%s [%s]: ' "$question" "$default" >&2
+    read -r answer < "$PROMPT_INPUT_FD" || answer=""
+  else
+    printf '%s [%s]: ' "$question" "$default" > /dev/tty
+    read -r answer < /dev/tty
+  fi
   echo "${answer:-$default}"
 }
 
@@ -157,25 +169,305 @@ if [[ "$SCOPE" == "local" && $BUILD_FROM_SOURCE -eq 1 ]] \
   exit 1
 fi
 
-# ─── 2. Locate or create the framework tree ──────────────────────────────────
+# ─── 2. Shared payload helpers ───────────────────────────────────────────────
+# Hoisted above the scope branch so both global and local paths share the same
+# download/verify/unpack and root-handling machinery.
 
-if [[ "$SCOPE" == "global" ]]; then
-  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  else
-    ROOT="${TOPOLOGY_HOME:-$HOME/.topology}"
-    if [[ -e "$ROOT" ]]; then
-      if [[ ! -d "$ROOT/.git" ]]; then
-        echo "error: $ROOT exists but is not a git repository. Remove it or set TOPOLOGY_HOME to a different path." >&2
-        exit 1
-      fi
-      echo "==> Updating existing clone at $ROOT"
-      git -C "$ROOT" pull --ff-only
+_unpack_payload() {
+  # $1 = tarball path (must exist and be readable)
+  # Unpacks into $ROOT (caller must mkdir -p $ROOT beforehand).
+  local tarball="$1"
+  tar -xzf "$tarball" -C "$ROOT"
+}
+
+_rescue_legacy_clone_local() {
+  # Local-scope rescue: copies known in-tree project-state files to the canonical
+  # artifacts root ($PROJECT_PATH/.claude/topology/) so they survive the checkout
+  # deletion. Never overwrites an existing destination.
+  local ledger_src="$ROOT/docs/learn/ledger.md"
+  local ledger_dst="$PROJECT_PATH/.claude/topology/learn/ledger.md"
+  if [[ -f "$ledger_src" ]]; then
+    if [[ ! -f "$ledger_dst" ]]; then
+      mkdir -p "$(dirname "$ledger_dst")"
+      cp "$ledger_src" "$ledger_dst"
+      echo "    rescued: $ledger_src → $ledger_dst"
     else
-      echo "==> Cloning topology into $ROOT"
-      git clone https://github.com/osxsystem/topology.git "$ROOT"
+      echo "    skipped (already exists): $ledger_dst"
     fi
   fi
+  # Memory handoffs — copy any *.handoff.md files from docs/memory/.
+  local memory_src="$ROOT/docs/memory"
+  local memory_dst="$PROJECT_PATH/.claude/topology/memory"
+  if [[ -d "$memory_src" ]]; then
+    local handoff
+    for handoff in "$memory_src"/*.handoff.md; do
+      [[ -e "$handoff" ]] || continue
+      local dst_file
+      dst_file="$memory_dst/$(basename "$handoff")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$memory_dst"
+        cp "$handoff" "$dst_file"
+        echo "    rescued: $handoff → $dst_file"
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
+  # Clone-era handoffs — memory/artifacts/* predates the docs/memory migration
+  # (ADR-0013 names this location explicitly for the installer-v3 rescue).
+  local artifacts_src="$ROOT/memory/artifacts"
+  if [[ -d "$artifacts_src" ]]; then
+    local artifact
+    for artifact in "$artifacts_src"/*; do
+      [[ -f "$artifact" ]] || continue
+      local dst_file
+      dst_file="$memory_dst/$(basename "$artifact")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$memory_dst"
+        cp "$artifact" "$dst_file"
+        echo "    rescued: $artifact → $dst_file"
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
+}
+
+_rescue_legacy_clone_global() {
+  # Global-scope rescue: a global clone has no project context, so there is no
+  # canonical artifacts root to rescue into. Instead, copy the in-tree state into
+  # a timestamped sibling backup: ${ROOT}-backup-<YYYYmmdd-HHMMSS>/.
+  # Never overwrites an existing backup file; prints every rescued path.
+  # Deliberately does NOT write into /.claude/topology (PROJECT_PATH is empty in
+  # global scope — guard against that path bug).
+  local ts
+  ts="$(date '+%Y%m%d-%H%M%S')"
+  local backup_dir="${ROOT}-backup-${ts}"
+  local ledger_src="$ROOT/docs/learn/ledger.md"
+  local ledger_dst="$backup_dir/docs/learn/ledger.md"
+  local rescued=0
+  if [[ -f "$ledger_src" ]]; then
+    if [[ ! -f "$ledger_dst" ]]; then
+      mkdir -p "$(dirname "$ledger_dst")"
+      cp "$ledger_src" "$ledger_dst"
+      echo "    rescued: $ledger_src → $ledger_dst"
+      rescued=$((rescued + 1))
+    else
+      echo "    skipped (already exists): $ledger_dst"
+    fi
+  fi
+  local memory_src="$ROOT/docs/memory"
+  local memory_dst="$backup_dir/docs/memory"
+  if [[ -d "$memory_src" ]]; then
+    local handoff
+    for handoff in "$memory_src"/*.handoff.md; do
+      [[ -e "$handoff" ]] || continue
+      local dst_file
+      dst_file="$memory_dst/$(basename "$handoff")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$memory_dst"
+        cp "$handoff" "$dst_file"
+        echo "    rescued: $handoff → $dst_file"
+        rescued=$((rescued + 1))
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
+  # Clone-era handoffs — memory/artifacts/* predates the docs/memory migration
+  # (ADR-0013 names this location explicitly for the installer-v3 rescue).
+  local artifacts_src="$ROOT/memory/artifacts"
+  local artifacts_dst="$backup_dir/memory/artifacts"
+  if [[ -d "$artifacts_src" ]]; then
+    local artifact
+    for artifact in "$artifacts_src"/*; do
+      [[ -f "$artifact" ]] || continue
+      local dst_file
+      dst_file="$artifacts_dst/$(basename "$artifact")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$artifacts_dst"
+        cp "$artifact" "$dst_file"
+        echo "    rescued: $artifact → $dst_file"
+        rescued=$((rescued + 1))
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
+  if [[ $rescued -gt 0 ]]; then
+    echo "    backup: $backup_dir ($rescued file(s) rescued)"
+  else
+    echo "    nothing to rescue (no ledger, handoffs, or clone-era artifacts found in legacy clone)"
+    # Remove the empty backup dir if nothing was written.
+    rmdir "$backup_dir" 2>/dev/null || true
+  fi
+}
+
+_handle_existing_root() {
+  # $ROOT already exists; decide whether and how to replace it. Callers invoke
+  # this only AFTER the replacement payload is in hand (built or downloaded +
+  # verified), so a failed acquisition never destroys a working install.
+  if [[ -f "$ROOT/VERSION" ]]; then
+    # Payload install: safe to replace in-place because project state is elsewhere.
+    echo "==> Upgrading existing payload at $ROOT"
+    rm -rf "$ROOT"
+  elif [[ -d "$ROOT/.git" ]]; then
+    # Legacy clone: decide first, then rescue + delete only when replacement is
+    # actually going ahead — a refusal leaves the clone fully intact (no backup
+    # litter, nothing lost).
+    echo "==> Legacy clone detected at $ROOT"
+    local do_replace=0
+    if [[ $YES -eq 1 ]]; then
+      echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes)"
+      do_replace=1
+    elif can_prompt; then
+      answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
+      case "$answer" in
+        y|Y|yes|Yes) do_replace=1 ;;
+      esac
+    else
+      # ADR-0012 §4: non-interactive runs apply the printed default. The prompt
+      # default is "N", so a headless run without --yes refuses rather than
+      # silently destroying the clone.
+      echo "error: legacy clone at $ROOT requires confirmation to replace." >&2
+      echo "  Non-interactive default follows the prompt default (N): leaving it intact." >&2
+      echo "  Remedy: re-run with --yes (in-tree state is rescued before replacement)." >&2
+      exit 1
+    fi
+    if [[ $do_replace -eq 1 ]]; then
+      echo "==> Rescuing any in-tree state before replacing."
+      if [[ "$SCOPE" == "global" ]]; then
+        _rescue_legacy_clone_global
+      else
+        _rescue_legacy_clone_local
+      fi
+      rm -rf "$ROOT"
+    else
+      echo "Aborted: legacy clone left intact at $ROOT." >&2
+      exit 1
+    fi
+  else
+    echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
+    echo "  Cannot determine safe upgrade path; refusing to touch it." >&2
+    echo "  Remove $ROOT manually and re-run." >&2
+    exit 1
+  fi
+}
+
+_download_and_verify_payload() {
+  # Downloads topology-payload.tar.gz + SHA256SUMS into $TMPDIR_DL and verifies the
+  # checksum. Sets TMPDIR_DL as a side effect; caller must clean it up.
+  # Uses TOPOLOGY_RELEASE_BASE_URL, TOPOLOGY_VERSION (both optional env overrides).
+  OS="$(uname -s)"
+  case "$OS" in
+    Darwin) SHASUM_CMD="shasum -a 256" ;;
+    Linux)  SHASUM_CMD="sha256sum" ;;
+    *)
+      echo "error: unsupported OS '$OS' for payload download" >&2
+      exit 1
+      ;;
+  esac
+
+  # BASE is the release *download* prefix (ends in /download for the GitHub default).
+  # The latest-release URL is derived by stripping /download and appending
+  # /latest/download — for the GitHub default this yields
+  # https://github.com/osxsystem/topology/releases/latest/download/...,
+  # and for a file:///tmp/release test override (no /download suffix) it yields
+  # file:///tmp/release/latest/download/..., matching the test fixture layout.
+  BASE="${TOPOLOGY_RELEASE_BASE_URL:-https://github.com/osxsystem/topology/releases/download}"
+  local payload_url sums_url
+  if [[ -n "${TOPOLOGY_VERSION:-}" ]]; then
+    payload_url="$BASE/v$TOPOLOGY_VERSION/topology-payload.tar.gz"
+    sums_url="$BASE/v$TOPOLOGY_VERSION/SHA256SUMS"
+  else
+    local latest_base="${BASE%/download}/latest/download"
+    payload_url="$latest_base/topology-payload.tar.gz"
+    sums_url="$latest_base/SHA256SUMS"
+  fi
+
+  TMPDIR_DL="$(mktemp -d)"
+  # Register cleanup immediately — a curl failure under set -e must not leak the
+  # temp dir. The EXIT trap also covers the error paths below and the unpack itself;
+  # callers clear it (trap - EXIT) once the payload is installed.
+  cleanup_dl() { rm -rf "$TMPDIR_DL"; }
+  trap cleanup_dl EXIT
+
+  echo "==> Downloading payload from $payload_url" >&2
+  curl -fsSL --max-time 60 -o "$TMPDIR_DL/topology-payload.tar.gz" "$payload_url"
+
+  echo "==> Downloading SHA256SUMS from $sums_url" >&2
+  curl -fsSL --max-time 60 -o "$TMPDIR_DL/SHA256SUMS" "$sums_url"
+
+  # Filter to only the payload line, then verify — chatter goes to stderr.
+  local sums_line
+  sums_line="$(grep "topology-payload.tar.gz" "$TMPDIR_DL/SHA256SUMS" || true)"
+  if [[ -z "$sums_line" ]]; then
+    echo "error: topology-payload.tar.gz not found in SHA256SUMS" >&2
+    exit 1
+  fi
+  echo "$sums_line" > "$TMPDIR_DL/SHA256SUMS.single"
+  (cd "$TMPDIR_DL" && $SHASUM_CMD -c SHA256SUMS.single >&2) || {
+    echo "error: payload checksum verification failed" >&2
+    exit 1
+  }
+}
+
+# ─── 3. Locate or create the framework tree ──────────────────────────────────
+
+if [[ "$SCOPE" == "global" ]]; then
+  ROOT="${TOPOLOGY_HOME:-$HOME/.topology}"
+  # Strip any trailing slash: ${ROOT}-backup-<ts> would otherwise be a CHILD of
+  # ROOT, and the legacy-clone rescue's backup would be deleted with the clone.
+  ROOT="${ROOT%/}"
+
+  # Fail early for piped+--build-from-source (no Rust source available in a
+  # payload install). Same rule as local scope.
+  if [[ $BUILD_FROM_SOURCE -eq 1 ]] \
+     && ! [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    echo "error: --build-from-source with a piped global install has no Rust source tree." >&2
+    echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
+    echo "    scripts/install.sh --global --build-from-source" >&2
+    echo "  from inside the checkout." >&2
+    exit 1
+  fi
+
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    # Checkout mode: build the payload from the checkout and install into ROOT,
+    # mirroring --project checkout behavior. The checkout is NOT used as ROOT itself
+    # (dev workflows self-govern via resolution step 2 regardless of ~/.topology).
+    SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+    echo "==> Installing topology payload globally at $ROOT (built from checkout)"
+    TMPDIR_BUILD="$(mktemp -d)"
+    TMPDIR_STAGE_G="$(mktemp -d)"
+    cleanup_build_global() { rm -rf "$TMPDIR_BUILD" "$TMPDIR_STAGE_G"; }
+    trap cleanup_build_global EXIT
+    PAYLOAD_TARBALL="$(cd "$TMPDIR_BUILD" && bash "$SRC_ROOT/scripts/build-payload.sh" "$TMPDIR_STAGE_G")"
+    if [[ -e "$ROOT" ]]; then
+      _handle_existing_root
+    fi
+    mkdir -p "$ROOT"
+    _unpack_payload "$PAYLOAD_TARBALL"
+    cleanup_build_global
+    trap - EXIT
+
+  else
+    # Piped mode: download the payload tarball from GitHub releases and verify its
+    # checksum before unpacking (same machinery as local piped mode — hoisted above;
+    # the helper registers the cleanup trap itself).
+    _download_and_verify_payload
+
+    if [[ -e "$ROOT" ]]; then
+      _handle_existing_root
+    fi
+
+    echo "==> Installing topology payload globally at $ROOT (downloaded)"
+    mkdir -p "$ROOT"
+    _unpack_payload "$TMPDIR_DL/topology-payload.tar.gz"
+    cleanup_dl
+    trap - EXIT
+  fi
+
 else
   # Local scope: vendor the distribution payload at <project>/.topology.
   # The payload is a curated, read-only operator snapshot (hooks, skills, instincts,
@@ -183,80 +475,6 @@ else
   # docs, no .git. All project state lives under <project>/.claude/topology/ (ADR-0013),
   # so replacing the payload on upgrade cannot delete handoffs or the learn ledger.
   ROOT="$PROJECT_PATH/.topology"
-
-  _unpack_payload() {
-    # $1 = tarball path (must exist and be readable)
-    local tarball="$1"
-    tar -xzf "$tarball" -C "$ROOT"
-  }
-
-  _rescue_legacy_clone() {
-    # Copies known in-tree project-state files to the canonical artifacts root so
-    # they survive the checkout deletion. Never overwrites an existing destination.
-    local ledger_src="$ROOT/docs/learn/ledger.md"
-    local ledger_dst="$PROJECT_PATH/.claude/topology/learn/ledger.md"
-    if [[ -f "$ledger_src" ]]; then
-      if [[ ! -f "$ledger_dst" ]]; then
-        mkdir -p "$(dirname "$ledger_dst")"
-        cp "$ledger_src" "$ledger_dst"
-        echo "    rescued: $ledger_src → $ledger_dst"
-      else
-        echo "    skipped (already exists): $ledger_dst"
-      fi
-    fi
-    # Memory handoffs — copy any *.handoff.md files from docs/memory/.
-    local memory_src="$ROOT/docs/memory"
-    local memory_dst="$PROJECT_PATH/.claude/topology/memory"
-    if [[ -d "$memory_src" ]]; then
-      local handoff
-      for handoff in "$memory_src"/*.handoff.md; do
-        [[ -e "$handoff" ]] || continue
-        local dst_file
-        dst_file="$memory_dst/$(basename "$handoff")"
-        if [[ ! -f "$dst_file" ]]; then
-          mkdir -p "$memory_dst"
-          cp "$handoff" "$dst_file"
-          echo "    rescued: $handoff → $dst_file"
-        else
-          echo "    skipped (already exists): $dst_file"
-        fi
-      done
-    fi
-  }
-
-  _handle_existing_root() {
-    # $ROOT already exists; decide whether and how to replace it. Callers invoke
-    # this only AFTER the replacement payload is in hand (built or downloaded +
-    # verified), so a failed acquisition never destroys a working install.
-    if [[ -f "$ROOT/VERSION" ]]; then
-      # Payload install: safe to replace in-place because project state is elsewhere.
-      echo "==> Upgrading existing payload at $ROOT"
-      rm -rf "$ROOT"
-    elif [[ -d "$ROOT/.git" ]]; then
-      # Legacy clone: attempt best-effort rescue of in-tree state before removing.
-      echo "==> Legacy clone detected at $ROOT; rescuing any in-tree state before replacing."
-      _rescue_legacy_clone
-      # Ask permission before deleting the checkout.
-      if [[ $YES -eq 1 ]] || ! can_prompt; then
-        echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes assumed)"
-        rm -rf "$ROOT"
-      else
-        answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
-        case "$answer" in
-          y|Y|yes|Yes) rm -rf "$ROOT" ;;
-          *)
-            echo "Aborted: legacy clone left intact at $ROOT." >&2
-            exit 1
-            ;;
-        esac
-      fi
-    else
-      echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
-      echo "  Cannot determine safe upgrade path; refusing to touch it." >&2
-      echo "  Remove $ROOT manually and re-run." >&2
-      exit 1
-    fi
-  }
 
   if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     # Dev-checkout mode: build the payload locally so the installed tree is always
@@ -278,56 +496,9 @@ else
     trap - EXIT
 
   else
-    # Piped mode: download the payload tarball from GitHub releases and verify
-    # its checksum before unpacking. Follows the same conventions as fetch-gatekeeper.sh:
-    # temp dir + trap cleanup, curl -fsSL --max-time 60, and platform-appropriate shasum.
-    OS="$(uname -s)"
-    case "$OS" in
-      Darwin) SHASUM_CMD="shasum -a 256" ;;
-      Linux)  SHASUM_CMD="sha256sum" ;;
-      *)
-        echo "error: unsupported OS '$OS' for payload download" >&2
-        exit 1
-        ;;
-    esac
-
-    # BASE is the release *download* prefix (ends in /download for the GitHub default).
-    # The latest-release URL is derived by stripping /download and appending
-    # /latest/download — for the GitHub default this yields
-    # https://github.com/osxsystem/topology/releases/latest/download/...,
-    # and for a file:///tmp/release test override (no /download suffix) it yields
-    # file:///tmp/release/latest/download/..., matching the test fixture layout.
-    BASE="${TOPOLOGY_RELEASE_BASE_URL:-https://github.com/osxsystem/topology/releases/download}"
-    if [[ -n "${TOPOLOGY_VERSION:-}" ]]; then
-      PAYLOAD_URL="$BASE/v$TOPOLOGY_VERSION/topology-payload.tar.gz"
-      SUMS_URL="$BASE/v$TOPOLOGY_VERSION/SHA256SUMS"
-    else
-      LATEST_BASE="${BASE%/download}/latest/download"
-      PAYLOAD_URL="$LATEST_BASE/topology-payload.tar.gz"
-      SUMS_URL="$LATEST_BASE/SHA256SUMS"
-    fi
-
-    TMPDIR_DL="$(mktemp -d)"
-    cleanup_dl() { rm -rf "$TMPDIR_DL"; }
-    trap cleanup_dl EXIT
-
-    echo "==> Downloading payload from $PAYLOAD_URL" >&2
-    curl -fsSL --max-time 60 -o "$TMPDIR_DL/topology-payload.tar.gz" "$PAYLOAD_URL"
-
-    echo "==> Downloading SHA256SUMS from $SUMS_URL" >&2
-    curl -fsSL --max-time 60 -o "$TMPDIR_DL/SHA256SUMS" "$SUMS_URL"
-
-    # Filter to only the payload line, then verify — chatter goes to stderr.
-    SUMS_LINE="$(grep "topology-payload.tar.gz" "$TMPDIR_DL/SHA256SUMS" || true)"
-    if [[ -z "$SUMS_LINE" ]]; then
-      echo "error: topology-payload.tar.gz not found in SHA256SUMS" >&2
-      exit 1
-    fi
-    echo "$SUMS_LINE" > "$TMPDIR_DL/SHA256SUMS.single"
-    (cd "$TMPDIR_DL" && $SHASUM_CMD -c SHA256SUMS.single >&2) || {
-      echo "error: payload checksum verification failed" >&2
-      exit 1
-    }
+    # Piped mode: download the payload tarball from GitHub releases and verify its
+    # checksum before unpacking (the helper registers the cleanup trap itself).
+    _download_and_verify_payload
 
     if [[ -e "$ROOT" ]]; then
       _handle_existing_root
@@ -350,7 +521,7 @@ fi
 
 cd "$ROOT"
 
-# ─── 3. Manifest tracking ────────────────────────────────────────────────────
+# ─── 4. Manifest tracking ────────────────────────────────────────────────────
 
 MANIFEST=()
 note() { MANIFEST+=("$1"); }
@@ -360,9 +531,13 @@ if [[ "$SCOPE" == "local" ]]; then
   if grep -qxF '.topology/' "$PROJECT_PATH/.gitignore" 2>/dev/null; then
     note "$PROJECT_PATH/.gitignore (.topology/ entry)"
   fi
+else
+  # Global installs replace the whole payload tree — name it in the closing
+  # manifest like local scope does, instead of relying on inline echo lines.
+  note "$ROOT (global payload)"
 fi
 
-# ─── 4. Acquire the binary ───────────────────────────────────────────────────
+# ─── 5. Acquire the binary ───────────────────────────────────────────────────
 
 BIN="$ROOT/bin/gatekeeper"
 
@@ -384,34 +559,10 @@ fi
 if [[ $BUILD_FROM_SOURCE -eq 1 ]]; then
   echo "==> Building gatekeeper from source (release)"
 
-  if [[ "$SCOPE" == "local" ]]; then
-    # Local-scope cargo fallback: the payload has no Rust source tree.
-    # Piped mode with --build-from-source is already rejected above; we only
-    # reach here in dev-checkout mode when the prebuilt download failed.
-    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-      # SRC_ROOT was set in section 2 for the dev-checkout branch.
-      if ! command -v cargo >/dev/null 2>&1; then
-        echo "error: cargo (Rust) not found and prebuilt download failed." >&2
-        echo "  Fix one of:" >&2
-        echo "    1. Install Rust from https://rustup.rs and re-run." >&2
-        echo "    2. Ensure network access for the prebuilt download." >&2
-        exit 1
-      fi
-      ( cd "$SRC_ROOT/gatekeeper" && cargo build --release )
-      mkdir -p "$ROOT/bin"
-      cp "$SRC_ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
-      echo "    built + copied: $BIN"
-      note "$BIN"
-    else
-      # This branch is unreachable: piped + --build-from-source is caught early.
-      echo "error: no Rust source tree available in a downloaded payload install." >&2
-      echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
-      echo "    scripts/install.sh --project <path> --build-from-source" >&2
-      echo "  from inside the checkout." >&2
-      exit 1
-    fi
-  else
-    # Global scope: $ROOT is always a checkout (git clone or BASH_SOURCE checkout).
+  # Cargo fallback: the payload has no Rust source tree. Piped + --build-from-source
+  # is rejected early for both scopes, so we only reach here in checkout mode (where
+  # section 2 set SRC_ROOT) when the prebuilt download failed or was skipped.
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
     if ! command -v cargo >/dev/null 2>&1; then
       echo "error: cargo (Rust) not found and prebuilt download failed." >&2
       echo "  Fix one of:" >&2
@@ -419,11 +570,18 @@ if [[ $BUILD_FROM_SOURCE -eq 1 ]]; then
       echo "    2. Ensure network access for the prebuilt download." >&2
       exit 1
     fi
-    ( cd gatekeeper && cargo build --release )
+    ( cd "$SRC_ROOT/gatekeeper" && cargo build --release )
     mkdir -p "$ROOT/bin"
-    cp "$ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
+    cp "$SRC_ROOT/gatekeeper/target/release/gatekeeper" "$BIN"
     echo "    built + copied: $BIN"
     note "$BIN"
+  else
+    # Unreachable belt-and-suspenders: piped + --build-from-source is caught early.
+    echo "error: no Rust source tree available in a downloaded payload install." >&2
+    echo "  Remedy: clone https://github.com/osxsystem/topology and run" >&2
+    echo "    scripts/install.sh [--global|--project <path>] --build-from-source" >&2
+    echo "  from inside the checkout." >&2
+    exit 1
   fi
 fi
 
@@ -435,21 +593,21 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-# ─── 5. CLAUDE.md → AGENTS.md symlink ────────────────────────────────────────
+# ─── 6. CLAUDE.md → AGENTS.md symlink ────────────────────────────────────────
 
 echo "==> Linking CLAUDE.md -> AGENTS.md"
 ln -sf AGENTS.md CLAUDE.md
 note "$ROOT/CLAUDE.md"
 echo "    $ROOT/CLAUDE.md -> AGENTS.md"
 
-# ─── 6. Mark scripts executable ──────────────────────────────────────────────
+# ─── 7. Mark scripts executable ──────────────────────────────────────────────
 
 echo "==> Marking scripts executable"
 chmod +x hooks/*.sh scripts/*.sh
 note "hooks/*.sh scripts/*.sh (made executable)"
 echo "    done"
 
-# ─── 7. Git pre-commit hook ───────────────────────────────────────────────────
+# ─── 8. Git pre-commit hook ───────────────────────────────────────────────────
 
 echo "==> Installing the git pre-commit hook"
 # The hook must guard the repo the developer COMMITS to. For a --project install that is the
@@ -469,7 +627,7 @@ else
   echo "    (no .git dir at $HOOK_REPO; wire hooks/pre-commit.sh into your VCS manually)"
 fi
 
-# ─── 8. Harness wiring ───────────────────────────────────────────────────────
+# ─── 9. Harness wiring ───────────────────────────────────────────────────────
 
 HARNESS=""
 if [[ -n "$HARNESS_FLAG" ]]; then
@@ -517,10 +675,6 @@ case "$HARNESS" in
 
 ==> To wire a project later, run from inside it:
     TOPOLOGY_ROOT="$ROOT" "$BIN" adapt --harness $HARNESS
-
-==> Plugin alternative (Claude Code only):
-    /plugin marketplace add osxsystem/topology
-    /plugin install topology@topology
 EOF
     fi
     ;;
@@ -553,7 +707,7 @@ EOF
     ;;
 esac
 
-# ─── 9. Stale-PATH repair ─────────────────────────────────────────────────────
+# ─── 10. Stale-PATH repair ─────────────────────────────────────────────────────
 #
 # PROMPT_INPUT_FD test seam: the interactive repair branch reads confirmation
 # from this fd (default /dev/tty). CI and tests set it to a file/pipe
@@ -601,12 +755,12 @@ repair_stale_path() {
   fi
 }
 
-# ─── 10. Adapt + plugin notes (global scope, harness=none) ───────────────────
+# ─── 11. Adapt notes (global scope, harness=none) ────────────────────────────
 
 if [[ "$SCOPE" == "global" && "$HARNESS" == "none" ]]; then
   cat <<EOF
 
-==> Optional: generate another harness's native config from this one Markdown source.
+==> Optional: generate a harness's native config from this one Markdown source.
     Outputs are build artifacts — re-run to update; add --check to verify they are current (CI-friendly).
     "$BIN" adapt --harness codex      # .codex/config.toml      (AGENTS.md carries the contract)
     "$BIN" adapt --harness cursor     # .cursor/rules/*.mdc      (instincts=Always, skills=Agent Requested)
@@ -615,26 +769,12 @@ if [[ "$SCOPE" == "global" && "$HARNESS" == "none" ]]; then
 EOF
 fi
 
-if [[ "$HARNESS" != "claude" ]]; then
-  cat <<EOF
-
-==> Claude Code plugin
-    This repo ships as a Claude Code plugin (.claude-plugin/plugin.json + marketplace.json).
-    The binary self-provisions on the first session via the SessionStart hook — no separate
-    build step required after a plugin install (ADR-0011 §3).
-      /plugin marketplace add osxsystem/topology
-      /plugin install topology@topology
-    The plugin COEXISTS with adapt: 'gatekeeper adapt --harness {codex|cursor|opencode|claude}'
-    still generates per-harness configs for non-plugin installs — it does not replace them.
-EOF
-fi
-
-# ─── 11. Stale-PATH check ────────────────────────────────────────────────────
+# ─── 12. Stale-PATH check ────────────────────────────────────────────────────
 # Runs before the summary so an accepted overwrite appears in the printed manifest.
 
 repair_stale_path "$BIN"
 
-# ─── 12. Post-install summary ────────────────────────────────────────────────
+# ─── 13. Post-install summary ────────────────────────────────────────────────
 
 echo ""
 echo "==> Installed gatekeeper"
@@ -647,7 +787,7 @@ for f in "${MANIFEST[@]}"; do
   echo "    $f"
 done
 
-# ─── 12a. Commit hint (local scope only) ─────────────────────────────────────
+# ─── 13a. Commit hint (local scope only) ─────────────────────────────────────
 # The installer writes governance files (.claude/settings.json, .gitignore, ...)
 # into the project repo but leaves them uncommitted. The review gate's cleanliness
 # check will fail with "uncommitted changes" until they are committed. Detect which
@@ -714,10 +854,6 @@ if [[ "$SCOPE" == "local" && -n "$PROJECT_PATH" ]]; then
     fi
   fi
 fi
-
-echo ""
-echo "==> Optional: put gatekeeper on PATH"
-echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"
 
 echo ""
 echo "==> Health check"

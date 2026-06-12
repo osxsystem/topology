@@ -103,7 +103,7 @@ your-framework/
 ├── hooks/                      # optional, Claude Code: forced skill evaluation
 │   ├── skill-activation.sh
 │   └── skill-rules.json
-├── .claude-plugin/plugin.json  # per-platform packaging (add others as needed)
+├── scripts/install.sh          # one-command install (plugin channel retired in Phase 8)
 └── README.md                   # multi-platform install instructions
 ```
 

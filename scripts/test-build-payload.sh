@@ -160,7 +160,7 @@ fi
 
 # ── AC-marked-root: unpacked payload satisfies is_marked_root (skills/ + AGENTS.md) ──────
 # is_marked_root in main.rs requires both: a skills/ directory AND at least one of
-# ROOT_MARKERS = ["AGENTS.md", "gatekeeper", ".claude-plugin"]. The unpacked tarball
+# ROOT_MARKERS = ["AGENTS.md", "gatekeeper"]. The unpacked tarball
 # ships skills/ (tested above) and AGENTS.md (asserted in REQUIRED_ENTRIES); verify
 # both are present together in the unpacked tree so a future build regression trips here.
 if [[ -d "$TMPDIR_UNPACK/skills" ]]; then

@@ -2,6 +2,48 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.7.0 — 2026-06-12
+
+Global payload install + plugin channel retirement (ROADMAP Phase 8).
+
+### Global scope consumes the payload
+
+- `--global` now uses the release payload (tarball download + checksum verification) instead of
+  git clone/pull. Both piped and checkout modes are supported, mirroring `--project` behaviour.
+- Checkout mode assembles the payload via `build-payload.sh` into `TOPOLOGY_HOME`; the checkout
+  is not used as `ROOT` itself. Dev self-governance (resolution step 2, Phase 11) is unaffected.
+- `--build-from-source` global: checkout → builds binary into `$ROOT/bin`; piped → early failure
+  with remedy (same rule as local scope).
+- Global legacy-clone rescue: in-tree ledger and handoffs are copied to a timestamped sibling
+  backup `${ROOT}-backup-<YYYYmmdd-HHMMSS>/` before deletion (no silent data loss).
+- `git clone`/`git pull` global path removed.
+
+### Plugin channel retirement
+
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `hooks/ensure-gatekeeper.sh`,
+  and `hooks/hooks.json` deleted.
+- `release.yml` version guard reduced to tag == `gatekeeper/Cargo.toml` only (the two JSON probes
+  are gone — without this change the next tag would fail on the deleted files).
+
+### ROOT_MARKERS update
+
+- `ROOT_MARKERS`: `["AGENTS.md", "gatekeeper", ".claude-plugin"]` → `["AGENTS.md", "gatekeeper"]`.
+  A directory with only `skills/` + `.claude-plugin/` is no longer a marked root, preventing any
+  unrelated Claude Code plugin checkout from claiming Topology self-governance.
+- Doctor F1 message updated to name the two remaining markers.
+
+### Install script cleanup
+
+- `sudo ln -sf … /usr/local/bin/gatekeeper` post-install suggestion removed (superseded by
+  `GATEKEEPER_BIN` wiring in Phase 9).
+- Shared payload helpers (`_unpack_payload`, `_handle_existing_root`, etc.) hoisted so both scopes
+  use the same download/verify/unpack machinery — no duplication.
+
+### CI wiring
+
+- New offline `installer` CI job in `ci.yml` running `just test-payload`, `just test-fetch`,
+  `just test-e2e` — installer test suites now gate merges (they were previously not in CI).
+
 ## v0.6.0 — 2026-06-12
 
 Root-resolution hardening + doctor provenance (ROADMAP Phase 11).
