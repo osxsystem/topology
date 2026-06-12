@@ -48,6 +48,7 @@ mod memory;
 mod review;
 mod scan;
 mod tdd;
+mod verify;
 mod version;
 
 const PLACEHOLDERS: &[&str] = &[
@@ -59,84 +60,238 @@ const PLACEHOLDERS: &[&str] = &[
     "fill in later",
 ];
 
+// ── dispatch table ────────────────────────────────────────────────────────────
+
+/// A single entry in the static dispatch table.
+///
+/// `name` may be a two-word key (e.g. `"check verify"`) for per-gate entries, or a single
+/// word for top-level commands.  Dispatch uses longest-prefix match: a two-word key wins
+/// over a one-word prefix.
+pub(crate) struct SubcommandSpec {
+    pub(crate) name: &'static str,
+    pub(crate) usage: &'static str,
+    #[allow(dead_code)]
+    pub(crate) synopsis: &'static str,
+    #[allow(dead_code)]
+    pub(crate) known_flags: &'static [&'static str],
+    pub(crate) handler: fn(&[String]) -> i32,
+}
+
+pub(crate) static SUBCOMMANDS: &[SubcommandSpec] = &[
+    SubcommandSpec {
+        name: "list",
+        usage: "USAGE:\n  gatekeeper list",
+        synopsis: "List skills + descriptions.",
+        known_flags: &[],
+        handler: |args| cmd_list(args),
+    },
+    SubcommandSpec {
+        name: "activate",
+        usage: "USAGE:\n  gatekeeper activate            (reads prompt on stdin)",
+        synopsis: "Read a prompt on stdin, print routed skills.",
+        known_flags: &[],
+        handler: |args| cmd_activate(args),
+    },
+    SubcommandSpec {
+        name: "check research",
+        usage: "USAGE:\n  gatekeeper check research --feature <slug>",
+        synopsis: "Research gate: a research note exists.",
+        known_flags: &["--feature"],
+        handler: |args| handle_check_research(args),
+    },
+    SubcommandSpec {
+        name: "check design",
+        usage: "USAGE:\n  gatekeeper check design --feature <slug>",
+        synopsis: "Design gate: research note exists, then a spec doc exists.",
+        known_flags: &["--feature"],
+        handler: |args| handle_check_design(args),
+    },
+    SubcommandSpec {
+        name: "check plan",
+        usage: "USAGE:\n  gatekeeper check plan --feature <slug>",
+        synopsis: "Plan gate: a placeholder-free plan exists.",
+        known_flags: &["--feature"],
+        handler: |args| handle_check_plan(args),
+    },
+    SubcommandSpec {
+        name: "check verify",
+        usage: "USAGE:\n  gatekeeper check verify --feature <slug>",
+        synopsis: "Verify gate: a verification note exists.",
+        known_flags: &["--feature"],
+        handler: |args| handle_check_verify(args),
+    },
+    SubcommandSpec {
+        name: "check tdd",
+        usage: "USAGE:\n  gatekeeper check tdd --feature <slug> [--base <ref>]",
+        synopsis: "TDD gate: failing-test-first history heuristic.",
+        known_flags: &["--feature", "--base"],
+        handler: |args| handle_check_tdd(args),
+    },
+    SubcommandSpec {
+        name: "check review",
+        usage: "USAGE:\n  gatekeeper check review --feature <slug> [--base <ref>]",
+        synopsis: "Review gate: a fresh critic's artifact passes.",
+        known_flags: &["--feature", "--base"],
+        handler: |args| handle_check_review(args),
+    },
+    SubcommandSpec {
+        name: "check finish",
+        usage: "USAGE:\n  gatekeeper check finish -- <command...>",
+        synopsis: "Finish gate: <cmd> exits 0.",
+        known_flags: &["--"],
+        handler: |args| handle_check_finish(args),
+    },
+    SubcommandSpec {
+        name: "check docs",
+        usage: "USAGE:\n  gatekeeper check docs",
+        synopsis: "Docs-coverage lint: skills frontmatter, ADR index, ROADMAP evidence paths.",
+        known_flags: &[],
+        handler: |args| handle_check_docs(args),
+    },
+    SubcommandSpec {
+        name: "scan",
+        usage: "USAGE:\n  gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  gatekeeper scan --staged | --check-path <path>",
+        synopsis: "Security-scan a hook event, command, file, or staged blobs.",
+        known_flags: &["--hook", "--cmd", "--content", "--staged", "--check-path"],
+        handler: |args| {
+            scan::cmd_scan(args, &framework_root(), &artifacts_root(), &project_root())
+        },
+    },
+    SubcommandSpec {
+        name: "instinct",
+        usage: "USAGE:\n  gatekeeper instinct list\n  gatekeeper instinct render [--harness <h>] [--budget <n>]",
+        synopsis: "List or render always-on instincts.",
+        known_flags: &["--harness", "--budget"],
+        handler: |args| instinct::cmd_instinct(args, &framework_root()),
+    },
+    SubcommandSpec {
+        name: "adapt",
+        usage: "USAGE:\n  gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]",
+        synopsis: "Generate harness native config from the source.",
+        known_flags: &["--harness", "--check"],
+        handler: |args| adapt::cmd_adapt(args, &framework_root(), &project_root()),
+    },
+    SubcommandSpec {
+        name: "learn",
+        usage: "USAGE:\n  gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  gatekeeper learn list\n  gatekeeper learn promote --id <id> [--kind <k>] [--yes]",
+        synopsis: "Capture, list, or promote structured gotchas.",
+        known_flags: &["--summary", "--trigger", "--gate", "--kind", "--id", "--yes"],
+        handler: |args| learn::cmd_learn(args, &artifacts_root(), &framework_root()),
+    },
+    SubcommandSpec {
+        name: "memory",
+        usage: "USAGE:\n  gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  gatekeeper memory read  --feature <slug>\n  gatekeeper memory list",
+        synopsis: "Write, read, or list handoff artifacts.",
+        known_flags: &["--feature", "--date", "--status", "--verified-by"],
+        handler: |args| {
+            memory::cmd_memory(args, &artifacts_root(), &framework_root(), &project_root())
+        },
+    },
+    SubcommandSpec {
+        name: "doctor",
+        usage: "USAGE:\n  gatekeeper doctor",
+        synopsis: "Read-only health check + binary-resolution transparency.",
+        known_flags: &[],
+        handler: |args| handle_doctor(args),
+    },
+];
+
+/// Look up a subcommand's usage string by name.  Returns an empty string if not found
+/// (should never happen for the hard-coded names used by the modules below).
+pub(crate) fn lookup_usage(name: &str) -> &'static str {
+    SUBCOMMANDS
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.usage)
+        .unwrap_or("")
+}
+
+/// Build the group-level usage block for `check` (all check/* rows).
+fn check_group_usage() -> String {
+    let mut lines = String::from("USAGE:");
+    for s in SUBCOMMANDS {
+        if s.name.starts_with("check ") {
+            // strip the leading "USAGE:\n  " from each entry's usage
+            let body = s.usage.strip_prefix("USAGE:\n  ").unwrap_or(s.usage);
+            lines.push_str("\n  ");
+            lines.push_str(body);
+        }
+    }
+    lines
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let code = match args.first().map(String::as_str) {
-        Some("list") => cmd_list(&args[1..]),
-        Some("activate") => cmd_activate(&args[1..]),
-        Some("check") => cmd_check(&args[1..]),
-        Some("scan") => scan::cmd_scan(
-            &args[1..],
-            &framework_root(),
-            &artifacts_root(),
-            &project_root(),
-        ),
-        Some("instinct") => instinct::cmd_instinct(&args[1..], &framework_root()),
-        Some("adapt") => adapt::cmd_adapt(&args[1..], &framework_root(), &project_root()),
-        Some("learn") => learn::cmd_learn(&args[1..], &artifacts_root(), &framework_root()),
-        Some("memory") => memory::cmd_memory(
-            &args[1..],
-            &artifacts_root(),
-            &framework_root(),
-            &project_root(),
-        ),
-        Some("doctor") => {
-            if let Some(code) = check_help_or_unknown("doctor", &args[1..], &[], USAGE_DOCTOR) {
-                code
-            } else {
-                doctor::cmd_doctor(&framework_root())
-            }
-        }
+    let code = dispatch(&args);
+    exit(code);
+}
+
+fn dispatch(args: &[String]) -> i32 {
+    // Special top-level flags handled before the table.
+    match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
             println!(
                 "gatekeeper {} (rules schema v{})",
                 version::tool(),
                 version::rules_schema()
             );
-            0
+            return 0;
         }
         Some("--help") | Some("-h") | None => {
             print_help();
-            0
+            return 0;
         }
-        Some(other) => {
-            eprintln!("gatekeeper: unknown command '{other}'\n");
-            print_help();
-            2
-        }
-    };
-    exit(code);
+        _ => {}
+    }
+
+    // Longest-prefix match: try two-word key first, then one-word.
+    let two_word: Option<&str> = args.first().zip(args.get(1)).and_then(|(a, b)| {
+        let key = format!("{a} {b}");
+        SUBCOMMANDS
+            .iter()
+            .find(|s| s.name == key.as_str())
+            .map(|s| s.name)
+    });
+
+    if let Some(two) = two_word {
+        // args[0] is the first word, args[1] is the second word.
+        // Pass args[2..] to the handler.
+        let spec = SUBCOMMANDS.iter().find(|s| s.name == two).unwrap();
+        return (spec.handler)(&args[2..]);
+    }
+
+    // One-word match.
+    let first = args[0].as_str();
+
+    // Special group: bare `check`, `check --help/-h`, `check <unknown>`
+    if first == "check" {
+        return dispatch_check(&args[1..]);
+    }
+
+    if let Some(spec) = SUBCOMMANDS.iter().find(|s| s.name == first) {
+        return (spec.handler)(&args[1..]);
+    }
+
+    // Unknown top-level command.
+    eprintln!("gatekeeper: unknown command '{first}'\n");
+    print_help();
+    2
 }
 
 fn print_help() {
-    println!(
-        "topology gatekeeper {} (rules schema v{})\n\n\
-         USAGE:\n  \
-         gatekeeper list\n  \
-         gatekeeper activate            (reads prompt on stdin)\n  \
-         gatekeeper check research --feature <slug>\n  \
-         gatekeeper check design --feature <slug>\n  \
-         gatekeeper check plan   --feature <slug>\n  \
-         gatekeeper check verify --feature <slug>\n  \
-         gatekeeper check tdd    --feature <slug> [--base <ref>]\n  \
-         gatekeeper check review --feature <slug> [--base <ref>]\n  \
-         gatekeeper check finish -- <command...>\n  \
-         gatekeeper check docs\n  \
-         gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
-         gatekeeper scan --staged | --check-path <path>\n  \
-         gatekeeper instinct list\n  \
-         gatekeeper instinct render [--harness <h>] [--budget <n>]\n  \
-         gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]\n  \
-         gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
-         gatekeeper learn list\n  \
-         gatekeeper learn promote --id <id> [--kind <k>] [--yes]\n  \
-         gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
-         gatekeeper memory read  --feature <slug>\n  \
-         gatekeeper memory list\n  \
-         gatekeeper doctor\n",
+    print!(
+        "topology gatekeeper {} (rules schema v{})\n\nUSAGE:\n",
         version::tool(),
         version::rules_schema()
     );
+    for spec in SUBCOMMANDS {
+        // Each spec.usage is "USAGE:\n  <lines...>"; strip the header and indent each line.
+        let body = spec.usage.strip_prefix("USAGE:\n").unwrap_or(spec.usage);
+        for line in body.lines() {
+            println!("{line}");
+        }
+    }
+    println!();
 }
 
 const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper", ".claude-plugin"];
@@ -222,47 +377,7 @@ pub(crate) fn artifacts_root() -> PathBuf {
     resolve_artifacts_root(&project_root(), &framework_root())
 }
 
-// ── per-subcommand usage strings (subsets of print_help) ────────────────────
-
-const USAGE_ACTIVATE: &str = "\
-USAGE:\n  gatekeeper activate            (reads prompt on stdin)";
-
-const USAGE_LIST: &str = "\
-USAGE:\n  gatekeeper list";
-
-const USAGE_CHECK: &str = "\
-USAGE:\n  gatekeeper check research --feature <slug>\n  \
-gatekeeper check design  --feature <slug>\n  \
-gatekeeper check plan    --feature <slug>\n  \
-gatekeeper check tdd     --feature <slug> [--base <ref>]\n  \
-gatekeeper check verify  --feature <slug>\n  \
-gatekeeper check review  --feature <slug> [--base <ref>]\n  \
-gatekeeper check finish  -- <command...>\n  \
-gatekeeper check docs";
-
-pub(crate) const USAGE_SCAN: &str = "\
-USAGE:\n  gatekeeper scan --hook | --cmd | --content       (reads stdin)\n  \
-gatekeeper scan --staged | --check-path <path>";
-
-pub(crate) const USAGE_INSTINCT: &str = "\
-USAGE:\n  gatekeeper instinct list\n  \
-gatekeeper instinct render [--harness <h>] [--budget <n>]";
-
-pub(crate) const USAGE_ADAPT: &str = "\
-USAGE:\n  gatekeeper adapt --harness <codex|cursor|opencode|claude> [--check]";
-
-pub(crate) const USAGE_LEARN: &str = "\
-USAGE:\n  gatekeeper learn capture --summary <text> [--trigger <t>] [--gate <g>] [--kind <k>]\n  \
-gatekeeper learn list\n  \
-gatekeeper learn promote --id <id> [--kind <k>] [--yes]";
-
-pub(crate) const USAGE_MEMORY: &str = "\
-USAGE:\n  gatekeeper memory write --feature <slug> --date <YYYY-MM-DD>  (reads body on stdin)\n  \
-gatekeeper memory read  --feature <slug>\n  \
-gatekeeper memory list";
-
-const USAGE_DOCTOR: &str = "\
-USAGE:\n  gatekeeper doctor";
+// ── per-subcommand usage strings are sourced from SUBCOMMANDS (see dispatch table above) ──
 
 /// Check for `--help` / `-h` OR an unrecognized flag in `args`.
 ///
@@ -299,7 +414,7 @@ pub(crate) fn check_help_or_unknown(
 }
 
 fn cmd_list(args: &[String]) -> i32 {
-    if let Some(code) = check_help_or_unknown("list", args, &[], USAGE_LIST) {
+    if let Some(code) = check_help_or_unknown("list", args, &[], lookup_usage("list")) {
         return code;
     }
     let skills_dir = framework_root().join("skills");
@@ -370,7 +485,7 @@ fn extract_prompt_owned(raw: &str) -> Option<String> {
 }
 
 fn cmd_activate(args: &[String]) -> i32 {
-    if let Some(code) = check_help_or_unknown("activate", args, &[], USAGE_ACTIVATE) {
+    if let Some(code) = check_help_or_unknown("activate", args, &[], lookup_usage("activate")) {
         return code;
     }
     let mut raw = String::new();
@@ -464,122 +579,232 @@ fn route(rules: &serde_json::Value, prompt_lc: &str) -> Vec<(String, String)> {
     out
 }
 
-fn cmd_check(args: &[String]) -> i32 {
+/// Group-level dispatcher for `check`.
+///
+/// - bare `check`           → group usage + exit 2
+/// - `check --help/-h`      → group usage + exit 0
+/// - `check <known gate>`   → delegate to the per-gate handler (which prints its own one-line usage
+///   on `--help`)
+/// - `check <unknown>`      → error line + group usage + exit 2
+fn dispatch_check(args: &[String]) -> i32 {
+    let group_usage = check_group_usage();
     let Some(gate) = args.first().map(String::as_str) else {
-        eprintln!("gatekeeper check: missing gate name\n{USAGE_CHECK}");
+        eprintln!("gatekeeper check: missing gate name\n{group_usage}");
         return 2;
     };
-    // Handle --help / -h at the check level (before gate dispatch).
     if gate == "--help" || gate == "-h" {
-        println!("{USAGE_CHECK}");
+        println!("{group_usage}");
         return 0;
     }
-    match gate {
-        "research" => {
-            if let Some(code) =
-                check_help_or_unknown("check research", &args[1..], &["--feature"], USAGE_CHECK)
-            {
-                return code;
-            }
-            gate_doc_exists("research", "research", &feature_arg(args))
-        }
-        "design" => {
-            if let Some(code) =
-                check_help_or_unknown("check design", &args[1..], &["--feature"], USAGE_CHECK)
-            {
-                return code;
-            }
-            let f = feature_arg(args);
-            if f.is_empty() {
-                // A missing --feature is a usage error (exit 2), like every other gate via
-                // gate_doc_exists — not a research-first failure. Guard before find_doc, whose
-                // empty-slug None would otherwise misroute this into the lock branch (exit 1).
-                eprintln!("gatekeeper: --feature <slug> is required");
-                return 2;
-            }
-            match find_doc("research", &f) {
-                None => {
-                    let dir = artifacts_root().join("research");
-                    println!(
-                        "FAIL design gate: research-first — no {}/*{f}*.md",
-                        dir.display()
-                    );
-                    1
-                }
-                Some(_) => gate_design_approved(&f),
-            }
-        }
-        "plan" => {
-            if let Some(code) =
-                check_help_or_unknown("check plan", &args[1..], &["--feature"], USAGE_CHECK)
-            {
-                return code;
-            }
-            gate_plan(&feature_arg(args))
-        }
-        "verify" => {
-            if let Some(code) =
-                check_help_or_unknown("check verify", &args[1..], &["--feature"], USAGE_CHECK)
-            {
-                return code;
-            }
-            gate_doc_exists("verify", "verify", &feature_arg(args))
-        }
-        "tdd" => {
-            if let Some(code) = check_help_or_unknown(
-                "check tdd",
-                &args[1..],
-                &["--feature", "--base"],
-                USAGE_CHECK,
-            ) {
-                return code;
-            }
-            // base precedence: --base flag > config.base_branch > gate default
-            let cfg = config::ProjectConfig::load(&artifacts_root());
-            let base = base_arg(args).or(cfg.base_branch);
-            tdd::gate_tdd(&project_root(), &feature_arg(args), base.as_deref())
-        }
-        "finish" => {
-            // `finish` passes everything after `--` through to a child process;
-            // check_help_or_unknown already stops at `--`, so this is safe.
-            if let Some(code) =
-                check_help_or_unknown("check finish", &args[1..], &["--"], USAGE_CHECK)
-            {
-                return code;
-            }
-            let cfg = config::ProjectConfig::load(&artifacts_root());
-            gate_finish(args, &cfg)
-        }
-        "review" => {
-            if let Some(code) = check_help_or_unknown(
-                "check review",
-                &args[1..],
-                &["--feature", "--base"],
-                USAGE_CHECK,
-            ) {
-                return code;
-            }
-            let arts = artifacts_root();
-            let cfg = config::ProjectConfig::load(&arts);
-            review::gate_review(
-                &project_root(),
-                &arts,
-                &feature_arg(args),
-                base_arg(args).as_deref(),
-                cfg.base_branch.as_deref(),
-            )
-        }
-        "docs" => {
-            if let Some(code) = check_help_or_unknown("check docs", &args[1..], &[], USAGE_CHECK) {
-                return code;
-            }
-            check_docs(&framework_root())
-        }
-        other => {
-            eprintln!("gatekeeper check: unknown gate '{other}'");
-            2
-        }
+    // Look for "check <gate>" in the dispatch table.
+    let key = format!("check {gate}");
+    if let Some(spec) = SUBCOMMANDS.iter().find(|s| s.name == key.as_str()) {
+        return (spec.handler)(if args.len() > 1 { &args[1..] } else { &[] });
     }
+    // Unknown gate — only emit an error if it doesn't look like a --flag (flags are handled
+    // above by check_help_or_unknown inside each handler).
+    eprintln!("gatekeeper check: unknown gate '{gate}'\n{group_usage}");
+    2
+}
+
+// ── thin handler wrappers (adapt gate logic to fn(&[String]) -> i32) ─────────
+
+fn handle_check_research(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check research",
+        args,
+        &["--feature"],
+        lookup_usage("check research"),
+    ) {
+        return code;
+    }
+    gate_doc_exists("research", "research", &feature_arg_from(args))
+}
+
+fn handle_check_design(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check design",
+        args,
+        &["--feature"],
+        lookup_usage("check design"),
+    ) {
+        return code;
+    }
+    let f = feature_arg_from(args);
+    if f.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let arts = artifacts_root();
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check design: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+
+    match find_doc("research", &f) {
+        None => {
+            let dir = arts.join("research");
+            println!(
+                "FAIL design gate: research-first — no {}/*{f}*.md",
+                dir.display()
+            );
+            1
+        }
+        Some(_) => gate_design_approved(&f, &cfg),
+    }
+}
+
+fn handle_check_plan(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check plan",
+        args,
+        &["--feature"],
+        lookup_usage("check plan"),
+    ) {
+        return code;
+    }
+    gate_plan(&feature_arg_from(args))
+}
+
+fn handle_check_verify(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check verify",
+        args,
+        &["--feature"],
+        lookup_usage("check verify"),
+    ) {
+        return code;
+    }
+    gate_verify(&feature_arg_from(args))
+}
+
+/// The verify gate with evidence-replay support (spec §3).
+fn gate_verify(feature: &str) -> i32 {
+    if feature.is_empty() {
+        eprintln!("gatekeeper: --feature <slug> is required");
+        return 2;
+    }
+
+    let arts = artifacts_root();
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check verify: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+
+    // File-existence check (presence-mode baseline).
+    let artifact_path = match find_doc("verify", feature) {
+        Some(p) => p,
+        None => {
+            let dir = arts.join("verify");
+            println!(
+                "FAIL verify gate: no {}/*{feature}*.md found",
+                dir.display()
+            );
+            return 1;
+        }
+    };
+
+    let proj = project_root();
+    verify::run_verify_gate(&artifact_path, &proj, &cfg)
+}
+
+fn handle_check_tdd(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check tdd",
+        args,
+        &["--feature", "--base"],
+        lookup_usage("check tdd"),
+    ) {
+        return code;
+    }
+    let cfg = config::ProjectConfig::load(&artifacts_root());
+    let base = base_arg_from(args).or(cfg.base_branch);
+    tdd::gate_tdd(&project_root(), &feature_arg_from(args), base.as_deref())
+}
+
+fn handle_check_review(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "check review",
+        args,
+        &["--feature", "--base"],
+        lookup_usage("check review"),
+    ) {
+        return code;
+    }
+    let arts = artifacts_root();
+    let cfg = config::ProjectConfig::load(&arts);
+    review::gate_review(
+        &project_root(),
+        &arts,
+        &feature_arg_from(args),
+        base_arg_from(args).as_deref(),
+        cfg.base_branch.as_deref(),
+    )
+}
+
+fn handle_check_finish(args: &[String]) -> i32 {
+    // `finish` passes everything after `--` through to a child process.
+    if let Some(code) =
+        check_help_or_unknown("check finish", args, &["--"], lookup_usage("check finish"))
+    {
+        return code;
+    }
+
+    let arts = artifacts_root();
+
+    // Config strictness: parse failure exits 2 for the three hardened gates.
+    let load_result = config::ProjectConfig::load_result(&arts);
+    if let config::LoadResult::ParseFailed(ref e) = load_result {
+        eprintln!(
+            "gatekeeper check finish: config.toml parse error: {e} — cannot proceed (fix config.toml)",
+        );
+        return 2;
+    }
+    let cfg = match load_result {
+        config::LoadResult::Ok(c) => c,
+        config::LoadResult::Missing => config::ProjectConfig::default(),
+        config::LoadResult::ParseFailed(_) => unreachable!(),
+    };
+
+    // Reconstruct the full args slice that gate_finish expects (args after "check", including
+    // the "--" separator).  The handler receives args AFTER "finish", so we pass them directly
+    // to gate_finish.
+    gate_finish(args, &cfg)
+}
+
+fn handle_check_docs(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("check docs", args, &[], lookup_usage("check docs")) {
+        return code;
+    }
+    check_docs(&framework_root())
+}
+
+fn handle_doctor(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown("doctor", args, &[], lookup_usage("doctor")) {
+        return code;
+    }
+    doctor::cmd_doctor(&framework_root())
 }
 
 /// Docs-coverage lint (three rules, all satisfiable on the reconciled tree).
@@ -687,6 +912,7 @@ fn check_docs(root: &Path) -> i32 {
     }
 }
 
+/// Extract the `--feature <slug>` value from a flag list.
 pub(crate) fn feature_arg(args: &[String]) -> String {
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -697,7 +923,13 @@ pub(crate) fn feature_arg(args: &[String]) -> String {
     String::new()
 }
 
-fn base_arg(args: &[String]) -> Option<String> {
+/// Extract the `--feature <slug>` value from a flag list (alias used by handlers).
+fn feature_arg_from(args: &[String]) -> String {
+    feature_arg(args)
+}
+
+/// Extract the `--base <ref>` value from a flag list.
+fn base_arg_from(args: &[String]) -> Option<String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--base" {
@@ -785,11 +1017,9 @@ pub(crate) fn spec_is_approved(text: &str) -> bool {
 }
 
 /// Design gate: after the research-first sequence-lock and file-existence checks, additionally
-/// require an explicit approval marker in the spec file.
-///
-/// The gate fails with a specific message when the spec exists but has no marker, teaching the
-/// human what to add.
-fn gate_design_approved(feature: &str) -> i32 {
+/// require an explicit approval marker in the spec file, plus optional substance floor and
+/// human-commit approval checks (spec §4).
+fn gate_design_approved(feature: &str, cfg: &config::ProjectConfig) -> i32 {
     if feature.is_empty() {
         eprintln!("gatekeeper: --feature <slug> is required");
         return 2;
@@ -815,8 +1045,573 @@ fn gate_design_approved(feature: &str) -> i32 {
         println!("    - **Status:** approved");
         return 1;
     }
+
+    // ── Substance floor check (§4) ────────────────────────────────────────────
+    let substance_ok = design_check_substance(&text);
+    let substance_configured = if cfg.design_substance_floor {
+        verify::ShadowConfigured::On
+    } else {
+        verify::ShadowConfigured::Default
+    };
+    let art_str = p.to_string_lossy();
+    if cfg.design_substance_floor {
+        if !substance_ok {
+            println!(
+                "FAIL design gate: {} lacks substance (need ≥2 '## ' headings and ≥1 body line)",
+                p.display()
+            );
+            println!("  add meaningful section headings and content to the spec");
+            // Still emit SHADOW with fail result
+            verify::emit_shadow(
+                "design",
+                "substance_floor",
+                substance_configured,
+                Some(&art_str),
+                None,
+                verify::ShadowResult::Fail,
+                "spec has <2 ## headings or no body line outside Status",
+            );
+            return 1;
+        }
+        verify::emit_shadow(
+            "design",
+            "substance_floor",
+            substance_configured,
+            Some(&art_str),
+            None,
+            verify::ShadowResult::Pass,
+            "≥2 ## headings and ≥1 body line found",
+        );
+    } else {
+        // key is off — compute anyway, emit shadow
+        verify::emit_shadow(
+            "design",
+            "substance_floor",
+            substance_configured,
+            Some(&art_str),
+            None,
+            if substance_ok {
+                verify::ShadowResult::Pass
+            } else {
+                verify::ShadowResult::Fail
+            },
+            if substance_ok {
+                "≥2 ## headings and ≥1 body line found"
+            } else {
+                "spec has <2 ## headings or no body line outside Status"
+            },
+        );
+    }
+
+    // ── Approval provenance check (§4) ────────────────────────────────────────
+    let proj = project_root();
+    let approval_configured = match cfg.design_approval {
+        config::DesignApproval::HumanCommit => verify::ShadowConfigured::On,
+        config::DesignApproval::StatusLine => verify::ShadowConfigured::Default,
+    };
+
+    match cfg.design_approval {
+        config::DesignApproval::HumanCommit => {
+            let result = design_check_human_commit(&p, &proj, &cfg.design_agent_trailer_patterns);
+            match result {
+                DesignApprovalResult::Pass => {
+                    verify::emit_shadow(
+                        "design",
+                        "approval_provenance",
+                        approval_configured,
+                        Some(&art_str),
+                        None,
+                        verify::ShadowResult::Pass,
+                        "approval commit has no agent trailer",
+                    );
+                }
+                DesignApprovalResult::Fail(ref msg) => {
+                    verify::emit_shadow(
+                        "design",
+                        "approval_provenance",
+                        approval_configured,
+                        Some(&art_str),
+                        None,
+                        verify::ShadowResult::Fail,
+                        msg,
+                    );
+                    println!("FAIL design gate: {msg}");
+                    return 1;
+                }
+                DesignApprovalResult::Skip(ref msg) => {
+                    // Skip = obstacle: fail closed when enforced
+                    verify::emit_shadow(
+                        "design",
+                        "approval_provenance",
+                        approval_configured,
+                        Some(&art_str),
+                        None,
+                        verify::ShadowResult::Skip,
+                        msg,
+                    );
+                    println!("FAIL design gate: {msg}");
+                    return 1;
+                }
+            }
+        }
+        config::DesignApproval::StatusLine => {
+            // Compute anyway, emit SHADOW — do not affect exit code
+            let result = design_check_human_commit(&p, &proj, &cfg.design_agent_trailer_patterns);
+            let (shadow_result, detail) = match &result {
+                DesignApprovalResult::Pass => (
+                    verify::ShadowResult::Pass,
+                    "approval commit has no agent trailer".to_string(),
+                ),
+                DesignApprovalResult::Fail(msg) => (verify::ShadowResult::Fail, msg.clone()),
+                DesignApprovalResult::Skip(msg) => (verify::ShadowResult::Skip, msg.clone()),
+            };
+            verify::emit_shadow(
+                "design",
+                "approval_provenance",
+                approval_configured,
+                Some(&art_str),
+                None,
+                shadow_result,
+                &detail,
+            );
+        }
+    }
+
     println!("PASS design gate: {}", p.display());
     0
+}
+
+/// Result of the human-commit approval provenance check.
+enum DesignApprovalResult {
+    Pass,
+    Fail(String),
+    /// Skip = obstacle encountered; message describes the fix.
+    Skip(String),
+}
+
+/// Substance floor predicate (spec §4):
+/// ≥2 `## ` headings AND ≥1 non-empty body line outside the Status line and not inside an
+/// HTML comment.
+pub(crate) fn design_check_substance(text: &str) -> bool {
+    let mut heading_count = 0usize;
+    let mut body_line_count = 0usize;
+    let mut in_comment = false;
+
+    for line in text.lines() {
+        // Track HTML comments (strip_comments logic but line-granular)
+        let mut rest = line;
+        // Handle comment toggling on the line
+        loop {
+            if in_comment {
+                if let Some(end) = rest.find("-->") {
+                    in_comment = false;
+                    rest = &rest[end + 3..];
+                } else {
+                    break; // whole line is inside comment
+                }
+            } else {
+                if let Some(start) = rest.find("<!--") {
+                    // Part before the comment is visible
+                    let visible = &rest[..start];
+                    // count visible part
+                    if visible.contains("## ") {
+                        heading_count += 1;
+                    }
+                    in_comment = true;
+                    rest = &rest[start + 4..];
+                } else {
+                    // No comment opening — rest is fully visible
+                    if rest.starts_with("## ") {
+                        heading_count += 1;
+                    } else {
+                        let trimmed = rest.trim();
+                        if !trimmed.is_empty() {
+                            // Not a heading, not inside a comment — check if it's the Status line
+                            let cleaned: String = trimmed.chars().filter(|&c| c != '*').collect();
+                            let cleaned = cleaned.trim().trim_start_matches('-').trim();
+                            let cleaned = cleaned.trim_start_matches('🟢').trim();
+                            let lc = cleaned.to_lowercase();
+                            let is_status = lc.starts_with("status");
+                            if !is_status {
+                                body_line_count += 1;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    heading_count >= 2 && body_line_count >= 1
+}
+
+/// Check the approval provenance of a spec file via git history.
+///
+/// Returns `Pass`, `Fail(message)`, or `Skip(obstacle)`.
+fn design_check_human_commit(
+    spec_path: &std::path::Path,
+    project_root: &std::path::Path,
+    agent_trailer_patterns: &[String],
+) -> DesignApprovalResult {
+    // ── 1. Git floor: require git ≥ 2.15 ─────────────────────────────────────
+    match probe_git_version() {
+        GitVersionResult::TooOld(v) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: git {v} is too old (need ≥ 2.15); \
+                 upgrade git to enable the human-commit check"
+            ));
+        }
+        GitVersionResult::Unparsable(raw) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot parse git version output {raw:?}; \
+                 upgrade git or fix PATH"
+            ));
+        }
+        GitVersionResult::Ok => {}
+    }
+
+    // ── 2. Shallow-clone check ────────────────────────────────────────────────
+    match probe_git_shallow(project_root) {
+        ShallowResult::Shallow => {
+            return DesignApprovalResult::Skip(
+                "approval_provenance: repository is a shallow clone; \
+                 run 'git fetch --unshallow' to enable the human-commit check"
+                    .to_string(),
+            );
+        }
+        ShallowResult::Error(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot check shallow status: {e}; \
+                 ensure git is functional"
+            ));
+        }
+        ShallowResult::NotShallow => {}
+    }
+
+    // ── 3. Untracked check ───────────────────────────────────────────────────
+    // Is the spec untracked?
+    let relpath = match spec_path.strip_prefix(project_root) {
+        Ok(r) => r.to_string_lossy().to_string(),
+        Err(_) => spec_path.to_string_lossy().to_string(),
+    };
+
+    let ls_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            &relpath,
+        ])
+        .output();
+    match ls_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot run git ls-files: {e}"
+            ));
+        }
+        Ok(out) if !out.status.success() => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: spec {relpath} is untracked — commit the spec file \
+                 to enable the human-commit check"
+            ));
+        }
+        Ok(_) => {}
+    }
+
+    // ── 4. Dirty spec check ───────────────────────────────────────────────────
+    // Unstaged changes?
+    let diff_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "diff",
+            "--quiet",
+            "--",
+            &relpath,
+        ])
+        .status();
+    match diff_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot run git diff: {e}"
+            ));
+        }
+        Ok(s) if !s.success() => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: spec {relpath} has unstaged changes — \
+                 commit all edits before running the human-commit check"
+            ));
+        }
+        Ok(_) => {}
+    }
+    // Staged changes?
+    let diff_cached_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "diff",
+            "--cached",
+            "--quiet",
+            "--",
+            &relpath,
+        ])
+        .status();
+    match diff_cached_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot run git diff --cached: {e}"
+            ));
+        }
+        Ok(s) if !s.success() => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: spec {relpath} has staged (index) changes — \
+                 commit or unstage all edits before running the human-commit check"
+            ));
+        }
+        Ok(_) => {}
+    }
+
+    // ── 5. Read the committed spec to find the approval line number ──────────
+    let committed_text_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "show",
+            &format!("HEAD:{relpath}"),
+        ])
+        .output();
+    let committed_text = match committed_text_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot read committed spec via git show: {e}"
+            ));
+        }
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: git show HEAD:{relpath} failed: {stderr}"
+            ));
+        }
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+    };
+
+    // Find the line number of the first approval line (1-based, matching spec_is_approved logic)
+    let approval_line_number = {
+        let mut found = None;
+        for (idx, line) in committed_text.lines().enumerate() {
+            // Mirror spec_is_approved normalization
+            let cleaned: String = line.chars().filter(|&c| c != '*').collect();
+            let cleaned = cleaned.trim().trim_start_matches('-').trim();
+            let cleaned = cleaned.trim_start_matches('🟢').trim();
+            let lc = cleaned.to_lowercase();
+            if let Some(after_status) = lc.strip_prefix("status") {
+                let rest = after_status.trim_start();
+                if let Some(after_colon) = rest.strip_prefix(':') {
+                    let value = after_colon.trim();
+                    if value.starts_with("approved") {
+                        found = Some(idx + 1); // 1-based
+                        break;
+                    }
+                }
+            }
+        }
+        match found {
+            Some(n) => n,
+            None => {
+                // Should not happen since spec_is_approved already checked above
+                return DesignApprovalResult::Skip(
+                    "approval_provenance: cannot locate approval line in committed spec"
+                        .to_string(),
+                );
+            }
+        }
+    };
+
+    // ── 6. git log -L to find the commit that last touched the approval line ──
+    // Format: `git log -L<n>,<n>:<path> --format=%H`
+    let log_arg = format!("-L{approval_line_number},{approval_line_number}:{relpath}");
+    let log_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "log",
+            &log_arg,
+            "--format=%H",
+        ])
+        .output();
+    let log_stdout = match log_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot run git log -L: {e}"
+            ));
+        }
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: git log -L failed: {stderr}"
+            ));
+        }
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+    };
+
+    // Extract the first non-empty 40-char hex SHA from the log output
+    let approval_sha = log_stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| l.len() == 40 && l.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_owned);
+
+    let sha = match approval_sha {
+        Some(s) => s,
+        None => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: git log -L produced no commit SHA for line \
+                 {approval_line_number} of {relpath}; output: {log_stdout:?}"
+            ));
+        }
+    };
+
+    // ── 7. Read trailers from the approval commit ────────────────────────────
+    let trailer_out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "show",
+            "-s",
+            "--format=%(trailers)",
+            &sha,
+        ])
+        .output();
+    let trailers = match trailer_out {
+        Err(e) => {
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: cannot read trailers from commit {sha}: {e}"
+            ));
+        }
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return DesignApprovalResult::Skip(format!(
+                "approval_provenance: git show --format=%(trailers) failed for {sha}: {stderr}"
+            ));
+        }
+        Ok(out) => String::from_utf8_lossy(&out.stdout).to_string(),
+    };
+
+    // ── 8. Check trailers against agent_trailer_patterns ─────────────────────
+    // Compile patterns; check each Co-Authored-By value
+    for line in trailers.lines() {
+        // Trailer lines look like "Co-Authored-By: Name <email>" (case-insensitive key)
+        let lc = line.to_lowercase();
+        if !lc.starts_with("co-authored-by:") {
+            continue;
+        }
+        let value = line["co-authored-by:".len()..].trim();
+        for pattern in agent_trailer_patterns {
+            match regex::Regex::new(pattern) {
+                Ok(re) => {
+                    if re.is_match(value) {
+                        return DesignApprovalResult::Fail(format!(
+                            "approval_provenance: commit {sha} carries agent trailer \
+                             'Co-Authored-By: {value}' (matched pattern {pattern:?}); \
+                             the spec must be approved by a human commit without an agent \
+                             co-author trailer — this is a residual risk for sycophantic \
+                             self-approval, not a claim about operator intent"
+                        ));
+                    }
+                }
+                Err(e) => {
+                    return DesignApprovalResult::Skip(format!(
+                        "approval_provenance: agent_trailer_patterns entry {pattern:?} \
+                         is not a valid regex: {e}"
+                    ));
+                }
+            }
+        }
+    }
+
+    DesignApprovalResult::Pass
+}
+
+// ── git capability probes ─────────────────────────────────────────────────────
+
+pub(crate) enum GitVersionResult {
+    Ok,
+    TooOld(String),
+    Unparsable(String),
+}
+
+/// Probe `git --version` and check ≥ 2.15.
+pub(crate) fn probe_git_version() -> GitVersionResult {
+    let out = match std::process::Command::new("git").arg("--version").output() {
+        Ok(o) => o,
+        Err(e) => return GitVersionResult::Unparsable(format!("<error: {e}>")),
+    };
+    let s = String::from_utf8_lossy(&out.stdout).to_string();
+    // Expected: "git version 2.39.0" or "git version 2.39.0 (Apple Git-...)"
+    parse_git_version_str(&s)
+}
+
+pub(crate) fn parse_git_version_str(s: &str) -> GitVersionResult {
+    // Find "git version X.Y.Z..."
+    let raw = s.trim();
+    let version_part = if let Some(rest) = raw.strip_prefix("git version ") {
+        rest.trim()
+    } else {
+        return GitVersionResult::Unparsable(raw.to_string());
+    };
+    // Take the first space-separated token as the version number
+    let ver_token = version_part.split_whitespace().next().unwrap_or("");
+    let mut parts = ver_token.split('.');
+    let major: u32 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(n) => n,
+        None => return GitVersionResult::Unparsable(raw.to_string()),
+    };
+    let minor: u32 = match parts.next().and_then(|p| p.parse().ok()) {
+        Some(n) => n,
+        None => return GitVersionResult::Unparsable(raw.to_string()),
+    };
+    if major > 2 || (major == 2 && minor >= 15) {
+        GitVersionResult::Ok
+    } else {
+        GitVersionResult::TooOld(ver_token.to_string())
+    }
+}
+
+pub(crate) enum ShallowResult {
+    NotShallow,
+    Shallow,
+    Error(String),
+}
+
+/// Check whether the git repo at `project_root` is a shallow clone.
+pub(crate) fn probe_git_shallow(project_root: &std::path::Path) -> ShallowResult {
+    let out = std::process::Command::new("git")
+        .args([
+            "-C",
+            &project_root.to_string_lossy(),
+            "rev-parse",
+            "--is-shallow-repository",
+        ])
+        .output();
+    match out {
+        Err(e) => ShallowResult::Error(e.to_string()),
+        Ok(o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            ShallowResult::Error(stderr.trim().to_string())
+        }
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let val = stdout.trim();
+            match val {
+                "true" => ShallowResult::Shallow,
+                "false" => ShallowResult::NotShallow,
+                other => ShallowResult::Error(format!("unexpected output: {other:?}")),
+            }
+        }
+    }
 }
 
 fn gate_plan(feature: &str) -> i32 {
@@ -871,13 +1666,20 @@ fn gate_finish(args: &[String], cfg: &config::ProjectConfig) -> i32 {
     let cli_cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
 
     if !cli_cmd.is_empty() {
-        // Explicit CLI `-- cmd` wins unconditionally.
-        return run_finish_command_parts(&cli_cmd);
+        // Explicit CLI `-- cmd` wins unconditionally over config.test_command.
+        // Spec §5: floor applies to both invocation paths.
+        let cmd_str = cli_cmd
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return run_finish_command_parts_floor(&cli_cmd, &cmd_str, cfg);
     }
 
     // No CLI command — try config.test_command.
     if let Some(ref tc) = cfg.test_command {
-        return run_finish_sh(tc);
+        let tc_owned = tc.clone();
+        return run_finish_sh_floor(&tc_owned, cfg);
     }
 
     // Nothing supplied — emit the original usage error, extended to mention config.
@@ -893,37 +1695,271 @@ fn gate_finish(args: &[String], cfg: &config::ProjectConfig) -> i32 {
     2
 }
 
+// ── finish gate — streaming tee + zero-test floor ────────────────────────────
+
 /// Run a finish command expressed as a pre-split argument list (from the CLI `-- cmd...` form).
-fn run_finish_command_parts(cmd: &[&String]) -> i32 {
-    let status = Command::new(cmd[0]).args(&cmd[1..]).status();
-    finish_status(status)
+/// Captures output while streaming through; applies the zero-test floor when configured.
+fn run_finish_command_parts_floor(
+    cmd: &[&String],
+    cmd_str: &str,
+    cfg: &config::ProjectConfig,
+) -> i32 {
+    use std::process::Stdio;
+    let mut child = match Command::new(cmd[0])
+        .args(&cmd[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("FAIL finish gate: could not run command: {e}");
+            return 1;
+        }
+    };
+    let (transcript, truncated, exit_ok) = drain_finish_child(&mut child);
+    apply_finish_floor(transcript, truncated, exit_ok, cmd_str, cfg)
 }
 
 /// Run a finish command expressed as a single shell string (from config.test_command).
 /// Uses `sh -c` so shell syntax (pipes, &&, etc.) works as expected.
-fn run_finish_sh(cmd: &str) -> i32 {
-    let status = Command::new("sh").arg("-c").arg(cmd).status();
-    finish_status(status)
-}
-
-fn finish_status(status: std::io::Result<std::process::ExitStatus>) -> i32 {
-    match status {
-        Ok(s) if s.success() => {
-            println!("PASS finish gate: test command exited 0");
-            0
-        }
-        Ok(s) => {
-            println!(
-                "FAIL finish gate: test command exited {}",
-                s.code().unwrap_or(-1)
-            );
-            1
-        }
+/// Captures output while streaming through; applies the zero-test floor when configured.
+fn run_finish_sh_floor(cmd: &str, cfg: &config::ProjectConfig) -> i32 {
+    use std::process::Stdio;
+    let mut child = match Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
         Err(e) => {
             println!("FAIL finish gate: could not run command: {e}");
-            1
+            return 1;
+        }
+    };
+    let (transcript, truncated, exit_ok) = drain_finish_child(&mut child);
+    apply_finish_floor(transcript, truncated, exit_ok, cmd, cfg)
+}
+
+/// Drain a child process's stdout+stderr while **streaming each line through** to the
+/// real stdout/stderr respectively.  Returns `(merged_transcript, truncated, exit_ok)`.
+///
+/// Two reader threads tee each line: send to the channel (for capture) AND write it to
+/// the real fd immediately.  Tail-capped at 1 MiB.
+fn drain_finish_child(child: &mut std::process::Child) -> (String, bool, bool) {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::thread;
+
+    const OUTPUT_CAP: usize = 1024 * 1024; // 1 MiB
+
+    let stdout = child.stdout.take().map(BufReader::new);
+    let stderr = child.stderr.take().map(BufReader::new);
+
+    // Each message: (line_text, is_stderr)
+    let (tx_a, rx) = mpsc::channel::<(String, bool)>();
+    let tx_b = tx_a.clone();
+
+    let mut handles = Vec::new();
+
+    if let Some(reader) = stdout {
+        handles.push(thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                println!("{line}");
+                let _ = tx_a.send((line, false));
+            }
+        }));
+    } else {
+        drop(tx_a);
+    }
+
+    if let Some(reader) = stderr {
+        handles.push(thread::spawn(move || {
+            for line in reader.lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                let _ = tx_b.send((line, true));
+            }
+        }));
+    } else {
+        drop(tx_b);
+    }
+
+    // Collect all lines (approximate arrival order).
+    let all_lines: Vec<String> = rx.into_iter().map(|(l, _)| l).collect();
+
+    for h in handles {
+        let _ = h.join();
+    }
+
+    let status = child.wait();
+    let exit_ok = status.map(|s| s.success()).unwrap_or(false);
+
+    // Tail-cap at 1 MiB.
+    let total: usize = all_lines.iter().map(|l| l.len() + 1).sum();
+    let truncated = total > OUTPUT_CAP;
+    let kept = if truncated {
+        let mut lines = all_lines;
+        let mut cur = total;
+        while cur > OUTPUT_CAP && !lines.is_empty() {
+            cur -= lines.remove(0).len() + 1;
+        }
+        lines
+    } else {
+        all_lines
+    };
+
+    (kept.join("\n"), truncated, exit_ok)
+}
+
+/// The outcome of parsing runner summaries from a transcript.
+#[derive(Debug)]
+enum TestCountResult {
+    /// Pattern matched; sum of counts across matching lines.
+    Recognized(u64),
+    /// No pattern matched at all.
+    Unrecognized,
+}
+
+/// Parse runner summaries from a merged transcript.
+///
+/// Patterns tried in order; first-match-wins:
+///   1. cargo:  `(?m)^test result: \w+\. (\d+) passed`
+///   2. pytest: `(?m)(\d+) passed[^\n]* in [0-9.]+s`
+///   3. extra_count_patterns (user-supplied, one capture group each)
+pub(crate) fn parse_test_count(transcript: &str, extra_patterns: &[String]) -> TestCountResult {
+    use regex::Regex;
+
+    // 1. cargo
+    {
+        let re = Regex::new(r"(?m)^test result: \w+\. (\d+) passed").unwrap();
+        let caps: Vec<_> = re.captures_iter(transcript).collect();
+        if !caps.is_empty() {
+            let sum: u64 = caps
+                .iter()
+                .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                .sum();
+            return TestCountResult::Recognized(sum);
         }
     }
+
+    // 2. pytest (no === fence anchor; pytest -q compatible)
+    {
+        let re = Regex::new(r"(?m)(\d+) passed[^\n]* in [0-9.]+s").unwrap();
+        let caps: Vec<_> = re.captures_iter(transcript).collect();
+        if !caps.is_empty() {
+            let sum: u64 = caps
+                .iter()
+                .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                .sum();
+            return TestCountResult::Recognized(sum);
+        }
+    }
+
+    // 3. extra_count_patterns (user-supplied)
+    for pat in extra_patterns {
+        match Regex::new(pat) {
+            Err(_) => continue, // invalid patterns are skipped at runtime
+            Ok(re) => {
+                let caps: Vec<_> = re.captures_iter(transcript).collect();
+                if !caps.is_empty() {
+                    let sum: u64 = caps
+                        .iter()
+                        .filter_map(|c| c.get(1)?.as_str().parse::<u64>().ok())
+                        .sum();
+                    return TestCountResult::Recognized(sum);
+                }
+            }
+        }
+    }
+
+    TestCountResult::Unrecognized
+}
+
+/// Core logic after capture: apply zero-test floor, emit SHADOW, return exit code.
+fn apply_finish_floor(
+    transcript: String,
+    truncated: bool,
+    exit_ok: bool,
+    cmd_str: &str,
+    cfg: &config::ProjectConfig,
+) -> i32 {
+    let count_result = parse_test_count(&transcript, &cfg.finish_extra_count_patterns);
+
+    // Determine shadow configured state.
+    let shadow_configured = if cfg.finish_require_test_count {
+        verify::ShadowConfigured::On
+    } else {
+        verify::ShadowConfigured::Default
+    };
+
+    // Build detail string.
+    let (floor_pass, detail) = match &count_result {
+        TestCountResult::Recognized(n) => {
+            let trunc = if truncated {
+                " (output truncated to last 1 MiB)"
+            } else {
+                ""
+            };
+            let pass = *n > 0;
+            let detail = format!("recognized runner summary; count={n}{trunc}");
+            (pass, detail)
+        }
+        TestCountResult::Unrecognized => {
+            let trunc = if truncated {
+                " (output truncated to last 1 MiB)"
+            } else {
+                ""
+            };
+            let detail = format!("no recognized runner summary{trunc}");
+            (false, detail)
+        }
+    };
+
+    // Emit SHADOW line always (whether key is on or off).
+    verify::emit_shadow(
+        "finish",
+        "zero_test_floor",
+        shadow_configured,
+        None,
+        Some(cmd_str),
+        if floor_pass {
+            verify::ShadowResult::Pass
+        } else {
+            verify::ShadowResult::Fail
+        },
+        &detail,
+    );
+
+    // Check exit code first.
+    if !exit_ok {
+        println!("FAIL finish gate: test command exited non-zero");
+        return 1;
+    }
+
+    // Apply floor when configured.
+    if cfg.finish_require_test_count && !floor_pass {
+        match &count_result {
+            TestCountResult::Unrecognized => {
+                println!(
+                    "FAIL finish gate: require_test_count=true but no recognized runner summary found; \
+                     add a cargo/pytest/extra_count_patterns-matched summary line"
+                );
+            }
+            TestCountResult::Recognized(0) => {
+                println!(
+                    "FAIL finish gate: require_test_count=true but recognized summary shows 0 tests; \
+                     run a non-empty test suite"
+                );
+            }
+            TestCountResult::Recognized(_) => unreachable!(),
+        }
+        return 1;
+    }
+
+    println!("PASS finish gate: test command exited 0");
+    0
 }
 
 #[cfg(test)]

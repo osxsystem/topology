@@ -351,7 +351,7 @@ pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path, project_roo
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
-        println!("{}", crate::USAGE_SCAN);
+        println!("{}", crate::lookup_usage("scan"));
         return 0;
     }
 
@@ -387,7 +387,7 @@ pub fn cmd_scan(args: &[String], root: &Path, artifacts_root: &Path, project_roo
         Some(other) if other.starts_with('-') => {
             eprintln!(
                 "gatekeeper scan: unknown flag '{other}'\n{}",
-                crate::USAGE_SCAN
+                crate::lookup_usage("scan")
             );
             2
         }

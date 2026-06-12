@@ -389,7 +389,7 @@ pub fn cmd_memory(
     };
     match sub {
         "--help" | "-h" => {
-            println!("{}", crate::USAGE_MEMORY);
+            println!("{}", crate::lookup_usage("memory"));
             0
         }
         "write" => {
@@ -397,7 +397,7 @@ pub fn cmd_memory(
                 "memory write",
                 &args[1..],
                 &["--feature", "--date", "--status", "--verified-by"],
-                crate::USAGE_MEMORY,
+                crate::lookup_usage("memory"),
             ) {
                 return code;
             }
@@ -408,16 +408,19 @@ pub fn cmd_memory(
                 "memory read",
                 &args[1..],
                 &["--feature"],
-                crate::USAGE_MEMORY,
+                crate::lookup_usage("memory"),
             ) {
                 return code;
             }
             cmd_read(args, artifacts_root)
         }
         "list" => {
-            if let Some(code) =
-                crate::check_help_or_unknown("memory list", &args[1..], &[], crate::USAGE_MEMORY)
-            {
+            if let Some(code) = crate::check_help_or_unknown(
+                "memory list",
+                &args[1..],
+                &[],
+                crate::lookup_usage("memory"),
+            ) {
                 return code;
             }
             cmd_list(artifacts_root)
