@@ -8,16 +8,19 @@ implementation (Sonnet subagent) at the branch head.
 
 ## AC-1/AC-2/AC-3 — global payload installs, checksum refusal, legacy rescue (offline e2e)
 
-The e2e suite gained 15 global-scope scenarios (piped install against a `file://` release
+The e2e suite gained 19 global-scope scenarios (piped install against a `file://` release
 fixture with remapped `HOME`/`TOPOLOGY_HOME`; corrupted-checksum refusal leaving an existing
-root untouched; checkout assembly where the checkout is not `ROOT`; in-place re-run upgrade;
-legacy-clone rescue into `${ROOT}-backup-<ts>/` with ledger + handoff contents; `--yes`
-replacement; no-`PROJECT_PATH`-writes guard) alongside the 29 pre-existing local-scope
-scenarios, which ran unmodified as the regression net:
+root untouched; checkout assembly where the checkout is not `ROOT`; in-place re-run upgrade
+asserting the re-run's own exit code + upgrade marker; legacy-clone rescue into
+`${ROOT}-backup-<ts>/` with ledger + handoff contents; `--yes` replacement;
+no-`PROJECT_PATH`-writes guard; the trailing-slash `TOPOLOGY_HOME` data-loss regression from
+the PR #43 review, proven red without the one-line fix — 47/1 — and green with it; the AC-3
+interactive-refusal branch via the `PROMPT_INPUT_FD` seam) alongside the 29 pre-existing
+local-scope scenarios, which ran unmodified as the regression net:
 
 ```evidence
 $ just test-e2e
-# expect: test-payload-e2e: 44 passed, 0 failed
+# expect: test-payload-e2e: 48 passed, 0 failed
 ```
 
 ## AC-4/AC-5 — plugin channel retired
@@ -75,13 +78,16 @@ $ just check
 # expect: check docs: ok
 ```
 
-## Known gap (recorded, not hidden)
+## Formerly known gap — closed by the PR #43 review response
 
-The interactive-refusal branch of the legacy-clone prompt (`answer != y` → exit 1, clone
-intact) is not exercised by the e2e suite: `can_prompt()` probes `/dev/tty`, which does not
-exist in the offline/CI harness, so only the non-interactive (`--yes`/no-tty) path is
-testable there. The `--yes` replacement and the rescue itself are covered; the refusal
-branch is 6 lines of `case` shared verbatim with the long-tested local path.
+The interactive-refusal branch of the legacy-clone prompt was initially recorded as
+untestable offline (`can_prompt()` probed `/dev/tty` only). Per the reviewer's suggestion,
+the existing `PROMPT_INPUT_FD` seam (already used by the stale-PATH repair) was extended to
+`can_prompt()`/`ask()` — default `/dev/tty` behavior unchanged when unset — and e2e test K
+now exercises the branch: answering `n` aborts with exit 1, the intact-clone message, and an
+untouched `.git` + ledger. The same review found a real data-loss bug (trailing-slash
+`TOPOLOGY_HOME` made the rescue backup a child of `ROOT`, deleted with the clone after
+printing "rescued"); fixed by `ROOT="${ROOT%/}"` normalization with regression test J.
 
 ## Quality gates
 
