@@ -214,12 +214,16 @@ impl Drop for ReplayWorktree {
 /// The verdict of a red-green replay: did the test fail (red) at the merge-base?
 #[derive(Debug, PartialEq, Eq)]
 enum ReplayVerdict {
-    /// Red at base — the test failed where the production code does not yet
-    /// exist. This is the genuine TDD signal.
+    /// Red at base — the test RAN and exited nonzero where the production code
+    /// does not yet exist. This is the genuine TDD signal.
     Pass,
-    /// Green at base — the test passed without the production code, so it
-    /// certifies nothing. Detail explains the rejection.
+    /// Green at base — the test RAN and exited zero without the production code,
+    /// so it certifies nothing. Detail explains the rejection.
     Fail(String),
+    /// Could NOT establish red — the command never ran (not allowlisted /
+    /// metachar / env-prefix / spawn failure) or timed out. The String is the
+    /// reason. A replay we cannot evaluate proves nothing.
+    Indeterminate(String),
 }
 
 /// Replay commit `T`'s new test files onto the merge-base `base_sha` and require
@@ -229,8 +233,9 @@ enum ReplayVerdict {
 /// - Check out `T`'s test paths onto that worktree.
 /// - Run `test_argv` inside the worktree (via `verify::execute_step`, the single
 ///   spawn/timeout path).
-/// - Nonzero exit (or timeout) ⟹ red at base ⟹ `Pass`; zero exit ⟹ green at
-///   base ⟹ `Fail("vacuous test: passed at merge-base")`.
+/// - Nonzero exit (ran) ⟹ red at base ⟹ `Pass`; zero exit ⟹ green at
+///   base ⟹ `Fail("vacuous test: passed at merge-base")`; command that never
+///   ran (rejected / spawn / wait failure) or timed out ⟹ `Indeterminate`.
 ///
 /// Returns `Err` on a worktree/git failure (caller decides fail-open vs closed).
 fn replay_red_green(
@@ -300,15 +305,22 @@ fn replay_red_green(
         expect_regex: Vec::new(),
     };
     match verify::execute_step(&step, &wt, cfg, timeout) {
-        // Timeout / fail-closed rejection ⟹ treat as red at base.
-        Err(_) => Ok(ReplayVerdict::Pass),
+        // Command never ran (not allowlisted / metachar / env-prefix) or timed
+        // out — none of these prove the test was red at base. Indeterminate.
+        Err(e) => Ok(ReplayVerdict::Indeterminate(e)),
         // `passed` is true only on a zero exit (and satisfied expectations).
         Ok(result) => {
             if result.passed {
                 Ok(ReplayVerdict::Fail(
                     "vacuous test: passed at merge-base".to_string(),
                 ))
+            } else if result.detail.starts_with("failed to spawn")
+                || result.detail.starts_with("wait error")
+            {
+                // The process never ran to a real exit — cannot prove red.
+                Ok(ReplayVerdict::Indeterminate(result.detail))
             } else {
+                // Ran, nonzero exit = genuine red at base.
                 Ok(ReplayVerdict::Pass)
             }
         }
@@ -520,6 +532,27 @@ fn replay_after_heuristic(
                 println!("FAIL tdd gate: {detail}");
                 1
             } else {
+                0
+            }
+        }
+        Ok(ReplayVerdict::Indeterminate(detail)) => {
+            // Could not establish red (command never ran or timed out). Log a
+            // skip so the burn-in never records a phantom pass.
+            verify::emit_shadow(
+                "tdd",
+                "replay",
+                configured,
+                None,
+                Some(&cmd_joined),
+                ShadowResult::Skip,
+                &detail,
+            );
+            if enforcing {
+                // Fail-closed: a replay we cannot evaluate must not pass.
+                println!("FAIL tdd gate: cannot prove red (replay indeterminate): {detail}");
+                2
+            } else {
+                // History mode: keep the heuristic verdict (skip already logged).
                 0
             }
         }

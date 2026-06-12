@@ -260,10 +260,19 @@ fn history_mode_skips_replay() {
 
 #[test]
 fn replay_cleans_up_worktree() {
-    // Run test 1's vacuous scenario, then assert no `gatekeeper-replay-*`
-    // directory remains under temp_dir() (the ReplayWorktree Drop guard must
-    // remove it even when the gate fails).  NOTE: this may pass vacuously today
-    // because no worktree is created yet — it pins the cleanup contract.
+    // Run test 1's vacuous scenario, then assert the engine left NO worktree
+    // behind for this feature (the ReplayWorktree Drop guard must remove it even
+    // when the gate fails).
+    //
+    // The engine nests its worktrees at `temp_dir()/gatekeeper-replay/<feature>-<pid>`,
+    // NOT at the top level as `gatekeeper-replay-*`. So we scan the nested
+    // `gatekeeper-replay` parent for CHILD entries left behind whose name starts
+    // with this test's feature slug. A unique slug (with this process id) keeps
+    // the scan immune to sibling replays running in parallel test processes — we
+    // only count children we could have created. PROOF that this is non-vacuous:
+    // neutering `ReplayWorktree::drop` in src/tdd.rs makes this assertion fail
+    // (the child `<feature>-<pid>` dir survives the run).
+    let feature = format!("cleanup_{}", std::process::id());
     let (root, base) = build_replay_crate(
         "clean",
         "replay",
@@ -273,23 +282,32 @@ fn replay_cleans_up_worktree() {
         "pub fn feat() {}\n",
     );
 
-    let _ = run(&root, &["check", "tdd", "--feature", "x", "--base", &base]);
+    let _ = run(
+        &root,
+        &["check", "tdd", "--feature", &feature, "--base", &base],
+    );
 
-    let tmp = std::env::temp_dir();
-    let orphans: Vec<PathBuf> = fs::read_dir(&tmp)
-        .unwrap()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("gatekeeper-replay-"))
-                .unwrap_or(false)
-        })
-        .collect();
+    // The engine's worktree parent. Children are named `<feature>-<pid>`; we
+    // assert none survive whose name starts with this test's unique feature slug.
+    let parent = std::env::temp_dir().join("gatekeeper-replay");
+    let orphans: Vec<PathBuf> = match fs::read_dir(&parent) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with(&feature))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        // No parent dir at all ⟹ nothing left behind.
+        Err(_) => Vec::new(),
+    };
 
     assert!(
         orphans.is_empty(),
-        "replay worktree(s) left behind in temp: {orphans:?}"
+        "replay worktree(s) left behind under {}: {orphans:?}",
+        parent.display()
     );
 
     let _ = fs::remove_dir_all(&root);
@@ -368,6 +386,116 @@ fn tdd_parse_failed_exits_2() {
         code, 2,
         "SILENT DEFAULT: a malformed `[tdd] mode` value must surface as a config \
          ParseFailed (exit 2), not be swallowed; got exit {code}; out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── 7. replay mode with a NON-ALLOWLISTED test_command → fail-closed (exit 2) ─
+
+#[test]
+fn replay_nonallowlisted_command_fails_closed() {
+    // A vacuous repo (assert!(true) test commit then a production commit) in
+    // replay mode, but the configured `test_command` is `make test` — NOT in the
+    // default allowlist (cargo/just/git). A command that cannot run cannot prove
+    // the test was red at the merge-base, so the gate must FAIL CLOSED rather than
+    // certify a pass off a command it never executed.
+    //
+    // SOUNDNESS HOLE (the red): `replay_red_green` maps `verify::execute_step`'s
+    // `Err(_)` — which is exactly what a non-allowlisted command returns — to
+    // `Ok(ReplayVerdict::Pass)`. So today the gate emits a false `result:"pass"`
+    // and exits 0, re-opening FM2: a misconfigured replay command makes a vacuous
+    // `assert!(true)` test "pass" in replay mode.
+    let (root, base) = build_replay_crate(
+        "noallow",
+        "replay",
+        "vac.rs",
+        "#[test]\nfn vac() {\n    assert!(true);\n}\n",
+        "feat.rs",
+        "pub fn feat() {}\n",
+    );
+
+    // Replay mode with a non-allowlisted top-level command.
+    fs::write(
+        root.join("docs").join("config.toml"),
+        "test_command = \"make test\"\n\n[tdd]\nmode = \"replay\"\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "tdd", "--feature", "x", "--base", &base]);
+
+    assert_eq!(
+        code, 2,
+        "FAIL-OPEN: a non-allowlisted replay command cannot prove red and must \
+         fail closed with exit 2; got exit {code}; out: {out}"
+    );
+    // Tolerant fail-closed message check: SOME indication the command was not
+    // allowed / could not run — NOT a pass.
+    let lower = out.to_lowercase();
+    assert!(
+        lower.contains("allow") || lower.contains("cannot"),
+        "expected a fail-closed message mentioning the command is not allowed / \
+         cannot run; out: {out}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── 8. history mode + non-allowlisted command → SHADOW logs skip, not pass ───
+
+#[test]
+fn history_nonallowlisted_logs_skip_not_pass() {
+    // Same vacuous repo, but `mode = "history"` (non-enforcing) with a
+    // non-allowlisted `make test` command. The legacy heuristic passes → exit 0.
+    // The replay could NOT run (non-allowlisted), so the burn-in SHADOW log must
+    // record `result:"skip"` — NOT `result:"pass"`. Logging a `pass` for a command
+    // that never executed poisons the false-block-rate burn-in with a phantom red.
+    //
+    // The red: `replay_red_green` swallows the non-allowlist `Err(_)` to
+    // `Ok(ReplayVerdict::Pass)`, so `replay_after_heuristic` emits the shadow with
+    // `ShadowResult::Pass` ("red at merge-base") instead of taking its `Err`
+    // skip-logging branch. Today the SHADOW line carries `"result":"pass"`.
+    let (root, base) = build_replay_crate(
+        "histnoallow",
+        "history",
+        "vac.rs",
+        "#[test]\nfn vac() {\n    assert!(true);\n}\n",
+        "feat.rs",
+        "pub fn feat() {}\n",
+    );
+
+    fs::write(
+        root.join("docs").join("config.toml"),
+        "test_command = \"make test\"\n\n[tdd]\nmode = \"history\"\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "tdd", "--feature", "x", "--base", &base]);
+
+    assert_eq!(
+        code, 0,
+        "history mode is non-enforcing and must exit 0; got exit {code}; out: {out}"
+    );
+
+    let shadow_line = out
+        .lines()
+        .find(|l| l.starts_with("SHADOW ") && l.contains("\"check\":\"replay\""))
+        .unwrap_or_else(|| {
+            panic!("expected a `SHADOW ...\"check\":\"replay\"...` line; out: {out}")
+        });
+    assert!(
+        shadow_line.contains("\"gate\":\"tdd\""),
+        "SHADOW line must carry \"gate\":\"tdd\"; line: {shadow_line}"
+    );
+    assert!(
+        !shadow_line.contains("\"result\":\"pass\""),
+        "BURN-IN POISONED: a non-allowlisted command that never ran must log \
+         result:\"skip\", not result:\"pass\"; line: {shadow_line}"
+    );
+    assert!(
+        shadow_line.contains("\"result\":\"skip\""),
+        "expected the SHADOW line to log result:\"skip\" for a command that \
+         could not run; line: {shadow_line}"
     );
 
     let _ = fs::remove_dir_all(&root);
