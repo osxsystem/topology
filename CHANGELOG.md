@@ -2,6 +2,40 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.8.0 — 2026-06-12
+
+Contract split: portable template + generated AGENTS.md + skill wording sweep (ROADMAP Phase 10).
+
+### Contract template
+
+- `templates/CONTRACT.template.md`: the six portable sections of the operating contract
+  (`AGENTS.md`) parameterized over `{{ARTIFACTS_ROOT}}`, `{{GATEKEEPER_CMD}}`, `{{BINARY_NOTE}}`.
+  Shipped in the distribution payload.
+- `render_contract` in `adapt.rs`: pure substitution, fail-closed — any unresolved `{{` after
+  substitution is a hard error naming the offending placeholder (ADR-0016).
+- `gatekeeper adapt --contract <framework|project>`: renders the template and prints to stdout
+  (exit 0); render error → stderr message naming the placeholder, exit 2.
+
+### Framework dogfooding
+
+- `AGENTS.md` is now generated: `render_contract(template, framework ctx)` + a short trailer
+  pointing at `docs/DEVELOPMENT.md`. An integration test asserts byte-equality — hand-edits or
+  template drift break `just check`.
+- `docs/DEVELOPMENT.md` (new): carries the two framework-dev sections (stack conventions, skill
+  house format) under a one-line audience preamble. Never shipped in the payload.
+
+### Skill wording sweep
+
+Seven skills and the plan template switch from hardcoded `docs/<kind>/` paths to
+`<artifacts-root>/<kind>/` phrasing with one definition parenthetical at first use per skill.
+Instincts were already clean. `skill-rules.json` untouched; no names, descriptions, or behaviors
+changed.
+
+### ADR
+
+ADR-0016 records the template, placeholder set, fail-closed render, generated AGENTS.md, dev-doc
+location, and the Phase 9 delivery boundary.
+
 ## v0.7.0 — 2026-06-12
 
 Global payload install + plugin channel retirement (ROADMAP Phase 8).
