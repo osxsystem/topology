@@ -49,10 +49,13 @@ fn render_contract(template: &str, ctx: &ContractCtx) -> Result<String, String>
   placeholder must never ship silently. Unknown placeholders in the template likewise
   error; the known set is exactly the three above.
 
-Rendering surfaces as a `GenFile`, so `apply_or_check --check` covers drift/idempotency
-exactly like every other adapt output. Delivery wiring for governed projects (where the
-rendered file lands, the `@.topology/CONTRACT.md` import) is **Phase 9 scope**; this phase
-ships the template + renderer and proves both renders in unit tests.
+CLI surface (the smallest one that makes the renderer integration-testable —
+`gatekeeper/tests/` can only exercise the binary): `gatekeeper adapt --contract
+<framework|project>` renders the template from the framework root for the named world and
+prints it to stdout (exit 0; render error → message on stderr, exit 2). No file is written
+by this flag. Delivery wiring for governed projects (where the rendered file lands, the
+`@.topology/CONTRACT.md` import, `GenFile`/`--check` integration) is **Phase 9 scope**;
+Phase 9 calls the same `render_contract`.
 
 ## 3. Framework dogfooding: `AGENTS.md` is generated
 
@@ -61,9 +64,12 @@ ships the template + renderer and proves both renders in unit tests.
 - `AGENTS.md` := `render_contract(template, framework ctx)` + a short trailer section
   pointing at the dev doc (`## Framework development` → "Stack conventions and the skill
   house format live in `docs/DEVELOPMENT.md` — read it before changing this repo.").
-- The trailer is part of the generation (a constant in `adapt.rs`), not hand-edited.
-- A unit test asserts the on-disk `AGENTS.md` equals the generated content byte-for-byte —
-  hand-edits to `AGENTS.md` or template drift fail `just check`. The file stays committed
+- The trailer is part of the generation (a constant in `adapt.rs`), not hand-edited; it is
+  appended by `adapt --contract framework`, so the printed framework render IS the expected
+  `AGENTS.md` content.
+- An integration test (`gatekeeper/tests/`) asserts the on-disk `AGENTS.md` equals
+  `adapt --contract framework` output byte-for-byte — hand-edits to `AGENTS.md` or template
+  drift fail `just check`. The file stays committed
   (root marker + codex auto-discovery + adapt's `require_agents_md` all keep working;
   research §constraints).
 
@@ -110,8 +116,8 @@ from `docs/adr/README.md` (docs lint R2).
   `docs/`-rooted artifact paths; unit-tested both ways.
 - **AC-3** Render is fail-closed: an unknown placeholder in the template, or any
   unsubstituted `{{` in output, errors (unit-tested).
-- **AC-4** `AGENTS.md` equals the generated render-plus-trailer byte-for-byte
-  (unit-tested); still present at repo root (root marker intact:
+- **AC-4** `AGENTS.md` equals `adapt --contract framework` output byte-for-byte
+  (integration-tested); still present at repo root (root marker intact:
   `cargo test cli_root_markers` stays green).
 - **AC-5** `docs/DEVELOPMENT.md` carries the two dev sections; `AGENTS.md` no longer
   contains "Stack conventions" or "house format" content.
