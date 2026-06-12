@@ -158,6 +158,22 @@ cd /path/to/your-project
 TOPOLOGY_ROOT="$HOME/.topology" gatekeeper adapt --harness claude
 ```
 
+On a **project install** (the framework root differs from the project root), `adapt` does more than
+write harness config — it integrates the project, **append-only and idempotent**:
+
+- scaffolds `.claude/topology/{research,specs,plans,verify,reviews}/` for the gate artifacts;
+- merges `env.GATEKEEPER_BIN` (and the hook wiring) into `.claude/settings.json` **without clobbering
+  your other keys**, so `gatekeeper check …` resolves with no PATH or sudo step;
+- renders the operating contract to `.topology/CONTRACT.md` and delivers a pointer to it into the
+  harness's always-on surface — for `claude`, one `@.topology/CONTRACT.md` import line appended to
+  `CLAUDE.md` (created if missing); for `codex`, a marker-delimited managed block in `AGENTS.md` that
+  re-runs update in place. Your own content in those files is never rewritten.
+
+`gatekeeper adapt --harness <claude|codex> --check` reports drift (exit 1) without writing — a
+missing import line, an out-of-date managed block, or absent scaffold/contract all count. (cursor and
+opencode already carry the contract via their generated always-on rules; their import-first
+refinement and the `--init-agent` bootstrap are tracked for a follow-up.)
+
 ### Verify the install
 
 ```bash
