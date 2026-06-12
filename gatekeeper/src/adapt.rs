@@ -9,6 +9,261 @@ use std::path::{Path, PathBuf};
 
 use crate::instinct;
 
+/// The outcome of a partial-file edit (user-owned files).
+// Used from cmd_adapt in tasks 4/5; allow until production wiring lands.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum Edit {
+    /// The file already contained the desired content — no write needed.
+    Unchanged,
+    /// The file was missing; the new content is provided.
+    Created(String),
+    /// The file existed and was updated; the new content is provided.
+    Updated(String),
+    /// The file is malformed in a way that makes safe editing impossible; the message names the problem.
+    Failed(String),
+}
+
+/// Ensure `line` is present (exact match after trimming) in `existing`.
+///
+/// - `None` → `Created(line + "\n")`.
+/// - `line` found in any row (trimmed) → `Unchanged`.
+/// - Otherwise → `Updated` with `line` appended on its own line, single trailing newline.
+// Wired into cmd_adapt in task 5.
+#[allow(dead_code)]
+fn ensure_import_line(existing: Option<&str>, line: &str) -> Edit {
+    let line_trimmed = line.trim();
+    match existing {
+        None => Edit::Created(format!("{line}\n")),
+        Some(text) => {
+            if text.lines().any(|l| l.trim() == line_trimmed) {
+                Edit::Unchanged
+            } else {
+                // Append on its own line, ensuring exactly one trailing newline.
+                let mut out = text.to_owned();
+                // Strip any trailing newlines, then add separator + line + newline.
+                let trimmed_end = out.trim_end_matches('\n');
+                let len = trimmed_end.len();
+                out.truncate(len);
+                out.push('\n');
+                out.push_str(line);
+                out.push('\n');
+                Edit::Updated(out)
+            }
+        }
+    }
+}
+
+// Used in task 5 from cmd_adapt.
+#[allow(dead_code)]
+const BLOCK_BEGIN: &str = "<!-- BEGIN TOPOLOGY MANAGED BLOCK -->";
+#[allow(dead_code)]
+const BLOCK_END: &str = "<!-- END TOPOLOGY MANAGED BLOCK -->";
+
+/// Ensure the marker-delimited managed block contains `body`.
+///
+/// - No block → append wrapped body (create file if missing).
+/// - Block present, identical body → `Unchanged`.
+/// - Block present, different body → replace in place, outside content preserved.
+/// - Malformed (begin without end, or duplicate begin) → `Failed` naming the problem.
+// Wired into cmd_adapt in task 5.
+#[allow(dead_code)]
+fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
+    let wrapped = format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}\n");
+
+    match existing {
+        None => Edit::Created(wrapped),
+        Some(text) => {
+            let begin_count = text.matches(BLOCK_BEGIN).count();
+            let end_count = text.matches(BLOCK_END).count();
+
+            if begin_count > 1 {
+                return Edit::Failed(format!(
+                    "duplicate '{BLOCK_BEGIN}' markers — cannot safely update"
+                ));
+            }
+            if begin_count == 1 && end_count == 0 {
+                return Edit::Failed(format!(
+                    "'{BLOCK_BEGIN}' without '{BLOCK_END}' — malformed block"
+                ));
+            }
+            if begin_count == 0 {
+                // No block; append to existing content.
+                let mut out = text.to_owned();
+                let trimmed_end = out.trim_end_matches('\n');
+                let len = trimmed_end.len();
+                out.truncate(len);
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&wrapped);
+                return Edit::Updated(out);
+            }
+
+            // Block is present and well-formed (1 begin, ≥1 end).
+            let begin_pos = text.find(BLOCK_BEGIN).unwrap();
+            // End marker search starts after begin marker.
+            let end_search_start = begin_pos + BLOCK_BEGIN.len();
+            let end_rel = text[end_search_start..].find(BLOCK_END).unwrap();
+            let end_pos = end_search_start + end_rel;
+            let end_end = end_pos + BLOCK_END.len();
+
+            // Extract the current body (between begin+\n and \n+end).
+            let inner_start = begin_pos + BLOCK_BEGIN.len();
+            // Skip the leading newline after begin marker.
+            let inner_start = if text[inner_start..].starts_with('\n') {
+                inner_start + 1
+            } else {
+                inner_start
+            };
+            // Body ends before the end marker; trim one leading newline before end.
+            let inner_end = if end_pos > 0 && text.as_bytes()[end_pos - 1] == b'\n' {
+                end_pos - 1
+            } else {
+                end_pos
+            };
+            let current_body = &text[inner_start..inner_end];
+
+            if current_body == body {
+                return Edit::Unchanged;
+            }
+
+            // Replace the block in place.
+            let before = &text[..begin_pos];
+            // After the end marker, consume one trailing newline if present.
+            let after_start = if end_end < text.len() && text.as_bytes()[end_end] == b'\n' {
+                end_end + 1
+            } else {
+                end_end
+            };
+            let after = &text[after_start..];
+
+            let out = format!("{before}{wrapped}{after}");
+            Edit::Updated(out)
+        }
+    }
+}
+
+/// Merge hook wiring and `GATEKEEPER_BIN` into an existing (or absent) settings JSON.
+///
+/// - `existing = None` or `null` → start from `{}`.
+/// - Non-object existing → `Err("not a JSON object")`.
+/// - Sets `obj["hooks"] = hooks` (adapt-owned, replaced wholesale).
+/// - Ensures `obj["env"]` is an object; sets `obj["env"]["GATEKEEPER_BIN"] = bin`.
+/// - All other top-level keys and all other `env` keys are preserved.
+// Wired into cmd_adapt in task 4.
+#[allow(dead_code)]
+pub(crate) fn merge_claude_settings(
+    existing: Option<serde_json::Value>,
+    hooks: serde_json::Value,
+    bin: &str,
+) -> Result<serde_json::Value, String> {
+    let mut obj = match existing {
+        None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+        Some(serde_json::Value::Object(m)) => m,
+        Some(_) => return Err("not a JSON object".to_owned()),
+    };
+
+    obj.insert("hooks".to_owned(), hooks);
+
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(env_map) = env {
+        env_map.insert(
+            "GATEKEEPER_BIN".to_owned(),
+            serde_json::Value::String(bin.to_owned()),
+        );
+    } else {
+        // env exists but is not an object; replace it.
+        let mut env_map = serde_json::Map::new();
+        env_map.insert(
+            "GATEKEEPER_BIN".to_owned(),
+            serde_json::Value::String(bin.to_owned()),
+        );
+        obj.insert("env".to_owned(), serde_json::Value::Object(env_map));
+    }
+
+    Ok(serde_json::Value::Object(obj))
+}
+
+/// Apply or check partial-file edits (for user-owned files).
+///
+/// Write mode: applies Created/Updated, prints what changed.
+/// Check mode: exit 1 on any would-change, exit 2 on any Failed; never writes.
+///
+/// Returns exit code: 0 = up-to-date; 1 = drift; 2 = failed.
+// Called in task 4/5 from cmd_adapt; allow until then.
+#[allow(dead_code)]
+fn apply_edits(edits: &[(String, Edit)], check: bool) -> i32 {
+    let mut drift = false;
+    let mut failed = false;
+
+    for (path, edit) in edits {
+        match edit {
+            Edit::Unchanged => {}
+            Edit::Created(contents) => {
+                if check {
+                    println!("MISSING-IMPORT {path}");
+                    drift = true;
+                } else {
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            if let Err(e) = fs::create_dir_all(parent) {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot create {}: {e}",
+                                    parent.display()
+                                );
+                                return 2;
+                            }
+                        }
+                    }
+                    if let Err(e) = fs::write(path, contents) {
+                        eprintln!("gatekeeper adapt: cannot write {path}: {e}");
+                        return 2;
+                    }
+                    println!("wrote {path}");
+                }
+            }
+            Edit::Updated(contents) => {
+                if check {
+                    println!("DRIFT-BLOCK {path}");
+                    drift = true;
+                } else {
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            if let Err(e) = fs::create_dir_all(parent) {
+                                eprintln!(
+                                    "gatekeeper adapt: cannot create {}: {e}",
+                                    parent.display()
+                                );
+                                return 2;
+                            }
+                        }
+                    }
+                    if let Err(e) = fs::write(path, contents) {
+                        eprintln!("gatekeeper adapt: cannot write {path}: {e}");
+                        return 2;
+                    }
+                    println!("updated {path}");
+                }
+            }
+            Edit::Failed(msg) => {
+                eprintln!("gatekeeper adapt: {msg} in {path}");
+                failed = true;
+            }
+        }
+    }
+
+    if failed {
+        2
+    } else if drift {
+        1
+    } else {
+        0
+    }
+}
+
 /// A single file an adapter will write, relative to the framework root.
 struct GenFile {
     rel_path: PathBuf,
@@ -845,7 +1100,10 @@ mod tests {
     fn import_line_already_present_is_unchanged() {
         let existing = "# My file\n\n@.topology/CONTRACT.md\n\nSome content.\n";
         let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
-        assert!(matches!(result, Edit::Unchanged), "expected Unchanged, got {result:?}");
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "expected Unchanged, got {result:?}"
+        );
     }
 
     #[test]
@@ -854,9 +1112,18 @@ mod tests {
         let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
         match result {
             Edit::Updated(contents) => {
-                assert!(contents.starts_with("# My project\n"), "prior content preserved");
-                assert!(contents.contains("Some user content."), "prior content preserved");
-                assert!(contents.ends_with("@.topology/CONTRACT.md\n"), "import appended at end");
+                assert!(
+                    contents.starts_with("# My project\n"),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.contains("Some user content."),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.ends_with("@.topology/CONTRACT.md\n"),
+                    "import appended at end"
+                );
             }
             other => panic!("expected Updated, got {other:?}"),
         }
@@ -867,7 +1134,10 @@ mod tests {
         // Line present but with trailing whitespace in the existing file.
         let existing = "# My file\n@.topology/CONTRACT.md   \nOther content.\n";
         let result = ensure_import_line(Some(existing), "@.topology/CONTRACT.md");
-        assert!(matches!(result, Edit::Unchanged), "trimmed match → Unchanged, got {result:?}");
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "trimmed match → Unchanged, got {result:?}"
+        );
     }
 
     // ensure_managed_block tests
@@ -896,8 +1166,14 @@ mod tests {
         let result = ensure_managed_block(Some(existing), body);
         match result {
             Edit::Updated(contents) => {
-                assert!(contents.starts_with("# Prior content\n"), "prior content preserved");
-                assert!(contents.contains("Some user text."), "prior content preserved");
+                assert!(
+                    contents.starts_with("# Prior content\n"),
+                    "prior content preserved"
+                );
+                assert!(
+                    contents.contains("Some user text."),
+                    "prior content preserved"
+                );
                 assert!(contents.contains(BEGIN_MARKER));
                 assert!(contents.contains(END_MARKER));
                 assert!(contents.contains(body));
@@ -909,11 +1185,12 @@ mod tests {
     #[test]
     fn managed_block_identical_body_is_unchanged() {
         let body = "See `.topology/CONTRACT.md`.";
-        let existing = format!(
-            "# Prior\n\n{BEGIN_MARKER}\n{body}\n{END_MARKER}\n"
-        );
+        let existing = format!("# Prior\n\n{BEGIN_MARKER}\n{body}\n{END_MARKER}\n");
         let result = ensure_managed_block(Some(&existing), body);
-        assert!(matches!(result, Edit::Unchanged), "identical body → Unchanged, got {result:?}");
+        assert!(
+            matches!(result, Edit::Unchanged),
+            "identical body → Unchanged, got {result:?}"
+        );
     }
 
     #[test]
@@ -922,14 +1199,19 @@ mod tests {
         let new_body = "New content.";
         let outside_before = "# Prior\n\nUser content above.\n";
         let outside_after = "\nUser content below.\n";
-        let existing = format!(
-            "{outside_before}{BEGIN_MARKER}\n{old_body}\n{END_MARKER}{outside_after}"
-        );
+        let existing =
+            format!("{outside_before}{BEGIN_MARKER}\n{old_body}\n{END_MARKER}{outside_after}");
         let result = ensure_managed_block(Some(&existing), new_body);
         match result {
             Edit::Updated(contents) => {
-                assert!(contents.contains("User content above."), "content before preserved");
-                assert!(contents.contains("User content below."), "content after preserved");
+                assert!(
+                    contents.contains("User content above."),
+                    "content before preserved"
+                );
+                assert!(
+                    contents.contains("User content below."),
+                    "content after preserved"
+                );
                 assert!(contents.contains(new_body), "new body present");
                 assert!(!contents.contains(old_body), "old body removed");
             }
@@ -941,7 +1223,10 @@ mod tests {
     fn managed_block_malformed_begin_without_end_is_failed() {
         let existing = format!("# Something\n{BEGIN_MARKER}\nNo end marker here.\n");
         let result = ensure_managed_block(Some(&existing), "body");
-        assert!(matches!(result, Edit::Failed(_)), "malformed → Failed, got {result:?}");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "malformed → Failed, got {result:?}"
+        );
     }
 
     #[test]
@@ -950,7 +1235,10 @@ mod tests {
             "# Something\n{BEGIN_MARKER}\nsome content\n{BEGIN_MARKER}\nmore\n{END_MARKER}\n"
         );
         let result = ensure_managed_block(Some(&existing), "body");
-        assert!(matches!(result, Edit::Failed(_)), "duplicate begin → Failed, got {result:?}");
+        assert!(
+            matches!(result, Edit::Failed(_)),
+            "duplicate begin → Failed, got {result:?}"
+        );
     }
 
     // merge_claude_settings tests
@@ -969,7 +1257,10 @@ mod tests {
         let hooks = serde_json::json!({"PreToolUse": []});
         let result =
             merge_claude_settings(Some(existing), hooks.clone(), "/fw/bin/gatekeeper").unwrap();
-        assert_eq!(result["model"], "claude-opus-4-5", "user model key preserved");
+        assert_eq!(
+            result["model"], "claude-opus-4-5",
+            "user model key preserved"
+        );
         assert_eq!(result["other"], "value", "other key preserved");
         assert_eq!(result["hooks"], hooks);
         assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
@@ -981,10 +1272,12 @@ mod tests {
             "env": {"MY_VAR": "hello", "GATEKEEPER_BIN": "old_path"}
         });
         let hooks = serde_json::json!({});
-        let result =
-            merge_claude_settings(Some(existing), hooks, "/fw/bin/gatekeeper").unwrap();
+        let result = merge_claude_settings(Some(existing), hooks, "/fw/bin/gatekeeper").unwrap();
         assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
-        assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper", "BIN updated");
+        assert_eq!(
+            result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper",
+            "BIN updated"
+        );
     }
 
     #[test]
