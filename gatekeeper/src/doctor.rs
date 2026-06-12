@@ -94,9 +94,9 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
     };
     println!("resolved by: {source_label}");
 
-    // F1: the resolved root must be a marked root (unless it was an explicit env pin,
-    // which is obeyed verbatim — the user is responsible for the pin's content).
-    // A fallback root is by definition an unmarked directory → FAIL.
+    // F1: the resolved root must be a marked root, whatever step produced it — an
+    // explicit env pin is obeyed verbatim at resolution time, but doctor still reports
+    // a pin that lost its markers. A fallback root is by definition unmarked → FAIL.
     if !is_marked_root(root) {
         println!(
             "framework root: FAIL: {} is not a marked topology root \
