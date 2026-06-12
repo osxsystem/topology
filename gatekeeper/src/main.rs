@@ -296,7 +296,7 @@ fn print_help() {
 
 const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper", ".claude-plugin"];
 
-fn is_marked_root(dir: &Path) -> bool {
+pub(crate) fn is_marked_root(dir: &Path) -> bool {
     dir.join("skills").is_dir() && ROOT_MARKERS.iter().any(|m| dir.join(m).exists())
 }
 
@@ -904,7 +904,14 @@ fn handle_doctor(args: &[String]) -> i32 {
     if let Some(code) = check_help_or_unknown("doctor", args, &[], lookup_usage("doctor")) {
         return code;
     }
-    doctor::cmd_doctor(&framework_root())
+    let rr = resolved_root();
+    if rr.source == RootSource::Fallback {
+        eprintln!(
+            "gatekeeper: no framework root found; falling back to {} (run 'gatekeeper doctor')",
+            rr.path.display()
+        );
+    }
+    doctor::cmd_doctor(&rr.path, &rr.source)
 }
 
 /// Docs-coverage lint (three rules, all satisfiable on the reconciled tree).

@@ -306,7 +306,6 @@ fn c_binary_adjacent_bin_layout_resolves_root() {
 // Doctor must detect the unmarked fallback root and exit non-zero (F1 FAIL).
 
 #[test]
-#[ignore = "red fixture: requires Phase 11 doctor changes (task 3) — un-ignore there"]
 fn d_doctor_f1_no_root_anywhere_exits_nonzero() {
     let base = std::env::temp_dir().join(format!("rr_f1_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
@@ -366,7 +365,6 @@ fn d_doctor_f1_no_root_anywhere_exits_nonzero() {
 // Doctor F2: project == framework AND a VERSION file is present → FAIL.
 
 #[test]
-#[ignore = "red fixture: requires Phase 11 doctor changes (task 3) — un-ignore there"]
 fn e_doctor_f2_cwd_inside_payload_exits_nonzero() {
     let base = std::env::temp_dir().join(format!("rr_f2_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);

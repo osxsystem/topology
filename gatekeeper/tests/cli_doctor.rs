@@ -24,7 +24,17 @@ fn scratch_root(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("topo_doctor_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
 
-    // skills/ — the framework_root() anchor
+    // Create the root directory first (required before writing any files into it).
+    fs::create_dir_all(&root).unwrap();
+
+    // AGENTS.md — required marker so is_marked_root() passes (Phase 11 F1 check).
+    fs::write(
+        root.join("AGENTS.md"),
+        "# Topology Framework\n\nThis is a test root.\n",
+    )
+    .unwrap();
+
+    // skills/ — the framework_root() anchor (+ AGENTS.md above = is_marked_root)
     fs::create_dir_all(root.join("skills").join("test-skill")).unwrap();
     fs::write(
         root.join("skills").join("test-skill").join("SKILL.md"),
@@ -122,6 +132,11 @@ fn doctor_prints_all_three_root_lines() {
     assert!(
         out.contains("framework root:"),
         "output must contain 'framework root:'; got:\n{out}"
+    );
+    // Phase 11: doctor must print "resolved by:" line after "framework root:".
+    assert!(
+        out.contains("resolved by:"),
+        "output must contain 'resolved by:'; got:\n{out}"
     );
     assert!(
         out.contains("project root:"),
