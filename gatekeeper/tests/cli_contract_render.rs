@@ -103,7 +103,6 @@ const BAD_TEMPLATE: &str = "\
 
 /// Framework render must contain `docs/` paths and zero `.claude/topology` occurrences.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn framework_render_contains_docs_paths() {
     let root = scratch_framework("fw_render");
     let (code, stdout, stderr) = run_with_root(&root, &root, &["adapt", "--contract", "framework"]);
@@ -126,7 +125,6 @@ fn framework_render_contains_docs_paths() {
 
 /// Project render must contain `.claude/topology/` paths and zero `docs/`-rooted artifact paths.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn project_render_contains_topology_paths() {
     let root = scratch_framework("proj_render");
     let (code, stdout, stderr) =
@@ -157,7 +155,6 @@ fn project_render_contains_topology_paths() {
 /// An unknown placeholder in the template must cause exit 2 and the stderr message
 /// must name the offending placeholder.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn unknown_placeholder_exits_2_and_names_it() {
     let root = scratch_bad_template("bad_ph");
     let (code, _stdout, stderr) =
@@ -215,7 +212,6 @@ fn agents_md_byte_equal_to_framework_render() {
 
 /// `adapt --contract <unknown>` must exit 2.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn unknown_contract_world_exits_2() {
     let root = scratch_framework("unk_world");
     let (code, _stdout, stderr) =
@@ -231,7 +227,6 @@ fn unknown_contract_world_exits_2() {
 
 /// When `templates/CONTRACT.template.md` is absent the command must exit 2.
 #[test]
-#[ignore = "red fixture: production code not yet written (Task 1)"]
 fn missing_template_exits_2() {
     let root = scratch_framework("no_template");
     // Remove the template we just created.
