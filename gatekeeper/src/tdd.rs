@@ -3,8 +3,12 @@
 //! Checks the commit range `<merge-base of base and HEAD>..HEAD` (default base: `main`).
 //! See the failing-test-first heuristic spec in the README gate table.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+use crate::config::{ProjectConfig, TddMode};
+use crate::verify::{self, EvidenceStep, ShadowConfigured, ShadowResult};
 
 /// Run `git -C <root> <args>`, returning stdout trimmed on success.
 fn git(root: &Path, args: &[&str]) -> Option<String> {
@@ -166,10 +170,160 @@ fn parse_log_output(raw: &str) -> Vec<CommitInfo> {
     commits
 }
 
+// ── red-green replay engine ───────────────────────────────────────────────────
+
+/// Return the test-file paths touched by commit `sha` (those for which
+/// `is_test_path` is true). Uses `git show --name-only --format=` so only the
+/// file list is printed.
+fn test_paths_in_commit(git_root: &Path, sha: &str) -> Vec<String> {
+    match git(git_root, &["show", "--name-only", "--format=", sha]) {
+        Some(out) => out
+            .lines()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .filter(|p| is_test_path(p))
+            .map(str::to_owned)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// RAII guard that removes a replay worktree on every exit path (return, `?`,
+/// panic). Drop runs `git -C <git_root> worktree remove --force <path>` then
+/// `git -C <git_root> worktree prune`, ignoring errors.
+struct ReplayWorktree {
+    path: PathBuf,
+    git_root: PathBuf,
+}
+
+impl Drop for ReplayWorktree {
+    fn drop(&mut self) {
+        let path = self.path.to_string_lossy().into_owned();
+        let _ = git(
+            &self.git_root,
+            &["worktree", "remove", "--force", path.as_str()],
+        );
+        // Belt-and-suspenders: `worktree remove` can leave the directory behind
+        // when it holds untracked build output (e.g. a `target/` from the test
+        // run). Remove the tree directly, then prune the stale registration.
+        let _ = std::fs::remove_dir_all(&self.path);
+        let _ = git(&self.git_root, &["worktree", "prune"]);
+    }
+}
+
+/// The verdict of a red-green replay: did the test fail (red) at the merge-base?
+#[derive(Debug, PartialEq, Eq)]
+enum ReplayVerdict {
+    /// Red at base — the test failed where the production code does not yet
+    /// exist. This is the genuine TDD signal.
+    Pass,
+    /// Green at base — the test passed without the production code, so it
+    /// certifies nothing. Detail explains the rejection.
+    Fail(String),
+}
+
+/// Replay commit `T`'s new test files onto the merge-base `base_sha` and require
+/// the test command to fail (red) there.
+///
+/// - Create a detached worktree at `base_sha`.
+/// - Check out `T`'s test paths onto that worktree.
+/// - Run `test_argv` inside the worktree (via `verify::execute_step`, the single
+///   spawn/timeout path).
+/// - Nonzero exit (or timeout) ⟹ red at base ⟹ `Pass`; zero exit ⟹ green at
+///   base ⟹ `Fail("vacuous test: passed at merge-base")`.
+///
+/// Returns `Err` on a worktree/git failure (caller decides fail-open vs closed).
+fn replay_red_green(
+    git_root: &Path,
+    feature: &str,
+    base_sha: &str,
+    commit_t: &str,
+    test_paths: &[String],
+    test_argv: &[String],
+    cfg: &ProjectConfig,
+) -> Result<ReplayVerdict, String> {
+    let timeout = Duration::from_secs(cfg.replay_timeout_secs);
+    // Worktrees live one level below temp under a shared `gatekeeper-replay`
+    // parent, as `gatekeeper-replay/<feature>-<pid>`. Nesting (rather than the
+    // literal `temp/gatekeeper-replay-<feature>-<pid>`) keeps an in-flight
+    // worktree out of the top-level `gatekeeper-replay-*` namespace that the
+    // cleanup contract scans, so concurrent replays in sibling processes do not
+    // race that scan. The owning process still removes its own worktree on every
+    // exit path via the RAII guard below. (Deviation from the spec's literal
+    // path; see the report — required for deterministic cleanup under the repo's
+    // parallel test execution.)
+    let parent = std::env::temp_dir().join("gatekeeper-replay");
+    let _ = std::fs::create_dir_all(&parent);
+    let wt = parent.join(format!("{feature}-{}", std::process::id()));
+    let wt_str = wt.to_string_lossy().into_owned();
+
+    // Clean any stale worktree at this path before adding.
+    let _ = git(
+        git_root,
+        &["worktree", "remove", "--force", wt_str.as_str()],
+    );
+    let _ = std::fs::remove_dir_all(&wt);
+
+    git(
+        git_root,
+        &["worktree", "add", "--detach", wt_str.as_str(), base_sha],
+    )
+    .ok_or_else(|| format!("git worktree add failed for {wt_str} at {base_sha}"))?;
+
+    // Construct the cleanup guard immediately after a successful add so every
+    // subsequent early return removes the worktree.
+    let _guard = ReplayWorktree {
+        path: wt.clone(),
+        git_root: git_root.to_path_buf(),
+    };
+
+    // Bring T's new test files onto the base tree.
+    let mut checkout_args: Vec<&str> = vec!["-C", wt_str.as_str(), "checkout", commit_t, "--"];
+    for p in test_paths {
+        checkout_args.push(p.as_str());
+    }
+    let checkout_ok = Command::new("git")
+        .args(&checkout_args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !checkout_ok {
+        return Err(format!(
+            "git checkout {commit_t} -- <test paths> failed in {wt_str}"
+        ));
+    }
+
+    // Run the test command in the worktree via the shared spawn/timeout path.
+    let step = EvidenceStep {
+        raw_command: test_argv.join(" "),
+        expect_literal: Vec::new(),
+        expect_regex: Vec::new(),
+    };
+    match verify::execute_step(&step, &wt, cfg, timeout) {
+        // Timeout / fail-closed rejection ⟹ treat as red at base.
+        Err(_) => Ok(ReplayVerdict::Pass),
+        // `passed` is true only on a zero exit (and satisfied expectations).
+        Ok(result) => {
+            if result.passed {
+                Ok(ReplayVerdict::Fail(
+                    "vacuous test: passed at merge-base".to_string(),
+                ))
+            } else {
+                Ok(ReplayVerdict::Pass)
+            }
+        }
+    }
+}
+
 /// The `tdd` gate.
 ///
 /// Returns a process exit code: 0 pass, 1 fail, 2 usage error.
-pub fn gate_tdd(git_root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
+pub fn gate_tdd(
+    git_root: &Path,
+    feature: &str,
+    base_ref: Option<&str>,
+    cfg: &ProjectConfig,
+) -> i32 {
     if feature.is_empty() {
         eprintln!("gatekeeper: --feature <slug> is required");
         return 2;
@@ -244,6 +398,7 @@ pub fn gate_tdd(git_root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
     match first_prod_idx {
         None => {
             // No production-touching commits at all — docs/tests only branch.
+            // The heuristic passes; there is no production code to replay against.
             println!("PASS tdd gate: (no production changes in range)");
             0
         }
@@ -253,10 +408,7 @@ pub fn gate_tdd(git_root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
                 .iter()
                 .any(|c| c.test_touching && !c.prod_touching);
 
-            if has_red_commit {
-                println!("PASS tdd gate: failing-test-first history confirmed");
-                0
-            } else {
+            if !has_red_commit {
                 let first_prod = &commits[idx];
                 println!("FAIL tdd gate: no test-only commit precedes the first production commit");
                 println!(
@@ -266,7 +418,137 @@ pub fn gate_tdd(git_root: &Path, feature: &str, base_ref: Option<&str>) -> i32 {
                 println!(
                     "  expected pattern: a commit touching only test files before production code"
                 );
+                return 1;
+            }
+
+            println!("PASS tdd gate: failing-test-first history confirmed");
+            // Heuristic passed (exit 0). Layer the red-green replay on top.
+            replay_after_heuristic(git_root, feature, &merge_base, &commits, cfg)
+        }
+    }
+}
+
+/// Run (or shadow-log) the red-green replay after the commit-sequence heuristic
+/// has already passed. Returns the gate's exit code.
+///
+/// Enforcement is mode-gated: in `Replay` mode the replay verdict decides the
+/// exit; in `History` mode the replay verdict is shadow-logged only and the
+/// heuristic verdict (0) is returned unchanged.
+fn replay_after_heuristic(
+    git_root: &Path,
+    feature: &str,
+    merge_base: &str,
+    commits: &[CommitInfo],
+    cfg: &ProjectConfig,
+) -> i32 {
+    let enforcing = cfg.tdd_mode == TddMode::Replay;
+
+    // Resolve the test command: [tdd] replay_test_command else top-level test_command.
+    let cmd = cfg
+        .tdd_replay_test_command
+        .as_deref()
+        .or(cfg.test_command.as_deref());
+    let test_argv: Vec<String> = cmd
+        .map(|c| c.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+
+    if test_argv.is_empty() {
+        if enforcing {
+            // Cannot prove red without running anything — fail closed.
+            eprintln!("replay mode requires a test_command");
+            return 2;
+        }
+        // History mode: no command means no replay is attempted — no shadow.
+        return 0;
+    }
+
+    // Find the first test-only commit T in the range.
+    let commit_t = commits.iter().find(|c| c.test_touching && !c.prod_touching);
+    let commit_t = match commit_t {
+        Some(c) => c,
+        // No test-only commit — the heuristic already covers this; nothing to replay.
+        None => return 0,
+    };
+
+    let test_paths = test_paths_in_commit(git_root, &commit_t.short_sha);
+    if test_paths.is_empty() {
+        // Nothing to check out — the heuristic verdict stands.
+        return 0;
+    }
+
+    let configured = if enforcing {
+        ShadowConfigured::On
+    } else if std::env::var("GATEKEEPER_SHADOW").as_deref() == Ok("replay") {
+        ShadowConfigured::ShadowEnv
+    } else {
+        ShadowConfigured::Default
+    };
+    let cmd_joined = test_argv.join(" ");
+
+    match replay_red_green(
+        git_root,
+        feature,
+        merge_base,
+        &commit_t.short_sha,
+        &test_paths,
+        &test_argv,
+        cfg,
+    ) {
+        Ok(ReplayVerdict::Pass) => {
+            verify::emit_shadow(
+                "tdd",
+                "replay",
+                configured,
+                None,
+                Some(&cmd_joined),
+                ShadowResult::Pass,
+                "red at merge-base",
+            );
+            0
+        }
+        Ok(ReplayVerdict::Fail(detail)) => {
+            verify::emit_shadow(
+                "tdd",
+                "replay",
+                configured,
+                None,
+                Some(&cmd_joined),
+                ShadowResult::Fail,
+                &detail,
+            );
+            if enforcing {
+                println!("FAIL tdd gate: {detail}");
                 1
+            } else {
+                0
+            }
+        }
+        Err(e) => {
+            if enforcing {
+                // Fail-closed: a replay we cannot run cannot prove red.
+                verify::emit_shadow(
+                    "tdd",
+                    "replay",
+                    configured,
+                    None,
+                    Some(&cmd_joined),
+                    ShadowResult::Fail,
+                    &e,
+                );
+                println!("FAIL tdd gate: replay failed: {e}");
+                1
+            } else {
+                // History mode: log a skip, keep the heuristic verdict.
+                verify::emit_shadow(
+                    "tdd",
+                    "replay",
+                    configured,
+                    None,
+                    Some(&cmd_joined),
+                    ShadowResult::Skip,
+                    &e,
+                );
+                0
             }
         }
     }
@@ -444,7 +726,10 @@ mod gate_tests {
             "pub fn feature() {}",
             "feat: implement feature",
         );
-        assert_eq!(gate_tdd(&root, "feature", None), 0);
+        assert_eq!(
+            gate_tdd(&root, "feature", None, &ProjectConfig::default()),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -468,7 +753,10 @@ mod gate_tests {
                 "feat+test: add foo and its test together",
             ],
         );
-        assert_eq!(gate_tdd(&root, "feature", None), 1);
+        assert_eq!(
+            gate_tdd(&root, "feature", None, &ProjectConfig::default()),
+            1
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -483,7 +771,7 @@ mod gate_tests {
             "fn main() {}",
             "feat: add main without tests",
         );
-        let code = gate_tdd(&root, "feature", None);
+        let code = gate_tdd(&root, "feature", None, &ProjectConfig::default());
         assert_eq!(code, 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -500,7 +788,7 @@ mod gate_tests {
             "docs: add notes",
         );
         commit_file(&root, "README.md", "# Updated\n", "docs: update readme");
-        let code = gate_tdd(&root, "feature", None);
+        let code = gate_tdd(&root, "feature", None, &ProjectConfig::default());
         assert_eq!(code, 0);
         let _ = fs::remove_dir_all(&root);
     }
@@ -511,7 +799,7 @@ mod gate_tests {
     fn empty_range_fails() {
         let root = make_repo("empty_range");
         // No commits on the feature branch beyond main
-        let code = gate_tdd(&root, "feature", None);
+        let code = gate_tdd(&root, "feature", None, &ProjectConfig::default());
         assert_eq!(code, 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -522,7 +810,12 @@ mod gate_tests {
     fn unresolvable_base_fails() {
         let root = make_repo("bad_base");
         commit_file(&root, "src/foo.rs", "fn foo() {}", "feat: foo");
-        let code = gate_tdd(&root, "feature", Some("no-such-branch"));
+        let code = gate_tdd(
+            &root,
+            "feature",
+            Some("no-such-branch"),
+            &ProjectConfig::default(),
+        );
         assert_eq!(code, 1);
         let _ = fs::remove_dir_all(&root);
     }
@@ -533,7 +826,12 @@ mod gate_tests {
     fn option_shaped_base_exits_2() {
         let root = make_repo("opt_base");
         commit_file(&root, "src/foo.rs", "fn foo() {}", "feat: foo");
-        let code = gate_tdd(&root, "feature", Some("--independent"));
+        let code = gate_tdd(
+            &root,
+            "feature",
+            Some("--independent"),
+            &ProjectConfig::default(),
+        );
         assert_eq!(code, 2);
         let _ = fs::remove_dir_all(&root);
     }
@@ -543,7 +841,7 @@ mod gate_tests {
     #[test]
     fn missing_feature_exits_2() {
         let root = make_repo("no_feat");
-        let code = gate_tdd(&root, "", None);
+        let code = gate_tdd(&root, "", None, &ProjectConfig::default());
         assert_eq!(code, 2);
         let _ = fs::remove_dir_all(&root);
     }
@@ -567,7 +865,10 @@ mod gate_tests {
         );
         commit_file(&root, "src/a.rs", "pub fn a() {}", "feat: implement a");
         commit_file(&root, "src/b.rs", "pub fn b() {}", "feat: implement b");
-        assert_eq!(gate_tdd(&root, "feature", None), 0);
+        assert_eq!(
+            gate_tdd(&root, "feature", None, &ProjectConfig::default()),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -584,7 +885,10 @@ mod gate_tests {
         );
         commit_file(&root, "src/feat.rs", "pub fn feat() {}", "feat: implement");
         // Using "main" explicitly should work the same as the default
-        assert_eq!(gate_tdd(&root, "feature", Some("main")), 0);
+        assert_eq!(
+            gate_tdd(&root, "feature", Some("main"), &ProjectConfig::default()),
+            0
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
