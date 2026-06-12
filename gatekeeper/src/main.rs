@@ -2648,4 +2648,32 @@ mod tests {
         let input = r#"{"message":"hello"}"#;
         assert_eq!(do_extract(input), input);
     }
+
+    // ── Phase 8 ROOT_MARKERS regression test (AC-6) ──────────────────────────
+
+    /// A directory with skills/ + .claude-plugin/ only is NOT a marked root.
+    ///
+    /// After Phase 8 removes ".claude-plugin" from ROOT_MARKERS, a standard
+    /// Claude Code plugin checkout layout (skills/ + .claude-plugin/) must no
+    /// longer be recognised as a Topology framework root — otherwise any plugin
+    /// checkout would claim self-governance and misroute the framework root.
+    ///
+    /// This test starts #[ignore] (red fixture); it is un-ignored in task 3 once
+    /// ROOT_MARKERS is updated to ["AGENTS.md", "gatekeeper"].
+    #[test]
+    #[ignore = "red fixture: un-ignored in task 3 when ROOT_MARKERS drops .claude-plugin"]
+    fn skills_and_claude_plugin_alone_is_not_a_marked_root() {
+        let base = env::temp_dir().join("topology_test_plugin_not_root");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("skills")).unwrap();
+        fs::create_dir_all(base.join(".claude-plugin")).unwrap();
+        // Deliberately no AGENTS.md and no gatekeeper/ directory.
+        let result = is_marked_root(&base);
+        assert!(
+            !result,
+            "skills/ + .claude-plugin/ alone must not be a marked root after Phase 8 \
+             (ROOT_MARKERS should be [\"AGENTS.md\", \"gatekeeper\"])"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
 }
