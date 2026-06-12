@@ -7,8 +7,8 @@
 //! such a directory must NOT resolve as the framework root: resolution falls back to
 //! cwd and doctor FAILs (F1, unmarked root).
 //!
-//! Red at introduction: with `.claude-plugin` still in ROOT_MARKERS this layout is
-//! `SelfGoverned` and doctor exits 0 — the assertions below fail. Un-ignored in the
+//! Red at introduction (proven by force-running the then-ignored test): this layout was
+//! `SelfGoverned` with doctor exit 0. Un-ignored alongside the
 //! plugin-retirement commit.
 
 use std::fs;
@@ -32,7 +32,6 @@ fn run_doctor(bin: &Path, cwd: &Path, home: &Path) -> (i32, String, String) {
 }
 
 #[test]
-#[ignore = "red until the plugin retirement removes .claude-plugin from ROOT_MARKERS"]
 fn plugin_checkout_layout_is_not_a_framework_root() {
     let base = std::env::temp_dir().join(format!("rm_plugin_marker_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
