@@ -363,8 +363,6 @@ pub(crate) struct ContractCtx {
     pub(crate) artifacts_root: String,
     /// Wiring note appended at the end: empty for the framework, one sentence for governed
     /// projects (explaining that `gatekeeper` is wired via `GATEKEEPER_BIN` in `.claude/settings.json`).
-    /// Phase 9 will supply the full sentence; Phase 10 uses empty for both worlds since
-    /// the placeholder must still be substituted.
     pub(crate) binary_note: String,
 }
 
@@ -425,11 +423,18 @@ fn framework_ctx() -> ContractCtx {
     }
 }
 
+/// Wiring sentence for the governed-project render (spec §1): the binary resolves through
+/// `GATEKEEPER_BIN`, never an absolute path baked into the contract. The wiring itself
+/// (`.claude/settings.json` env block) is created by Phase 9's integration.
+const PROJECT_BINARY_NOTE: &str = "In governed projects, `gatekeeper` resolves through the \
+`GATEKEEPER_BIN` environment variable wired in `.claude/settings.json` — no PATH \
+installation is needed.\n";
+
 /// Build a `ContractCtx` for a governed-project world: artifacts at `.claude/topology/`.
 fn project_ctx() -> ContractCtx {
     ContractCtx {
         artifacts_root: ".claude/topology".to_owned(),
-        binary_note: String::new(),
+        binary_note: PROJECT_BINARY_NOTE.to_owned(),
     }
 }
 
@@ -758,6 +763,19 @@ mod tests {
         assert!(
             !rendered.contains("docs"),
             "project render must not contain 'docs': {rendered}"
+        );
+        assert!(
+            rendered.contains("GATEKEEPER_BIN"),
+            "project render carries the wiring note (spec §1): {rendered}"
+        );
+    }
+
+    #[test]
+    fn framework_render_has_no_wiring_note() {
+        let rendered = render_contract(MINI_TEMPLATE, &framework_ctx()).unwrap();
+        assert!(
+            !rendered.contains("GATEKEEPER_BIN"),
+            "framework render must not carry the governed wiring note: {rendered}"
         );
     }
 

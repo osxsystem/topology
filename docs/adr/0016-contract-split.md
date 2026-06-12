@@ -10,7 +10,7 @@
 
 ## Decision
 
-1. **`templates/CONTRACT.template.md`** — the portable contract sections extracted from `AGENTS.md` with three placeholders: `{{ARTIFACTS_ROOT}}` (substituted as `docs` for the framework, `.claude/topology` for governed projects), `{{GATEKEEPER_CMD}}` (always `gatekeeper`), `{{BINARY_NOTE}}` (empty for framework; Phase 9 will supply the wiring sentence for governed projects). Shipped in the payload at `templates/CONTRACT.template.md`; the `CONTRACT.md` slot in the payload remains reserved for Phase 9's inject step.
+1. **`templates/CONTRACT.template.md`** — the portable contract sections extracted from `AGENTS.md` with three placeholders: `{{ARTIFACTS_ROOT}}` (substituted as `docs` for the framework, `.claude/topology` for governed projects), `{{GATEKEEPER_CMD}}` (always `gatekeeper`), `{{BINARY_NOTE}}` (empty for framework; for governed projects one sentence stating the binary resolves through `GATEKEEPER_BIN` in `.claude/settings.json` — the wiring itself is created by Phase 9's integration). Shipped in the payload at `templates/CONTRACT.template.md`; the `CONTRACT.md` slot in the payload remains reserved for Phase 9's inject step.
 
 2. **Fail-closed render** — `render_contract` in `adapt.rs` substitutes the three known placeholders via plain string replacement (ADR-0007 dependency freeze: no template crate). Any remaining `{{` after substitution is a hard error naming the offending placeholder. Unknown placeholders are caught by the same residual-`{{` check.
 
