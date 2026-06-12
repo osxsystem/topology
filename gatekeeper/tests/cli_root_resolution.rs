@@ -81,6 +81,8 @@ fn gk_bin() -> PathBuf {
 //       skills/
 //       AGENTS.md
 //       project/         ← plain project directory (cwd for the binary)
+//     bin/               ← binary installed here (no marked root above it)
+//       gatekeeper
 //
 // With the old algorithm, running `gatekeeper doctor` from `ancestor/project/`
 // resolves `ancestor/` because the cwd walk finds a marked ancestor.
@@ -88,12 +90,11 @@ fn gk_bin() -> PathBuf {
 // falls back to cwd — `ancestor/project/` is NOT the framework root, doctor prints
 // the fallback warning and exits non-zero (F1: unmarked root).
 //
-// The binary runs from `ancestor/project/` with TOPOLOGY_ROOT unset and HOME
-// remapped to a directory that has no `~/.topology` so the global-install step
-// also misses.
+// The binary is installed at <base>/bin/ (a plain directory, not inside any marked
+// root) so that binary-adjacent does not resolve to the ancestor either.
+// HOME is remapped to a directory with no .topology so the global-install step also misses.
 
 #[test]
-#[ignore = "red fixture: requires Phase 11 core rewrite (task 2) — un-ignore there"]
 fn a_hijack_class_ancestor_no_longer_wins() {
     let base = std::env::temp_dir().join(format!("rr_hijack_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
@@ -107,8 +108,18 @@ fn a_hijack_class_ancestor_no_longer_wins() {
     let fake_home = base.join("home");
     fs::create_dir_all(&fake_home).unwrap();
 
-    let (_code, stdout, stderr) = run_binary(
-        &gk_bin(),
+    // Install the binary in a plain (unmarked) dir so binary-adjacent doesn't find
+    // the ancestor either. The binary is placed at <base>/bin/gatekeeper — no marked
+    // root exists above <base>/bin/.
+    let plain_bin_dir = base.join("bin");
+    fs::create_dir_all(&plain_bin_dir).unwrap();
+    let src = PathBuf::from(env!("CARGO_BIN_EXE_gatekeeper"));
+    let installed_bin = plain_bin_dir.join("gatekeeper");
+    fs::copy(&src, &installed_bin).unwrap();
+    fs::set_permissions(&installed_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (code, stdout, stderr) = run_binary(
+        &installed_bin,
         &project,
         &["doctor"],
         &[("HOME", fake_home.to_str().unwrap())],
@@ -122,11 +133,10 @@ fn a_hijack_class_ancestor_no_longer_wins() {
         "expected fallback warning on stderr; got:\nstdout: {stdout}\nstderr: {stderr}"
     );
     // Doctor F1: the unmarked fallback root must cause a non-zero exit.
-    // (code check done last so the assertion message includes the full output)
-    assert!(
-        !stdout.contains(&ancestor.to_string_lossy().to_string())
-            || stdout.contains("FAIL"),
-        "ancestor must not silently win as framework root;\nstdout: {stdout}\nstderr: {stderr}"
+    assert_ne!(
+        code, 0,
+        "doctor must exit non-zero when ancestor hijack is removed (fallback to unmarked root);\n\
+         stdout: {stdout}\nstderr: {stderr}"
     );
 
     let _ = fs::remove_dir_all(&base);
@@ -178,7 +188,6 @@ fn make_full_marked_root(dir: &Path) {
 }
 
 #[test]
-#[ignore = "red fixture: requires Phase 11 core rewrite (task 2) — un-ignore there"]
 fn b_w2_global_topology_resolves_for_project_outside_home() {
     let base = std::env::temp_dir().join(format!("rr_w2_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
@@ -192,8 +201,17 @@ fn b_w2_global_topology_resolves_for_project_outside_home() {
     let project = base.join("project");
     make_plain_dir(&project);
 
+    // Install the binary in a plain (unmarked) dir so binary-adjacent does NOT resolve
+    // to the actual topology repo — we need the global-home step to be the winner.
+    let plain_bin_dir = base.join("bin");
+    fs::create_dir_all(&plain_bin_dir).unwrap();
+    let src = PathBuf::from(env!("CARGO_BIN_EXE_gatekeeper"));
+    let installed_bin = plain_bin_dir.join("gatekeeper");
+    fs::copy(&src, &installed_bin).unwrap();
+    fs::set_permissions(&installed_bin, fs::Permissions::from_mode(0o755)).unwrap();
+
     let (code, stdout, stderr) = run_binary(
-        &gk_bin(),
+        &installed_bin,
         &project,
         &["doctor"],
         &[("HOME", fake_home.to_str().unwrap())],
@@ -202,13 +220,16 @@ fn b_w2_global_topology_resolves_for_project_outside_home() {
 
     // After the rewrite, ~/.topology is found via the global-home step.
     // Doctor should exit 0 (healthy root) and the framework root line should
-    // name the global .topology path.
+    // name the global .topology path (canonicalized on macOS).
     assert_eq!(
         code, 0,
         "doctor must exit 0 when ~/.topology is a healthy marked root;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // Use canonicalize-aware comparison: on macOS /var → /private/var.
+    let canonical_topology = fs::canonicalize(&global_topology).unwrap_or(global_topology.clone());
     assert!(
-        stdout.contains(&global_topology.to_string_lossy().to_string()),
+        stdout.contains(&global_topology.to_string_lossy().to_string())
+            || stdout.contains(&canonical_topology.to_string_lossy().to_string()),
         "framework root must be ~/.topology;\nstdout: {stdout}\nstderr: {stderr}"
     );
     // No fallback warning should appear on stderr.
@@ -238,7 +259,6 @@ fn b_w2_global_topology_resolves_for_project_outside_home() {
 // (`framework/bin/gatekeeper` → `framework/`) and finds the marked root.
 
 #[test]
-#[ignore = "red fixture: requires Phase 11 core rewrite (task 2) — un-ignore there"]
 fn c_binary_adjacent_bin_layout_resolves_root() {
     let base = std::env::temp_dir().join(format!("rr_binadj_{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);

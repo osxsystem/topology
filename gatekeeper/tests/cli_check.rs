@@ -14,11 +14,22 @@ fn scratch_root(tag: &str) -> PathBuf {
     root
 }
 
-/// Run `gatekeeper <args>` from `cwd`. Returns (exit code, stdout).
+/// Run `gatekeeper <args>` from `cwd` with `TOPOLOGY_ROOT` pinned to `root`.
+///
+/// After Phase 11, binary-adjacent resolution points at the actual topology repo,
+/// so tests that create scratch roots must pin TOPOLOGY_ROOT explicitly to keep
+/// framework_root() == scratch root (which makes artifacts_root() = docs/).
 fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
+    run_with_root(cwd, cwd, args)
+}
+
+fn run_with_root(cwd: &Path, root: &Path, args: &[&str]) -> (i32, String) {
+    // Canonicalize so /var/folders/... matches /private/var/folders/... on macOS.
+    let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
         .current_dir(cwd)
         .args(args)
+        .env("TOPOLOGY_ROOT", &canonical_root)
         .output()
         .unwrap();
     (

@@ -55,6 +55,13 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
 fn run_with_env(cwd: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> (i32, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gatekeeper"));
     cmd.current_dir(cwd).args(args);
+    // After Phase 11, binary-adjacent resolution points at the actual topology repo,
+    // so tests that create scratch roots must pin TOPOLOGY_ROOT to keep
+    // framework_root() == scratch root (which controls which rules.toml / hooks/ are checked).
+    // Canonicalize so /var/folders/... matches /private/var/folders/... on macOS.
+    // Tests that need a different root override this via env_vars.
+    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    cmd.env("TOPOLOGY_ROOT", &canonical_cwd);
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
