@@ -24,7 +24,17 @@ fn scratch_root(tag: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("topo_doctor_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
 
-    // skills/ — the framework_root() anchor
+    // Create the root directory first (required before writing any files into it).
+    fs::create_dir_all(&root).unwrap();
+
+    // AGENTS.md — required marker so is_marked_root() passes (Phase 11 F1 check).
+    fs::write(
+        root.join("AGENTS.md"),
+        "# Topology Framework\n\nThis is a test root.\n",
+    )
+    .unwrap();
+
+    // skills/ — the framework_root() anchor (+ AGENTS.md above = is_marked_root)
     fs::create_dir_all(root.join("skills").join("test-skill")).unwrap();
     fs::write(
         root.join("skills").join("test-skill").join("SKILL.md"),
@@ -55,6 +65,13 @@ fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
 fn run_with_env(cwd: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> (i32, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gatekeeper"));
     cmd.current_dir(cwd).args(args);
+    // After Phase 11, binary-adjacent resolution points at the actual topology repo,
+    // so tests that create scratch roots must pin TOPOLOGY_ROOT to keep
+    // framework_root() == scratch root (which controls which rules.toml / hooks/ are checked).
+    // Canonicalize so /var/folders/... matches /private/var/folders/... on macOS.
+    // Tests that need a different root override this via env_vars.
+    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    cmd.env("TOPOLOGY_ROOT", &canonical_cwd);
     for (k, v) in env_vars {
         cmd.env(k, v);
     }
@@ -115,6 +132,11 @@ fn doctor_prints_all_three_root_lines() {
     assert!(
         out.contains("framework root:"),
         "output must contain 'framework root:'; got:\n{out}"
+    );
+    // Phase 11: doctor must print "resolved by:" line after "framework root:".
+    assert!(
+        out.contains("resolved by:"),
+        "output must contain 'resolved by:'; got:\n{out}"
     );
     assert!(
         out.contains("project root:"),

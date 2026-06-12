@@ -49,10 +49,19 @@ protected_paths = ["security/rules.toml", "hooks/pre-commit.sh"]
 }
 
 /// Run `gatekeeper <args>` from `cwd`, feeding `stdin`. Returns (exit code, stdout).
+///
+/// TOPOLOGY_ROOT is pinned to the canonicalized `cwd` so that after Phase 11
+/// binary-adjacent resolution does not silently point at the actual topology repo
+/// instead of the scratch root. Canonicalization resolves macOS /var → /private/var
+/// symlinks so that path comparisons inside the scan engine are stable.
 fn run(cwd: &Path, args: &[&str], stdin: &[u8]) -> (i32, String) {
+    // Canonicalize so /var/folders/... matches the /private/var/folders/... that
+    // env::current_dir() returns inside the child process on macOS.
+    let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mut child = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
         .current_dir(cwd)
         .args(args)
+        .env("TOPOLOGY_ROOT", &canonical_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

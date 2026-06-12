@@ -2,6 +2,45 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.6.0 — 2026-06-12
+
+Root-resolution hardening + doctor provenance (ROADMAP Phase 11).
+
+### Root resolution — kills the cwd-ancestor hijack class
+
+- `resolve_root` is now a **pure function** over four explicit inputs (`start`, `env_override`,
+  `exe_path`, `home`) — no process state inside the resolution logic.
+- The bare cwd marker walk and the per-ancestor `.topology` probe (W1/W2/W3 from research) are
+  **removed**. The new precedence chain:
+  1. `$TOPOLOGY_ROOT` — explicit pin, returned verbatim.
+  2. Self-governed project — nearest `.git` ancestor that is itself a marked root.
+  3. Binary-adjacent — walks up from the binary's own path; handles both `bin/` installs
+     and `gatekeeper/target/<profile>/` dev builds.
+  4. `<project>/.topology` — vendored install at the project root.
+  5. `~/.topology` — global install, by real path (fixes W2: projects outside `$HOME`).
+  6. Fallback — cwd unchanged; `framework_root()` prints one stderr warning.
+- `RootSource` enum + `ResolvedRoot` struct carry provenance through the call chain.
+- Any ancestor directory that happens to have `skills/` + a marker no longer silently wins
+  over an installed payload or the global install.
+
+### Doctor — root provenance and new failures
+
+- Prints `resolved by: <step>` immediately after `framework root:`.
+- **F1 (FAIL, non-zero):** resolved root is not a marked Topology root (fallback landed on a
+  plain directory, or a pinned root lost its markers).
+- **F2 (FAIL, non-zero):** `cwd` is inside a payload install (`project == framework` and
+  `VERSION` present) — user is running from the payload directory instead of their project.
+- Dev checkout (`project == framework`, no `VERSION`) remains exit 0 (self-governance mode).
+- Existing `version_skew` FAIL unchanged.
+
+### Tests
+
+- 5 new integration fixtures in `gatekeeper/tests/cli_root_resolution.rs`:
+  (a) hijack-class ancestor no longer wins; (b) W2 global-home resolution;
+  (c) binary-adjacent `bin/` layout; (d) doctor F1; (e) doctor F2.
+- All integration test helpers updated to pin `TOPOLOGY_ROOT` to canonicalized cwd so
+  binary-adjacent does not silently resolve to the actual topology repo in scratch-root tests.
+
 ## v0.5.1 — 2026-06-12
 
 Shadow-verdict burn-in sink

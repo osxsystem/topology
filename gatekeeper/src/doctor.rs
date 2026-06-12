@@ -14,6 +14,7 @@ use crate::instinct;
 use crate::learn;
 use crate::scan;
 use crate::version;
+use crate::RootSource;
 
 // toml is a direct dependency — re-use the crate already in Cargo.toml
 
@@ -75,16 +76,62 @@ pub fn version_skew(vf: &VersionFile) -> bool {
 }
 
 /// Run all doctor probes and print a report. Returns 0 (all ok) or 1 (any FAIL).
-pub fn cmd_doctor(root: &Path) -> i32 {
-    use crate::{artifacts_root, project_root};
+pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
+    use crate::{artifacts_root, is_marked_root, project_root};
     let mut failures = 0usize;
 
     // ── Two-roots transparency ───────────────────────────────────────────────
     println!("framework root: {}", root.display());
+
+    // Print which resolution step produced this root (spec: "resolved by:" line).
+    let source_label = match source {
+        RootSource::EnvOverride => "env override ($TOPOLOGY_ROOT)",
+        RootSource::SelfGoverned => "self-governed project",
+        RootSource::BinaryAdjacent => "binary-adjacent",
+        RootSource::ProjectVendored => "project .topology",
+        RootSource::GlobalHome => "global ~/.topology",
+        RootSource::Fallback => "fallback (cwd)",
+    };
+    println!("resolved by: {source_label}");
+
+    // F1: the resolved root must be a marked root, whatever step produced it — an
+    // explicit env pin is obeyed verbatim at resolution time, but doctor still reports
+    // a pin that lost its markers. A fallback root is by definition unmarked → FAIL.
+    if !is_marked_root(root) {
+        println!(
+            "framework root: FAIL: {} is not a marked topology root \
+             (missing skills/ + one of AGENTS.md / gatekeeper/ / .claude-plugin/); \
+             run 'gatekeeper doctor' after 'gatekeeper adapt --harness claude' or set TOPOLOGY_ROOT",
+            root.display()
+        );
+        failures += 1;
+    }
+
     let proj_root = project_root();
     println!("project root: {}", proj_root.display());
     let art_root = artifacts_root();
     println!("artifacts root: {}", art_root.display());
+
+    // F2: running from inside a payload clone (project == framework AND VERSION present)
+    // means the user accidentally cd'd into the payload directory. Their "project" is
+    // the payload itself — artifacts would land inside the payload. Report FAIL and tell
+    // them to cd into their real project.
+    let roots_same = match (fs::canonicalize(&proj_root), fs::canonicalize(root)) {
+        (Ok(p), Ok(f)) => p == f,
+        _ => proj_root == root,
+    };
+    if roots_same {
+        let version_path = root.join("VERSION");
+        if matches!(parse_version_file(&version_path), VersionProbe::Present(_)) {
+            println!(
+                "framework root: FAIL: running from inside a payload install at {} \
+                 (project root == framework root and VERSION present); \
+                 cd into your real project, then run gatekeeper from there",
+                root.display()
+            );
+            failures += 1;
+        }
+    }
 
     // ── Resolution transparency ──────────────────────────────────────────────
     // Print raw facts, not a single merged order — the two hooks resolve in opposite orders.

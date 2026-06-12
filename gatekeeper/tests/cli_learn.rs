@@ -82,10 +82,15 @@ fn scratch_root(tag: &str) -> PathBuf {
 }
 
 /// Run `gatekeeper <args>` from `cwd`, feeding `stdin`. Returns (exit code, stdout).
+///
+/// TOPOLOGY_ROOT is pinned to `cwd` so that after Phase 11 binary-adjacent resolution
+/// does not silently point at the actual topology repo instead of the scratch root.
 fn run(cwd: &Path, args: &[&str], stdin: &[u8]) -> (i32, String) {
+    let canonical_cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let mut child = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
         .current_dir(cwd)
         .args(args)
+        .env("TOPOLOGY_ROOT", &canonical_cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

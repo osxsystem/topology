@@ -246,11 +246,30 @@ outside the repo** — a CI job, or another project's directory:
 TOPOLOGY_ROOT=/path/to/topology gatekeeper list
 ```
 
-Without it, resolution walks up from the current directory and stops only at a *marked* Topology
-root **or a vendored `<dir>/.topology` that is one** — so in a governed project a plain
-`gatekeeper <cmd>` run from anywhere inside the project finds the vendored framework on its own,
-and an unrelated `skills/` folder elsewhere on your machine (e.g. a stray `~/skills`) is never
-mistaken for the framework — it falls back to the current directory instead.
+Without it, `gatekeeper` resolves the framework root through a fixed precedence chain anchored on
+locations the binary can justify — not on arbitrary directory ancestry:
+
+1. **`$TOPOLOGY_ROOT`** — explicit env pin, returned verbatim (obeyed first; `doctor` will report
+   if the pinned path is missing its markers).
+2. **Self-governed project** — if the nearest `.git` ancestor of the current directory is itself a
+   marked Topology root (has `skills/` + one of `AGENTS.md` / `gatekeeper/` / `.claude-plugin/`),
+   it resolves there. Covers the framework dev checkout and forks that govern themselves.
+3. **Binary-adjacent** — walks up from the binary's own path and stops at the first marked root.
+   An installed binary at `<root>/bin/gatekeeper` resolves `<root>`; a dev build in
+   `<repo>/gatekeeper/target/…` resolves `<repo>`.
+4. **`<project>/.topology`** — vendored install: if the project root contains a marked `.topology`
+   child, it wins. In a governed project a plain `gatekeeper <cmd>` finds the vendored framework
+   without `TOPOLOGY_ROOT` (the common install path from `scripts/install.sh --project`).
+5. **`~/.topology`** — global install, probed by its real path regardless of whether the project
+   lives under `$HOME`. Fixes the earlier silent fallback for projects on other volumes or in CI
+   workspaces.
+6. **Fallback** — if nothing else matches, `gatekeeper` returns the current directory and prints a
+   one-line warning to stderr: `gatekeeper: no framework root found; falling back to <path> (run
+   'gatekeeper doctor')`. Gates remain usable in odd fixtures; `doctor` provides the hard failure.
+
+`gatekeeper doctor` prints a `resolved by:` line identifying which step won, and exits non-zero
+when the resolved root is not a properly marked Topology root (F1) or when the current directory
+is inside a payload install (F2 — run from your real project instead).
 
 The hooks pass the framework root via `$TOPOLOGY_ROOT` in the environment and run the binary from
 the **session's working directory** (your project), never by `cd`-ing into the framework. That

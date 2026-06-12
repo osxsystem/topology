@@ -296,40 +296,145 @@ fn print_help() {
 
 const ROOT_MARKERS: &[&str] = &["AGENTS.md", "gatekeeper", ".claude-plugin"];
 
-fn is_marked_root(dir: &Path) -> bool {
+pub(crate) fn is_marked_root(dir: &Path) -> bool {
     dir.join("skills").is_dir() && ROOT_MARKERS.iter().any(|m| dir.join(m).exists())
 }
 
-fn resolve_root(start: &Path, env_override: Option<&Path>) -> PathBuf {
+/// Which resolution step produced the `ResolvedRoot`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RootSource {
+    /// Step 1: `$TOPOLOGY_ROOT` was set and points at an existing directory.
+    EnvOverride,
+    /// Step 2: the project root (`.git` walk) is itself a marked root.
+    SelfGoverned,
+    /// Step 3: walking up from `current_exe()` found a marked ancestor.
+    BinaryAdjacent,
+    /// Step 4: `<project_root>/.topology` is a marked root.
+    ProjectVendored,
+    /// Step 5: `<home>/.topology` is a marked root.
+    GlobalHome,
+    /// Step 6: no deterministic source found; `start` (cwd) returned unchanged.
+    Fallback,
+}
+
+/// A resolved framework root with provenance.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedRoot {
+    pub(crate) path: PathBuf,
+    pub(crate) source: RootSource,
+}
+
+/// Pure resolution function — all inputs are arguments, no process state is read.
+///
+/// Precedence (see spec §"Resolution algorithm"):
+///   1. `env_override` — if set and an existing directory, return verbatim.
+///   2. `project_root` is itself a marked root (`SelfGoverned`).
+///   3. Walk up from `exe_path`; first marked ancestor wins (`BinaryAdjacent`).
+///   4. `<project_root>/.topology` is a marked root (`ProjectVendored`).
+///   5. `<home>/.topology` is a marked root (`GlobalHome`).
+///   6. Fallback: return `start` unchanged.
+///
+/// The bare cwd marker walk from the old algorithm is **removed**. The only cwd
+/// influence is `project_root` (the nearest-`.git` walk, passed in as an argument)
+/// and the identity fallback.
+pub(crate) fn resolve_root(
+    start: &Path,
+    env_override: Option<&Path>,
+    exe_path: Option<&Path>,
+    home: Option<&Path>,
+) -> ResolvedRoot {
+    // Step 1: explicit env pin.
     if let Some(o) = env_override {
         if o.is_dir() {
-            return o.to_path_buf();
+            return ResolvedRoot {
+                path: o.to_path_buf(),
+                source: RootSource::EnvOverride,
+            };
         }
     }
-    let mut dir = start.to_path_buf();
-    loop {
-        if is_marked_root(&dir) {
-            return dir;
+
+    // Step 2: self-governed — the project root is itself a marked root.
+    let proj = resolve_project_root(start);
+    if is_marked_root(&proj) {
+        return ResolvedRoot {
+            path: proj,
+            source: RootSource::SelfGoverned,
+        };
+    }
+
+    // Step 3: binary-adjacent — walk up from the exe's directory.
+    if let Some(exe) = exe_path {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        while let Some(d) = dir {
+            if is_marked_root(&d) {
+                return ResolvedRoot {
+                    path: d,
+                    source: RootSource::BinaryAdjacent,
+                };
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
         }
-        // Vendored install: `install.sh --project <path>` places the framework at
-        // <project>/.topology. Recognize it during the walk-up so a plain `gatekeeper <cmd>`
-        // from anywhere inside the project finds the framework without TOPOLOGY_ROOT. A dir
-        // that is itself a marked root wins over its own .topology (checked above first).
-        let vendored = dir.join(".topology");
-        if is_marked_root(&vendored) {
-            return vendored;
+    }
+
+    // Step 4: <project_root>/.topology vendored install.
+    let vendored = proj.join(".topology");
+    if is_marked_root(&vendored) {
+        return ResolvedRoot {
+            path: vendored,
+            source: RootSource::ProjectVendored,
+        };
+    }
+
+    // Step 5: global ~/.topology install.
+    if let Some(h) = home {
+        let global = h.join(".topology");
+        if is_marked_root(&global) {
+            return ResolvedRoot {
+                path: global,
+                source: RootSource::GlobalHome,
+            };
         }
-        if !dir.pop() {
-            return start.to_path_buf();
-        }
+    }
+
+    // Step 6: fallback.
+    ResolvedRoot {
+        path: start.to_path_buf(),
+        source: RootSource::Fallback,
     }
 }
 
-/// Locate the framework root by walking up from cwd looking for a marked Topology root.
-fn framework_root() -> PathBuf {
+/// Locate the framework root. Emits a single stderr warning when resolution falls
+/// back to cwd (i.e. no deterministic root was found). All other callers that need
+/// provenance should use `resolved_root()` instead.
+pub(crate) fn framework_root() -> PathBuf {
+    let r = resolved_root();
+    if r.source == RootSource::Fallback {
+        // Most commands resolve the framework root more than once per process
+        // (e.g. directly and again via artifacts_root()); warn only on the first.
+        static FALLBACK_WARNING: std::sync::Once = std::sync::Once::new();
+        FALLBACK_WARNING.call_once(|| {
+            eprintln!(
+                "gatekeeper: no framework root found; falling back to {} (run 'gatekeeper doctor')",
+                r.path.display()
+            );
+        });
+    }
+    r.path
+}
+
+/// Resolve and return the full `ResolvedRoot` (path + provenance). Used by `doctor`
+/// and unit tests that need to inspect the source step.
+pub(crate) fn resolved_root() -> ResolvedRoot {
     let start = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let env_override = env::var_os("TOPOLOGY_ROOT").map(PathBuf::from);
-    resolve_root(&start, env_override.as_deref())
+    let exe_path = env::current_exe().ok();
+    let home = env::var_os("HOME").map(PathBuf::from);
+    resolve_root(
+        &start,
+        env_override.as_deref(),
+        exe_path.as_deref(),
+        home.as_deref(),
+    )
 }
 
 /// Walk up from `start` to the nearest directory that contains `.git` (as a dir or file, so
@@ -804,7 +909,11 @@ fn handle_doctor(args: &[String]) -> i32 {
     if let Some(code) = check_help_or_unknown("doctor", args, &[], lookup_usage("doctor")) {
         return code;
     }
-    doctor::cmd_doctor(&framework_root())
+    // No fallback eprintln here: doctor's own report carries `resolved by: fallback (cwd)`
+    // and the F1 FAIL line, and cmd_doctor's internal artifacts_root() call already routes
+    // through the Once-guarded warning in framework_root().
+    let rr = resolved_root();
+    doctor::cmd_doctor(&rr.path, &rr.source)
 }
 
 /// Docs-coverage lint (three rules, all satisfiable on the reconciled tree).
@@ -2008,134 +2117,190 @@ mod tests {
         );
     }
 
-    // resolve_root tests — each uses a distinct hard-coded tempdir subdir so reruns are clean.
+    // resolve_root tests (new 4-argument pure signature).
+    // Each uses a distinct hard-coded tempdir subdir so reruns are clean.
+    //
+    // NOTE: tests that previously passed because of the cwd marker walk have been
+    // rewritten to pin roots explicitly (via env_override or fixture layout) — the old
+    // cwd walk is removed by design; weakening assertions would hide the spec change.
 
     #[test]
-    fn resolve_root_hijack_regression() {
-        // A chain whose only skills/ dir has NO marker → returns start (not the stray dir).
+    fn resolve_root_fallback_when_no_candidate_matches() {
+        // No env_override, no marked project_root, no exe nearby, no ~/.topology →
+        // returns start with source Fallback.
+        // (Previously "hijack regression" relied on the cwd walk returning start when a
+        // stray skills/ had no marker — now the fallback is the guaranteed path when
+        // nothing resolves, regardless of ancestry.)
         let base = env::temp_dir().join("topology_resolve_root_hijack");
         let _ = fs::remove_dir_all(&base);
-        // stray parent: has skills/ but no marker
-        let stray = base.join("stray");
-        fs::create_dir_all(stray.join("skills")).unwrap();
-        // start is a subdir inside stray
-        let start = stray.join("project");
+        let start = base.join("project");
         fs::create_dir_all(&start).unwrap();
+        // Empty home — no ~/.topology
+        let fake_home = base.join("home");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&start, None);
+        let result = resolve_root(&start, None, None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::Fallback,
+            "no candidate → Fallback"
+        );
         assert_eq!(
             fs::canonicalize(&start).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "stray skills/ without marker must not hijack"
+            fs::canonicalize(&result.path).unwrap(),
+            "Fallback must return start"
         );
     }
 
     #[test]
-    fn resolve_root_marked_direct() {
-        // A dir containing both skills/ and AGENTS.md → returns that dir.
+    fn resolve_root_self_governed_when_project_root_is_marked() {
+        // The project root (nearest .git ancestor) is itself a marked root →
+        // SelfGoverned, returns the project root.
+        // (Previously "marked_direct" relied on the cwd walk finding a marked dir; now
+        // the self-governed step covers this when the marked dir also has .git.)
+        // Pin: we pass start = <base> and the project root resolves to <base> (no .git
+        // above it), AND we make <base> a marked root; since project_root falls back to
+        // start when no .git is found, and start IS the marked root → SelfGoverned.
+        // Actually: project_root() uses resolve_project_root(start); with no .git it
+        // falls back to start. So if start is a marked root, step 2 wins.
         let base = env::temp_dir().join("topology_resolve_root_marked");
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("skills")).unwrap();
         fs::write(base.join("AGENTS.md"), "").unwrap();
+        let fake_home = base.parent().unwrap().join("home_marked");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&base, None);
+        let result = resolve_root(&base, None, None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::SelfGoverned,
+            "marked project root must produce SelfGoverned"
+        );
         assert_eq!(
             fs::canonicalize(&base).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "marked root must be returned directly"
+            fs::canonicalize(&result.path).unwrap(),
+            "SelfGoverned must return the project root"
         );
     }
 
     #[test]
-    fn resolve_root_nested_start() {
-        // Starting from a nested subdir of a marked root → walks up and returns the marked root.
+    fn resolve_root_nested_start_uses_env_override() {
+        // Running from a subdir with TOPOLOGY_ROOT pinned to the marked root → EnvOverride.
+        // Previously "nested_start" relied on the cwd walk walking up to the marked root;
+        // that walk is removed. Explicit pin via env_override is the supported mechanism.
         let base = env::temp_dir().join("topology_resolve_root_nested");
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("skills")).unwrap();
         fs::write(base.join("AGENTS.md"), "").unwrap();
         let nested = base.join("a").join("b").join("c");
         fs::create_dir_all(&nested).unwrap();
+        let fake_home = base.parent().unwrap().join("home_nested");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&nested, None);
+        // Pin via env_override (the supported way to point at a marked root from a sub-dir).
+        let result = resolve_root(&nested, Some(&base), None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::EnvOverride,
+            "env_override must win — use TOPOLOGY_ROOT when running from a sub-dir"
+        );
         assert_eq!(
             fs::canonicalize(&base).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "nested start must walk up to the marked root"
+            fs::canonicalize(&result.path).unwrap(),
+            "EnvOverride must return the pinned root"
         );
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
     fn resolve_root_env_override_wins() {
-        // A valid env_override is returned regardless of what the walk-up would find.
+        // A valid env_override is returned as EnvOverride regardless of other candidates.
         let base = env::temp_dir().join("topology_resolve_root_override");
         let _ = fs::remove_dir_all(&base);
-        // walk-up target: has a marked root
-        let marked = base.join("marked");
-        fs::create_dir_all(marked.join("skills")).unwrap();
-        fs::write(marked.join("AGENTS.md"), "").unwrap();
-        let start = marked.join("sub");
+        let start = base.join("start");
         fs::create_dir_all(&start).unwrap();
         // override dir: a different valid directory
         let override_dir = base.join("override_dir");
         fs::create_dir_all(&override_dir).unwrap();
+        let fake_home = base.join("home_override");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&start, Some(&override_dir));
+        let result = resolve_root(&start, Some(&override_dir), None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::EnvOverride,
+            "valid env override must produce EnvOverride"
+        );
         assert_eq!(
             fs::canonicalize(&override_dir).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "valid env override must win over walk-up"
+            fs::canonicalize(&result.path).unwrap(),
+            "EnvOverride must return the override directory"
         );
     }
 
     #[test]
     fn resolve_root_env_override_invalid_ignored() {
-        // A non-existent env_override is ignored; walk-up/fallback applies.
+        // A non-existent env_override is ignored; fallback applies when nothing else resolves.
         let base = env::temp_dir().join("topology_resolve_root_override_invalid");
         let _ = fs::remove_dir_all(&base);
-        // No marked root anywhere — fallback to start
         let start = base.join("project");
         fs::create_dir_all(&start).unwrap();
         let nonexistent = base.join("does_not_exist");
+        let fake_home = base.join("home_invalid");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&start, Some(&nonexistent));
+        let result = resolve_root(&start, Some(&nonexistent), None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::Fallback,
+            "non-existent env override must be ignored; must fall back"
+        );
         assert_eq!(
             fs::canonicalize(&start).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "non-existent env override must be ignored; fallback to start"
+            fs::canonicalize(&result.path).unwrap(),
+            "Fallback must return start"
         );
     }
 
     #[test]
-    fn resolve_root_finds_vendored_topology() {
-        // A governed project carries the framework at <project>/.topology (install.sh
-        // --project). Walk-up from anywhere inside the project must find it without
-        // TOPOLOGY_ROOT — this was the live-test S1.3 failure: doctor from the project
-        // root probed the project itself and reported 3 failures.
+    fn resolve_root_finds_project_vendored_topology() {
+        // A governed project carries the framework at <project_root>/.topology.
+        // The project_root is the nearest .git ancestor of start; since there is no
+        // .git here, project_root falls back to start. So <start>/.topology is probed.
+        // Pin: start == base (no .git), base/.topology is a marked root → ProjectVendored.
         let base = env::temp_dir().join("topology_vendored_root");
         let _ = fs::remove_dir_all(&base);
         let vendored = base.join(".topology");
         fs::create_dir_all(vendored.join("skills")).unwrap();
         fs::write(vendored.join("AGENTS.md"), "marker\n").unwrap();
-        let nested = base.join("src").join("deep");
-        fs::create_dir_all(&nested).unwrap();
+        // NOTE: previously the test started from base/src/deep and relied on the cwd
+        // walk finding <base>/.topology; after the rewrite only the project_root's
+        // direct .topology child is probed (Q4 decision). We test from base itself so
+        // project_root == base and step 4 finds base/.topology.
+        let fake_home = base.parent().unwrap().join("home_vendored");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        for start in [&base, &nested] {
-            let result = resolve_root(start, None);
-            assert_eq!(
-                fs::canonicalize(&vendored).unwrap(),
-                fs::canonicalize(&result).unwrap(),
-                "walk-up from {} must find the vendored .topology",
-                start.display()
-            );
-        }
+        let result = resolve_root(&base, None, None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::ProjectVendored,
+            "project_root/.topology must resolve as ProjectVendored"
+        );
+        assert_eq!(
+            fs::canonicalize(&vendored).unwrap(),
+            fs::canonicalize(&result.path).unwrap(),
+            "ProjectVendored must return the .topology path"
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
-    fn resolve_root_prefers_marked_dir_over_its_own_vendored_topology() {
-        // A directory that is itself a marked root wins over a .topology inside it —
-        // the framework repo must keep resolving to itself even if a stray .topology
-        // clone appears in its tree.
+    fn resolve_root_self_governed_beats_project_vendored_topology() {
+        // A directory that is itself a marked root (SelfGoverned, step 2) wins over
+        // a .topology inside it (ProjectVendored, step 4) — the framework repo must
+        // keep resolving to itself even if a stray .topology clone appears in its tree.
+        // Previously tested as "prefers_marked_dir_over_its_own_vendored_topology"
+        // with the cwd-walk; now the SelfGoverned step provides the same guarantee.
         let base = env::temp_dir().join("topology_vendored_precedence");
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("skills")).unwrap();
@@ -2143,12 +2308,108 @@ mod tests {
         let vendored = base.join(".topology");
         fs::create_dir_all(vendored.join("skills")).unwrap();
         fs::write(vendored.join("AGENTS.md"), "marker\n").unwrap();
+        let fake_home = base.parent().unwrap().join("home_prec");
+        fs::create_dir_all(&fake_home).unwrap();
 
-        let result = resolve_root(&base, None);
+        let result = resolve_root(&base, None, None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::SelfGoverned,
+            "marked project root must win (SelfGoverned beats ProjectVendored)"
+        );
         assert_eq!(
             fs::canonicalize(&base).unwrap(),
-            fs::canonicalize(&result).unwrap(),
-            "a marked dir must win over its own vendored .topology"
+            fs::canonicalize(&result.path).unwrap(),
+            "SelfGoverned must return the project root, not its .topology child"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_root_global_home_topology_found() {
+        // When no other step resolves, <home>/.topology that is a marked root → GlobalHome.
+        let base = env::temp_dir().join("topology_global_home");
+        let _ = fs::remove_dir_all(&base);
+        let start = base.join("project");
+        fs::create_dir_all(&start).unwrap();
+        let fake_home = base.join("home");
+        let global_topology = fake_home.join(".topology");
+        fs::create_dir_all(global_topology.join("skills")).unwrap();
+        fs::write(global_topology.join("AGENTS.md"), "marker\n").unwrap();
+
+        let result = resolve_root(&start, None, None, Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::GlobalHome,
+            "<home>/.topology must resolve as GlobalHome"
+        );
+        assert_eq!(
+            fs::canonicalize(&global_topology).unwrap(),
+            fs::canonicalize(&result.path).unwrap(),
+            "GlobalHome must return <home>/.topology"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_root_binary_adjacent_from_bin_layout() {
+        // Binary at <root>/bin/gatekeeper; walk up from the exe dir finds the marked root.
+        let base = env::temp_dir().join("topology_bin_adjacent");
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("root");
+        fs::create_dir_all(root.join("skills")).unwrap();
+        fs::write(root.join("AGENTS.md"), "marker\n").unwrap();
+        // Simulate exe at <root>/bin/gatekeeper
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let fake_exe = bin_dir.join("gatekeeper");
+        fs::write(&fake_exe, "").unwrap();
+
+        let start = base.join("cwd");
+        fs::create_dir_all(&start).unwrap();
+        let fake_home = base.join("home");
+        fs::create_dir_all(&fake_home).unwrap();
+
+        let result = resolve_root(&start, None, Some(&fake_exe), Some(&fake_home));
+        assert_eq!(
+            result.source,
+            RootSource::BinaryAdjacent,
+            "exe at <root>/bin/gatekeeper must produce BinaryAdjacent"
+        );
+        assert_eq!(
+            fs::canonicalize(&root).unwrap(),
+            fs::canonicalize(&result.path).unwrap(),
+            "BinaryAdjacent must return the marked root above bin/"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_root_q4_nested_dir_gitless_project_only_probes_cwd_topology() {
+        // Q4: with no .git, project_root falls back to start (cwd). Only
+        // <start>/.topology is probed in step 4 — a .topology on a deeper unrelated
+        // ancestor does NOT win.
+        let base = env::temp_dir().join("topology_q4_gitless");
+        let _ = fs::remove_dir_all(&base);
+
+        // An ancestor has .topology (simulates an unrelated project above cwd).
+        let ancestor_topology = base.join(".topology");
+        fs::create_dir_all(ancestor_topology.join("skills")).unwrap();
+        fs::write(ancestor_topology.join("AGENTS.md"), "marker\n").unwrap();
+
+        // Cwd is a sub-directory; it has no .git and no .topology of its own.
+        let start = base.join("sub").join("project");
+        fs::create_dir_all(&start).unwrap();
+        let fake_home = base.join("home");
+        fs::create_dir_all(&fake_home).unwrap();
+
+        let result = resolve_root(&start, None, None, Some(&fake_home));
+        // The ancestor's .topology must NOT resolve — only <start>/.topology would be
+        // probed (and it doesn't exist), so we fall back.
+        assert_eq!(
+            result.source,
+            RootSource::Fallback,
+            "Q4: ancestor .topology must not win; only project_root/.topology is probed"
         );
         let _ = fs::remove_dir_all(&base);
     }

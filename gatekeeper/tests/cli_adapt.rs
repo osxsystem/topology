@@ -34,10 +34,16 @@ fn scratch_root(tag: &str) -> PathBuf {
 }
 
 /// Run `gatekeeper <args>` from `cwd`. Returns (exit code, stdout).
+///
+/// TOPOLOGY_ROOT is pinned to the canonicalized `cwd` so that after Phase 11
+/// binary-adjacent resolution does not silently point at the actual topology repo
+/// instead of the scratch root. Canonicalization resolves macOS /var → /private/var.
 fn run(cwd: &Path, args: &[&str]) -> (i32, String) {
+    let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
         .current_dir(cwd)
         .args(args)
+        .env("TOPOLOGY_ROOT", &canonical_cwd)
         .output()
         .unwrap();
     (
@@ -122,9 +128,18 @@ fn missing_harness_flag_exits_2() {
 fn missing_agents_md_exits_2() {
     let root = std::env::temp_dir().join(format!("topo_adapt_cli_noagents_{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("skills")).unwrap(); // framework_root marker, but no AGENTS.md
+    fs::create_dir_all(root.join("skills")).unwrap(); // no AGENTS.md — adapt must fail
     fs::create_dir_all(root.join("instincts")).unwrap();
-    let (code, _) = run(&root, &["adapt", "--harness", "codex"]);
+    // Pin TOPOLOGY_ROOT to the scratch root: after the Phase 11 rewrite, binary-adjacent
+    // resolves to the actual repo (which has AGENTS.md), so without the pin the test would
+    // silently pass; we must force the root to the no-AGENTS.md scratch dir.
+    let out = Command::new(env!("CARGO_BIN_EXE_gatekeeper"))
+        .current_dir(&root)
+        .args(["adapt", "--harness", "codex"])
+        .env("TOPOLOGY_ROOT", &root)
+        .output()
+        .unwrap();
+    let code = out.status.code().unwrap_or(-1);
     assert_eq!(code, 2, "missing AGENTS.md is a hard error");
     let _ = fs::remove_dir_all(&root);
 }
