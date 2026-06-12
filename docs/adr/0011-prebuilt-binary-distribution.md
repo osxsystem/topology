@@ -1,6 +1,10 @@
 # 0011 — Prebuilt-first binary distribution: release matrix, installer download, plugin self-provisioning
 
-- **Status:** 🟢 Accepted
+- **Status:** 🟡 Accepted, amended in part by [ADR-0015](0015-plugin-channel-retirement.md)
+  (2026-06-12): plugin self-provisioning and `$CLAUDE_PLUGIN_DATA` resolution (§§2–3) are
+  retired with the plugin channel; the version guard (§1) narrows back to tag == `Cargo.toml`;
+  downloads default to the latest release with `TOPOLOGY_VERSION` pinning (§4). The release
+  matrix and prebuilt-first model stand.
 - **Date:** 2026-06-10
 
 ## Context

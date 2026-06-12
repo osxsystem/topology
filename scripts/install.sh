@@ -213,6 +213,24 @@ _rescue_legacy_clone_local() {
       fi
     done
   fi
+  # Clone-era handoffs — memory/artifacts/* predates the docs/memory migration
+  # (ADR-0013 names this location explicitly for the installer-v3 rescue).
+  local artifacts_src="$ROOT/memory/artifacts"
+  if [[ -d "$artifacts_src" ]]; then
+    local artifact
+    for artifact in "$artifacts_src"/*; do
+      [[ -f "$artifact" ]] || continue
+      local dst_file
+      dst_file="$memory_dst/$(basename "$artifact")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$memory_dst"
+        cp "$artifact" "$dst_file"
+        echo "    rescued: $artifact → $dst_file"
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
 }
 
 _rescue_legacy_clone_global() {
@@ -256,10 +274,30 @@ _rescue_legacy_clone_global() {
       fi
     done
   fi
+  # Clone-era handoffs — memory/artifacts/* predates the docs/memory migration
+  # (ADR-0013 names this location explicitly for the installer-v3 rescue).
+  local artifacts_src="$ROOT/memory/artifacts"
+  local artifacts_dst="$backup_dir/memory/artifacts"
+  if [[ -d "$artifacts_src" ]]; then
+    local artifact
+    for artifact in "$artifacts_src"/*; do
+      [[ -f "$artifact" ]] || continue
+      local dst_file
+      dst_file="$artifacts_dst/$(basename "$artifact")"
+      if [[ ! -f "$dst_file" ]]; then
+        mkdir -p "$artifacts_dst"
+        cp "$artifact" "$dst_file"
+        echo "    rescued: $artifact → $dst_file"
+        rescued=$((rescued + 1))
+      else
+        echo "    skipped (already exists): $dst_file"
+      fi
+    done
+  fi
   if [[ $rescued -gt 0 ]]; then
     echo "    backup: $backup_dir ($rescued file(s) rescued)"
   else
-    echo "    nothing to rescue (no ledger or handoffs found in legacy clone)"
+    echo "    nothing to rescue (no ledger, handoffs, or clone-era artifacts found in legacy clone)"
     # Remove the empty backup dir if nothing was written.
     rmdir "$backup_dir" 2>/dev/null || true
   fi
@@ -274,26 +312,39 @@ _handle_existing_root() {
     echo "==> Upgrading existing payload at $ROOT"
     rm -rf "$ROOT"
   elif [[ -d "$ROOT/.git" ]]; then
-    # Legacy clone: attempt best-effort rescue of in-tree state before removing.
-    echo "==> Legacy clone detected at $ROOT; rescuing any in-tree state before replacing."
-    if [[ "$SCOPE" == "global" ]]; then
-      _rescue_legacy_clone_global
-    else
-      _rescue_legacy_clone_local
-    fi
-    # Ask permission before deleting the checkout.
-    if [[ $YES -eq 1 ]] || ! can_prompt; then
-      echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes assumed)"
-      rm -rf "$ROOT"
-    else
+    # Legacy clone: decide first, then rescue + delete only when replacement is
+    # actually going ahead — a refusal leaves the clone fully intact (no backup
+    # litter, nothing lost).
+    echo "==> Legacy clone detected at $ROOT"
+    local do_replace=0
+    if [[ $YES -eq 1 ]]; then
+      echo "WARNING: replacing legacy clone at $ROOT with the payload (--yes)"
+      do_replace=1
+    elif can_prompt; then
       answer=$(ask "replace legacy clone at $ROOT with the payload?" "N")
       case "$answer" in
-        y|Y|yes|Yes) rm -rf "$ROOT" ;;
-        *)
-          echo "Aborted: legacy clone left intact at $ROOT." >&2
-          exit 1
-          ;;
+        y|Y|yes|Yes) do_replace=1 ;;
       esac
+    else
+      # ADR-0012 §4: non-interactive runs apply the printed default. The prompt
+      # default is "N", so a headless run without --yes refuses rather than
+      # silently destroying the clone.
+      echo "error: legacy clone at $ROOT requires confirmation to replace." >&2
+      echo "  Non-interactive default follows the prompt default (N): leaving it intact." >&2
+      echo "  Remedy: re-run with --yes (in-tree state is rescued before replacement)." >&2
+      exit 1
+    fi
+    if [[ $do_replace -eq 1 ]]; then
+      echo "==> Rescuing any in-tree state before replacing."
+      if [[ "$SCOPE" == "global" ]]; then
+        _rescue_legacy_clone_global
+      else
+        _rescue_legacy_clone_local
+      fi
+      rm -rf "$ROOT"
+    else
+      echo "Aborted: legacy clone left intact at $ROOT." >&2
+      exit 1
     fi
   else
     echo "error: $ROOT exists but contains neither a VERSION file nor a .git directory." >&2
@@ -480,6 +531,10 @@ if [[ "$SCOPE" == "local" ]]; then
   if grep -qxF '.topology/' "$PROJECT_PATH/.gitignore" 2>/dev/null; then
     note "$PROJECT_PATH/.gitignore (.topology/ entry)"
   fi
+else
+  # Global installs replace the whole payload tree — name it in the closing
+  # manifest like local scope does, instead of relying on inline echo lines.
+  note "$ROOT (global payload)"
 fi
 
 # ─── 5. Acquire the binary ───────────────────────────────────────────────────

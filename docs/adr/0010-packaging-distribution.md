@@ -1,8 +1,12 @@
 # 0010 — Packaging & distribution: system-PATH binary, CI mirrors the justfile, hand-authored plugin
 
-- **Status:** 🟢 Accepted (re-confirmed 2026-06-09) — *re-opened to Proposed across two Codex design-gate
-  review passes, revised to match the corrected [research](../research/2026-06-09-packaging-distribution.md),
-  and re-confirmed on sign-off with the binary-in-plugin fork resolved to model (1) system-PATH.*
+- **Status:** 🟡 Accepted (re-confirmed 2026-06-09), amended in part by
+  [ADR-0015](0015-plugin-channel-retirement.md) (2026-06-12): the hand-authored
+  plugin/marketplace manifests (§5) are retired with the plugin channel; the system-PATH
+  binary model and CI-mirrors-justfile decisions stand. — *re-opened to Proposed across two
+  Codex design-gate review passes, revised to match the corrected
+  [research](../research/2026-06-09-packaging-distribution.md), and re-confirmed on sign-off
+  with the binary-in-plugin fork resolved to model (1) system-PATH.*
 - **Date:** 2026-06-09
 
 > **Revision note (`[rev:codex-2026-06-09]`).** This ADR was first authored from the pre-review research and

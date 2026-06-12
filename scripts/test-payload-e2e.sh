@@ -372,6 +372,10 @@ git -C "$TMPDIR_FIXTURE_LEGACY/.topology" config user.email "test@example.com"
 # Plant a ledger with a sentinel line so we can verify rescue.
 mkdir -p "$TMPDIR_FIXTURE_LEGACY/.topology/docs/learn"
 echo "sentinel-ledger-content" > "$TMPDIR_FIXTURE_LEGACY/.topology/docs/learn/ledger.md"
+# Plant a clone-era handoff in memory/artifacts/ (the pre-docs/memory location
+# ADR-0013 names explicitly for the installer-v3 rescue).
+mkdir -p "$TMPDIR_FIXTURE_LEGACY/.topology/memory/artifacts"
+echo "sentinel-clone-era-handoff" > "$TMPDIR_FIXTURE_LEGACY/.topology/memory/artifacts/old.handoff.md"
 touch "$TMPDIR_FIXTURE_LEGACY/.topology/placeholder"
 git -C "$TMPDIR_FIXTURE_LEGACY/.topology" add -A
 git -C "$TMPDIR_FIXTURE_LEGACY/.topology" commit -q -m "legacy"
@@ -389,6 +393,14 @@ if [[ -f "$RESCUED_LEDGER" ]] && grep -qF "sentinel-ledger-content" "$RESCUED_LE
   pass "legacy migration: ledger sentinel rescued to $RESCUED_LEDGER"
 else
   fail "legacy migration: ledger sentinel not found at $RESCUED_LEDGER (install output: ${INSTALL_LEGACY_OUT:0:400})"
+fi
+
+# Clone-era memory/artifacts/* must land in the canonical memory dir (ADR-0013).
+RESCUED_ARTIFACT="$TMPDIR_FIXTURE_LEGACY/.claude/topology/memory/old.handoff.md"
+if [[ -f "$RESCUED_ARTIFACT" ]] && grep -qF "sentinel-clone-era-handoff" "$RESCUED_ARTIFACT"; then
+  pass "legacy migration: clone-era memory/artifacts handoff rescued"
+else
+  fail "legacy migration: clone-era handoff not found at $RESCUED_ARTIFACT (install output: ${INSTALL_LEGACY_OUT:0:400})"
 fi
 
 # New .topology must not have .git.
@@ -463,7 +475,7 @@ cleanup_all_global() {
          "${TMPDIR_FIXTURE_HINT:-}" "$TMPDIR_GLOBAL_HOME" \
          "${TMPDIR_GLOBAL_CHECKOUT_HOME:-}" "${TMPDIR_GLOBAL_LEGACY_HOME:-}" \
          "${TMPDIR_CORRUPT_HOME:-}" "${TMPDIR_CORRUPT_RELEASE:-}" \
-         "${TMPDIR_SLASH_HOME:-}" "${TMPDIR_REFUSE_HOME:-}"
+         "${TMPDIR_SLASH_HOME:-}" "${TMPDIR_REFUSE_HOME:-}" "${TMPDIR_HEADLESS_HOME:-}"
 }
 trap cleanup_all_global EXIT
 
@@ -617,6 +629,8 @@ mkdir -p "$GLOBAL_LEGACY_ROOT/docs/learn"
 echo "global-sentinel-ledger" > "$GLOBAL_LEGACY_ROOT/docs/learn/ledger.md"
 mkdir -p "$GLOBAL_LEGACY_ROOT/docs/memory"
 echo "global-sentinel-handoff" > "$GLOBAL_LEGACY_ROOT/docs/memory/phase8.handoff.md"
+mkdir -p "$GLOBAL_LEGACY_ROOT/memory/artifacts"
+echo "global-sentinel-clone-era" > "$GLOBAL_LEGACY_ROOT/memory/artifacts/old.handoff.md"
 touch "$GLOBAL_LEGACY_ROOT/placeholder"
 git -C "$GLOBAL_LEGACY_ROOT" add -A
 git -C "$GLOBAL_LEGACY_ROOT" commit -q -m "legacy"
@@ -652,6 +666,14 @@ if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/docs/memory/phase8.handoff.md" ]] && \
   pass "global legacy rescue: handoff rescued to backup dir"
 else
   fail "global legacy rescue: handoff not found in backup dir"
+fi
+
+# Clone-era memory/artifacts/* must be in the backup too (ADR-0013).
+if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/memory/artifacts/old.handoff.md" ]] && \
+   grep -qF "global-sentinel-clone-era" "$BACKUP_DIR/memory/artifacts/old.handoff.md"; then
+  pass "global legacy rescue: clone-era memory/artifacts handoff rescued"
+else
+  fail "global legacy rescue: clone-era handoff not found in backup dir"
 fi
 
 # The clone must be replaced with a payload (no .git).
@@ -764,7 +786,55 @@ else
   fail "interactive refusal: clone was modified despite refusal"
 fi
 
+# A refusal must not litter a backup dir either (rescue runs only on replacement).
+REFUSE_BACKUP="$(find "$TMPDIR_REFUSE_HOME" -maxdepth 1 -name '.topology-backup-*' -type d 2>/dev/null | head -1)"
+if [[ -z "$REFUSE_BACKUP" ]]; then
+  pass "interactive refusal: no backup dir littered"
+else
+  fail "interactive refusal: backup dir $REFUSE_BACKUP created despite refusal"
+fi
+
 rm -rf "$TMPDIR_REFUSE_HOME"
+
+# ── Global test L: headless without --yes refuses to touch a legacy clone ────
+# ADR-0012 §4: non-interactive runs apply the printed default. The legacy-clone
+# prompt defaults to "N", so a headless run (no tty seam, no --yes) must exit
+# non-zero with a remedy and leave the clone untouched — never silently delete.
+TMPDIR_HEADLESS_HOME="$(mktemp -d)"
+HEADLESS_ROOT="$TMPDIR_HEADLESS_HOME/.topology"
+
+mkdir -p "$HEADLESS_ROOT"
+git -C "$HEADLESS_ROOT" init -q
+git -C "$HEADLESS_ROOT" config user.name  "Test User"
+git -C "$HEADLESS_ROOT" config user.email "test@example.com"
+mkdir -p "$HEADLESS_ROOT/docs/learn"
+echo "headless-sentinel-ledger" > "$HEADLESS_ROOT/docs/learn/ledger.md"
+git -C "$HEADLESS_ROOT" add -A
+git -C "$HEADLESS_ROOT" commit -q -m "legacy"
+
+HEADLESS_EXIT=0
+HEADLESS_OUT="$(
+  HOME="$TMPDIR_HEADLESS_HOME" \
+  TOPOLOGY_HOME="$HEADLESS_ROOT" \
+  TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
+  TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
+    bash -s -- --global --harness none \
+      < "$SCRIPT_DIR/install.sh" 2>&1
+)" || HEADLESS_EXIT=$?
+
+if [[ $HEADLESS_EXIT -ne 0 ]] && grep -qF "requires confirmation to replace" <<<"$HEADLESS_OUT"; then
+  pass "headless no --yes: refuses with remedy (exit $HEADLESS_EXIT)"
+else
+  fail "headless no --yes: exit=$HEADLESS_EXIT — must refuse, not delete (output: ${HEADLESS_OUT:0:400})"
+fi
+
+if [[ -d "$HEADLESS_ROOT/.git" ]] && grep -qF "headless-sentinel-ledger" "$HEADLESS_ROOT/docs/learn/ledger.md"; then
+  pass "headless no --yes: legacy clone left untouched"
+else
+  fail "headless no --yes: clone was modified — destructive non-interactive default regressed"
+fi
+
+rm -rf "$TMPDIR_HEADLESS_HOME"
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""
