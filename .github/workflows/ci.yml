@@ -36,6 +36,29 @@ jobs:
       - name: README/USER-GUIDE↔help sync (cli_doc_sync)
         run: cargo test --manifest-path gatekeeper/Cargo.toml --test cli_doc_sync
 
+  installer:
+    name: Offline installer tests (test-payload, test-fetch, test-e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gatekeeper
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: Offline installer test suite
+        run: just test-payload && just test-fetch && just test-e2e
+
   network:
     name: Network gates (deny, links) — non-blocking
     runs-on: ubuntu-latest

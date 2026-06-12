@@ -813,10 +813,6 @@ if [[ "$SCOPE" == "local" && -n "$PROJECT_PATH" ]]; then
 fi
 
 echo ""
-echo "==> Optional: put gatekeeper on PATH"
-echo "    sudo ln -sf \"$BIN\" /usr/local/bin/gatekeeper"
-
-echo ""
 echo "==> Health check"
 # Run doctor from the PROJECT directory for a --project install: that is the cwd every later
 # gatekeeper invocation will use, so probing from inside the framework payload validates the
