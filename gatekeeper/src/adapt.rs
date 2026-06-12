@@ -191,7 +191,7 @@ fn apply_edits(edits: &[(String, Edit)], check: bool) -> i32 {
             Edit::Unchanged => {}
             Edit::Created(contents) => {
                 if check {
-                    println!("MISSING-IMPORT {path}");
+                    println!("DRIFT {path}");
                     drift = true;
                 } else {
                     if let Some(parent) = std::path::Path::new(path).parent() {
@@ -214,7 +214,7 @@ fn apply_edits(edits: &[(String, Edit)], check: bool) -> i32 {
             }
             Edit::Updated(contents) => {
                 if check {
-                    println!("DRIFT-BLOCK {path}");
+                    println!("DRIFT {path}");
                     drift = true;
                 } else {
                     if let Some(parent) = std::path::Path::new(path).parent() {
