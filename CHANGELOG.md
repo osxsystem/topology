@@ -2,6 +2,20 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## Unreleased
+
+End-to-end re-verification (ROADMAP Phase 12) — **closes Track 2 (Distribution)**. No binary change,
+no version bump.
+
+- New `scripts/test-e2e-reference.sh` (`just test-e2e-reference`, wired into the CI `installer` job):
+  runs the real `install.sh` offline against a genuine `react-weather-app`-shaped fixture and proves
+  the five consumer-visible outcomes — operating contract in context (`@.topology/CONTRACT.md`
+  import), bare `gatekeeper` via `GATEKEEPER_BIN` (no PATH/sudo), both hooks fire, the project
+  pre-commit blocks a planted secret, and design artifacts land under `<project>/.claude/topology/`.
+- A red baseline first asserts the outcomes ABSENT on a fresh fixture, so the verification is not
+  tautological. Also covers `--global` scope (payload + binary substrate, `GlobalHome` resolution,
+  no version skew).
+
 ## v0.9.0 — 2026-06-12
 
 `adapt` v2: project integration (ROADMAP Phase 9). One `gatekeeper adapt` run in a governed project

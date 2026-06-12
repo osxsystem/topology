@@ -59,6 +59,10 @@ test-fetch:
 test-e2e:
     bash scripts/test-payload-e2e.sh
 
+# Offline end-to-end re-verification: real install against a reference project, assert the five outcomes.
+test-e2e-reference:
+    bash scripts/test-e2e-reference.sh
+
 # ShellCheck across hooks and scripts.
 shell:
     shellcheck hooks/*.sh scripts/*.sh

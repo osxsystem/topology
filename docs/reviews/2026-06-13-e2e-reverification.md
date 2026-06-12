@@ -1,0 +1,23 @@
+VERDICT: pass
+HEAD: 44af69fe4e037cf31c893665ca8bac17b6d6a473
+BASE: a69a95e9517363ef8685b3e0f0b87ee6e9243d58
+
+## Blocking findings
+None.
+
+## Criteria checked
+
+This is a fresh-context re-review of the fix for the three findings from the prior review (`6af6229`). The fix diff (`git diff 6af6229 44af69f`) touches exactly two files — `scripts/test-e2e-reference.sh` (three assertion/trap edits) and `docs/verify/2026-06-13-e2e-reverification.md` (a hardening note). The assertions already verified clean in the prior review (O1, O2 binary/settings/version, O3 wiring/security-scan, O4, O5, AC-7/8/9, hermeticity) were untouched by the fix and are not re-litigated.
+
+### Spec/plan
+- **Finding 1 (BLOCKING false-green) genuinely resolved.** O2 "check design ran" now uses `grep -qE '(PASS|FAIL) design gate'` (`scripts/test-e2e-reference.sh:182`). Verified the real healthy line is `FAIL design gate: research-first — no …/research/*x*.md` (matches), while a missing binary prints `env: …/gatekeeper-missing: No such file or directory` (no longer matches). Mutation replay **M2** (point the O2-design invocation at `$GK_BIN-missing`): the assertion now reports `FAIL O2: check design did not run…`, summary `24 passed, 1 failed`. Under the old `grep -qiE 'gate|…'` the "gate" substring in the binary path made this pass — the mutation is now killed. Clap usage for bad subcommands/flags (`gatekeeper check design --feature <slug>`, `unknown flag`, `unknown gate`) contains no `(PASS|FAIL) design gate` substring, so usage text cannot spuriously match.
+- **Finding 3 (conditional false-green) genuinely resolved.** O3 skill-activation now uses `grep -qF 'Topology: evaluate your skills'` (`scripts/test-e2e-reference.sh:203`). Verified the healthy advisory originates in the binary (`gatekeeper/src/main.rs:617` prints exactly `Topology: evaluate your skills before acting.`). Mutation replay **M3b** (overwrite the installed hook with an exit-0 `echo skill-activation: degraded` stub before the O3 check): assertion now reports `FAIL O3: skill-activation.sh did not behave (exit=0, output: skill-activation: degraded)`, summary `24 passed, 1 failed`. The old `grep -qiE 'Topology|skill|instinct'` matched "skill" inside "skill-activation"; mutation now killed.
+- **Finding 2 (silent no-op trap) genuinely resolved.** Replaced by a single parent-owned root: `WORK_ROOT="$(mktemp -d)"` then `trap 'rm -rf "$WORK_ROOT"' EXIT` then `mktempdir() { mktemp -d "$WORK_ROOT/sub.XXXXXXXX"; }` (`scripts/test-e2e-reference.sh:49-51`). Leak check: 0 `react-weather-app` dirs in `$TMPDIR` both before and after a run (the old subshell-array version leaked 2/run). Spec §1's "removes all tempdirs" claim is now true on success and failure paths.
+- **No drift.** The fix serves exactly the three findings plus the verify note documenting them; the verify note's mutation claims (M2 → FAIL, M3b → FAIL, 0 leaked dirs) match what I reproduced independently.
+
+### Standards
+- **Simplicity.** The trap fix is *less* code (`+9 -18`), replacing an array + loop + cleanup function with three lines. A staff engineer would call this a simplification. The mktemp template `$WORK_ROOT/sub.XXXXXXXX` is valid — parent dir pre-exists (WORK_ROOT created the line before), trailing X's satisfy mktemp — confirmed empirically; command-substitution call sites `$(mktempdir)` still yield a clean path (the trailing newline is stripped by `$(...)`).
+- **No unset-WORK_ROOT window.** WORK_ROOT is assigned (line 49) before the trap is installed (line 50); if `mktemp -d` failed, `set -e` exits before the trap exists, so the trap never dereferences an unset var. No code path unsets WORK_ROOT, so `set -u` cannot trip inside the trap.
+- **Diff traceability.** `git diff 6af6229 44af69f` reads as exactly the three edits + the verify note — no adjacent cleanup, no drive-by refactor, no scope creep. The fail-open hook line (`skill-activation.sh:39`, `Topology: gatekeeper not built — … Still: evaluate your skills…`) deliberately does NOT contain the new anchor substring, so the O3 assertion correctly distinguishes a real route from the degraded fallback.
+- **Three-language-lanes.** Changes are Bash (harness) and Markdown (verify note) only; no enforcement logic moved into the script — assertions still anchor on signals the gatekeeper binary/hooks emit, the script only greps them. No `gatekeeper/src/**` or `Cargo.*` touched (AC-9 holds across the full PR diff).
+- **No secret reintroduced; clean run.** The planted secret is still assembled at runtime (`_planted_secret`); the source carries no committable secret. `shellcheck scripts/test-e2e-reference.sh` exits 0; full run `25 passed, 0 failed`, exit 0.

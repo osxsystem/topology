@@ -619,7 +619,7 @@ non-regressing; judge agreement is measured *before* any promotion; the hollow s
 | 9 | `adapt` v2: project integration | ✅ delivered (v0.9.0) |
 | 10 | Contract split | ✅ delivered (v0.8.0) |
 | 11 | Root resolution hardening | ✅ delivered (v0.6.0) |
-| 12 | End-to-end re-verification | ⬜ planned |
+| 12 | End-to-end re-verification | ✅ delivered (no binary change; closes Track 2) |
 | 13 | Day-zero containment & baseline (scan rules, push protection, metrics) | ✅ delivered |
 | 14 | Hollow-pass kills + drift-proof CLI surface | ✅ delivered |
 | 15 | Substance engines (replay TDD, entropy scan, path routing) | ⬜ planned |
