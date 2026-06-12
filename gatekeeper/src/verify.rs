@@ -29,12 +29,13 @@
 //! - A directive with no preceding step → block is malformed.
 //! - A block with no `$ ` line → malformed.
 
-use std::io::{BufRead, BufReader};
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 
@@ -139,8 +140,15 @@ impl ShadowResult {
 
 /// Emit one SHADOW JSONL line to stderr.
 ///
-/// Fields: gate, check, configured, artifact (path or null), command (string or null),
-/// result, detail.
+/// **Stderr contract (unchanged):** always emits exactly one line with prefix `SHADOW ` followed
+/// by a JSON object with the seven fields: `gate`, `check`, `configured`, `artifact`, `command`,
+/// `result`, `detail`. Integration tests pin this exact field set — do not change it.
+///
+/// **Best-effort JSONL sink:** also appends the verdict (with an extra leading `ts` field) to
+/// `<artifacts_root>/logs/shadow.jsonl` for burn-in false-block rate measurement. The sink is
+/// fail-silent — any I/O error is ignored so gates never break because the sink can't write.
+/// Framework repo: `docs/logs/shadow.jsonl` (gitignored). Governed project:
+/// `.claude/topology/logs/shadow.jsonl`.
 pub fn emit_shadow(
     gate: &str,
     check: &str,
@@ -175,8 +183,9 @@ pub fn emit_shadow(
         Some(s) => json_str(s),
         None => "null".to_string(),
     };
-    eprintln!(
-        "SHADOW {{\"gate\":{},\"check\":{},\"configured\":{},\"artifact\":{},\"command\":{},\"result\":{},\"detail\":{}}}",
+    // Build the inner field list once; reuse for stderr line and file line.
+    let inner = format!(
+        "\"gate\":{},\"check\":{},\"configured\":{},\"artifact\":{},\"command\":{},\"result\":{},\"detail\":{}",
         json_str(gate),
         json_str(check),
         json_str(configured.as_str()),
@@ -185,6 +194,41 @@ pub fn emit_shadow(
         json_str(result.as_str()),
         json_str(detail),
     );
+    // Stderr line — field set is contractually frozen; integration tests assert it.
+    eprintln!("SHADOW {{{inner}}}");
+    // File line — same fields plus a leading `ts` (seconds since UNIX_EPOCH).
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let file_line = format!("{{\"ts\":{ts},{inner}}}");
+    append_shadow_sink(&file_line);
+}
+
+/// Append `line` (without a trailing newline) to `<artifacts_root>/logs/shadow.jsonl`.
+///
+/// Fail-silent: any error at any step is ignored. Gates must never break because the
+/// sink can't write.
+fn append_shadow_sink(line: &str) {
+    let sink_path = crate::artifacts_root().join("logs").join("shadow.jsonl");
+    append_line_at(&sink_path, line);
+}
+
+/// Create `path`'s parent directory (if needed) and append `line + '\n'` to `path`.
+///
+/// This is the path-independent core factored out for unit-testability.
+/// Any error is silently ignored.
+pub(crate) fn append_line_at(path: &Path, line: &str) {
+    let result = (|| -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut f = OpenOptions::new().append(true).create(true).open(path)?;
+        f.write_all(line.as_bytes())?;
+        f.write_all(b"\n")?;
+        Ok(())
+    })();
+    let _ = result;
 }
 
 // ── evidence block parser ─────────────────────────────────────────────────────
@@ -1192,5 +1236,110 @@ mod tests {
     fn non_directive_shape() {
         assert!(!looks_like_directive("# plain comment without colon"));
         assert!(!looks_like_directive("# "));
+    }
+
+    // ── append_line_at unit tests ─────────────────────────────────────────────
+
+    /// append_line_at creates the parent directory and file on first call,
+    /// then appends a second line in order.
+    #[test]
+    fn append_line_at_creates_parent_and_appends_in_order() {
+        let dir = std::env::temp_dir().join(format!("topo_shadow_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let path = dir.join("sub").join("shadow.jsonl");
+        append_line_at(&path, "line one");
+        append_line_at(&path, "line two");
+
+        let content = std::fs::read_to_string(&path).expect("file must exist after append");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines, got: {content:?}");
+        assert_eq!(lines[0], "line one");
+        assert_eq!(lines[1], "line two");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// append_line_at is fail-silent: calling it with a path whose parent is an
+    /// existing regular file (not a directory) must not panic.
+    #[test]
+    fn append_line_at_impossible_path_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("topo_shadow_imp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a regular file at `dir/file` then try to use it as a directory
+        // by appending to `dir/file/shadow.jsonl`.
+        let blocker = dir.join("file");
+        std::fs::write(&blocker, "I am a file, not a dir").unwrap();
+        let impossible = blocker.join("shadow.jsonl");
+
+        // Must not panic.
+        append_line_at(&impossible, "should be silently dropped");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file line in the shape emit_shadow assembles (leading `ts` + the same inner
+    /// fields as the stderr line) round-trips through append_line_at as valid JSON with
+    /// all 7 contract field names. (emit_shadow itself is exercised end-to-end by the
+    /// cli_* shadow integration tests; this test pins the file-line shape only.)
+    #[test]
+    fn file_line_shape_has_ts_and_all_seven_fields() {
+        use serde_json::Value;
+
+        let dir = std::env::temp_dir().join(format!("topo_shadow_fields_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("shadow_test.jsonl");
+
+        // Build a file line the same way append_shadow_sink / emit_shadow would.
+        // We call append_line_at directly here (no need for a full gate run).
+        let sample_inner = "\"gate\":\"verify\",\"check\":\"replay\",\
+            \"configured\":\"default\",\"artifact\":\"docs/verify/x.md\",\
+            \"command\":null,\"result\":\"static\",\"detail\":\"0 evidence block(s)\"";
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let file_line = format!("{{\"ts\":{ts},{sample_inner}}}");
+
+        append_line_at(&path, &file_line);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let line = content.lines().next().expect("file must have one line");
+
+        // Must start with `{"ts":`
+        assert!(
+            line.starts_with("{\"ts\":"),
+            "file line must start with {{\"ts\":, got: {line:?}"
+        );
+
+        // Parse as JSON and verify all 7 SHADOW contract fields are present.
+        let v: Value = serde_json::from_str(line).expect("file line must be valid JSON");
+        let obj = v.as_object().expect("must be a JSON object");
+        let required = &[
+            "gate",
+            "check",
+            "configured",
+            "artifact",
+            "command",
+            "result",
+            "detail",
+        ];
+        for field in required {
+            assert!(
+                obj.contains_key(*field),
+                "missing field {field:?} in file line: {line:?}"
+            );
+        }
+        // ts field must be present and numeric.
+        assert!(
+            obj.get("ts").and_then(|v| v.as_u64()).is_some(),
+            "ts must be a non-negative integer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

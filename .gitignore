@@ -13,3 +13,6 @@
 
 # docs/memory/ is committed source (framework-repo handoff artifacts, ADR-0013).
 # Governed-project handoffs land under .claude/topology/memory/ in the project repo, not here.
+
+# shadow burn-in log (raw stream is local; triage notes are committed)
+docs/logs/

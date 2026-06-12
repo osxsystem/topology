@@ -517,6 +517,8 @@ done | jq -s '
 
 **`GATEKEEPER_SHADOW=replay` semantics:** setting this env var causes `check verify` to actually execute evidence replay (and legacy `$ `-line extraction for artifacts without evidence blocks), emitting per-command `SHADOW` lines with real `pass`/`fail` results. The gate exit code remains presence-mode's — the env var is a measurement trigger, never a demotion. When `mode = "replay"` is already enforced, the env var is a **no-op**: replay executes and its enforcing exit code stands. The env var can never downgrade an enforcing project to presence exit codes.
 
+**Persistent burn-in log:** in addition to the stderr `SHADOW` line, every verdict is also appended as a JSON line to `<artifacts root>/logs/shadow.jsonl` (framework repo: `docs/logs/shadow.jsonl`, gitignored; governed project: `.claude/topology/logs/shadow.jsonl`). The sink is fail-silent — gates never block on I/O errors. Run `scripts/shadow-stats.sh` (or `scripts/shadow-stats.sh <path>`) to print a per-(gate,check) evaluation table and list every would-block verdict for human triage. The per-gate flip criterion for moving a gate from shadow to enforcing mode is ≥50 evaluations with a human-triaged false-block rate below 2%.
+
 ### Security scanning — `gatekeeper scan`
 
 Deterministically vetoes secrets and dangerous commands. Exit `0` = clean, `1` = veto, `2` = fail-closed.

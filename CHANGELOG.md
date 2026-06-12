@@ -2,6 +2,19 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## v0.5.1 — 2026-06-12
+
+Shadow-verdict burn-in sink
+
+- Each `emit_shadow` call now appends a JSON line to `<artifacts root>/logs/shadow.jsonl`
+  (framework repo: `docs/logs/`, gitignored; governed project: `.claude/topology/logs/`) so
+  the per-gate false-block rate is measurable across burn-in runs.
+- `scripts/shadow-stats.sh` prints a per-(gate,check) evaluation table, lists every
+  would-block verdict for human triage, and reminds of the flip criterion (≥50 evaluations,
+  <2% human-triaged false-block rate).
+- Stderr contract unchanged: the `SHADOW …` line is byte-identical to v0.5.0; only the
+  file line gains a leading `ts` field. Sink is fail-silent — gates never block on I/O errors.
+
 ## v0.5.0 — 2026-06-12
 
 Hollow-pass kills + drift-proof CLI surface
