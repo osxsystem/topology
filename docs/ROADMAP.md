@@ -8,11 +8,14 @@ is "done" without a check that proves it.
 > **code-review gate** (Phase 1.5), **Phase 2 (instincts engine)**, **Phase 3 (continuous learning)**, and
 > **Phase 4 (cross-harness adapters)**, **Phase 5 (memory + research-first)**, and **Phase 6 (packaging & distribution)** are delivered. See
 > [`../METHODOLOGY.md`](../METHODOLOGY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
-> The active track is **Phases 7–12 (distribution vs. repository)** — separating what a governed
-> project receives from the framework's own development repo.
-> Queued behind it: **Track 3 (Phases 13–17, gate substance & proportional process)** — hardening
-> *what the gates verify*, per the 2026-06-11 five-failure-modes audit
-> ([plan](plans/2026-06-11-five-failure-modes-roadmap.md)).
+> **Phase 7 (distribution payload)**, **Phase 13 (day-zero containment, v0.4.1)**, and **Phase 14
+> (hollow-pass kills, v0.5.0)** are also delivered. The active track is **Phases 8–12
+> (distribution vs. repository)** — separating what a governed project receives from the
+> framework's own development repo.
+> Queued behind it: the rest of **Track 3 (Phases 15–17, gate substance & proportional process)** —
+> hardening *what the gates verify*, per the 2026-06-11 five-failure-modes audit
+> ([plan](plans/2026-06-11-five-failure-modes-roadmap.md)). Phase 15's default flips are gated on
+> Phase 14 shadow burn-in data (<2% false-block per gate, ≥50 evaluations each), not the calendar.
 
 ```mermaid
 flowchart LR
@@ -259,7 +262,7 @@ only the project's committed gate artifacts; `.topology/` holds the disposable, 
 
 ---
 
-## Phase 7 — Distribution payload
+## Phase 7 — Distribution payload ✅ *(delivered 2026-06-10)*
 
 **Goal.** A release artifact that is the unit of install — the tool without the workshop.
 
@@ -450,7 +453,7 @@ a self-governing framework must not deadlock its own delivery pipeline.
 
 ---
 
-## Phase 13 — Day-zero containment & baseline *(target: v0.4.1, payload-only)*
+## Phase 13 — Day-zero containment & baseline ✅ *(delivered 2026-06-11, v0.4.1)*
 
 **Goal.** Stop the demonstrated scan bleeding with pure `rules.toml` additions; record the
 process-weight baseline that every later KPI divides by.
@@ -475,7 +478,7 @@ artifact-to-production ratio (expected ≈8 and ≈5:1).
 
 ---
 
-## Phase 14 — Hollow-pass kills + drift-proof CLI surface *(target: v0.5.0)*
+## Phase 14 — Hollow-pass kills + drift-proof CLI surface ✅ *(delivered 2026-06-12, v0.5.0)*
 
 **Goal.** Make doc/binary drift unrepresentable; close the three cheapest hollow-artifact holes;
 build the adversarial fixture suite that defines "done" for the whole track.
@@ -611,14 +614,14 @@ non-regressing; judge agreement is measured *before* any promotion; the hollow s
 | 4 | Cross-harness adapters | ✅ delivered |
 | 5 | Memory + research-first | ✅ delivered |
 | 6 | Packaging & CI | ✅ delivered |
-| 7 | Distribution payload | ⬜ planned |
+| 7 | Distribution payload | ✅ delivered |
 | 8 | Installer v3 | ⬜ planned |
 | 9 | `adapt` v2: project integration | ⬜ planned |
 | 10 | Contract split | ⬜ planned |
 | 11 | Root resolution hardening | ⬜ planned |
 | 12 | End-to-end re-verification | ⬜ planned |
-| 13 | Day-zero containment & baseline (scan rules, push protection, metrics) | ⬜ planned |
-| 14 | Hollow-pass kills + drift-proof CLI surface | ⬜ planned |
+| 13 | Day-zero containment & baseline (scan rules, push protection, metrics) | ✅ delivered |
+| 14 | Hollow-pass kills + drift-proof CLI surface | ✅ delivered |
 | 15 | Substance engines (replay TDD, entropy scan, path routing) | ⬜ planned |
 | 16 | Risk-tiered gate profiles | ⬜ planned |
 | 17 | Measurement, depth & ratchets | ⬜ planned |
