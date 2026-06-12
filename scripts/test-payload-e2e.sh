@@ -456,8 +456,6 @@ fi
 # scenario from AC-3 cannot be exercised in this suite — it requires a real tty
 # that the harness cannot provide. This is documented as a spec deviation.
 
-if [[ "${PHASE8_RED:-0}" == "1" ]]; then
-
 # ── Global test F: piped global offline install via file:// ──────────────────
 # Verifies that a piped --global install (BASH_SOURCE unset, no tty) uses the
 # payload download path, extracts into TOPOLOGY_HOME, and produces: VERSION
@@ -536,13 +534,11 @@ echo "this is not a valid tarball" > "$TMPDIR_CORRUPT_RELEASE/latest/download/to
 )
 
 CORRUPT_EXIT=0
-INSTALL_CORRUPT_OUT="$(
   HOME="$TMPDIR_CORRUPT_HOME" \
   TOPOLOGY_HOME="$CORRUPT_ROOT" \
   TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_CORRUPT_RELEASE" \
     bash -s -- --global --yes --harness none \
-      < "$SCRIPT_DIR/install.sh" 2>&1
-)" || CORRUPT_EXIT=$?
+      < "$SCRIPT_DIR/install.sh" >/dev/null 2>&1 || CORRUPT_EXIT=$?
 
 # Install must fail (non-zero exit).
 if [[ "$CORRUPT_EXIT" -ne 0 ]]; then
@@ -591,14 +587,12 @@ else
 fi
 
 # Re-run (upgrade in place).
-INSTALL_GLOBAL_CHECKOUT2_OUT="$(
   HOME="$TMPDIR_GLOBAL_CHECKOUT_HOME" \
   TOPOLOGY_HOME="$GLOBAL_CHECKOUT_ROOT" \
   TOPOLOGY_RELEASE_BASE_URL="file://$TMPDIR_RELEASE" \
   TOPOLOGY_VERSION="$PAYLOAD_VERSION" \
     bash "$SCRIPT_DIR/install.sh" \
-      --global --yes --harness none 2>&1
-)" || true
+      --global --yes --harness none >/dev/null 2>&1 || true
 
 if [[ -f "$GLOBAL_CHECKOUT_ROOT/VERSION" ]]; then
   pass "global checkout install re-run: upgrades in place (VERSION still present)"
@@ -681,8 +675,6 @@ else
 fi
 
 rm -rf "$TMPDIR_GLOBAL_LEGACY_HOME"
-
-fi  # PHASE8_RED
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 echo ""
