@@ -2,6 +2,19 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
+## Unreleased
+
+Phase 15 burn-in harness (ROADMAP Phase 15) — measurement only; flips nothing.
+
+- `scripts/burn-in-replay-tdd.sh`: replays the TDD red-green engine over the repo's own
+  historical merge pairs into a dedicated gitignored `docs/logs/burn-in-tdd.jsonl`
+  (truncated per run), then summarises via `scripts/shadow-stats.sh`. Produces the
+  `N/50 evals, <2% false-block` figure the warn→block flip is gated on (ADR-0017).
+- `scripts/burn-in-entropy-sweep.sh`: counts entropy `WARN` hits per 10k working-tree
+  lines (applying `exclude_paths` itself; skips >5 MiB files), the FP proxy for ADR-0018.
+- Neither script changes any default, edits any engine, or blocks; `just test-burn-in`
+  covers them with a stubbed `gatekeeper`.
+
 ## v0.11.0 — 2026-06-13
 
 ### Added
