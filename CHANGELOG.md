@@ -4,6 +4,18 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
+### Fixed
+
+- `adapt` now generates a **portable** `.claude/settings.json` for the in-framework (dogfood) case
+  (`read_root == write_root`): hook `command` paths use `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh` (which
+  Claude Code expands in hook command strings) instead of an absolute clone path (#50), and no
+  `env.GATEKEEPER_BIN` is pinned — the hook's own binary-resolution fallback finds it (#51). The wiring
+  now survives deletion of a sibling worktree. `adapt` **deletes** the adapt-owned `GATEKEEPER_BIN` key
+  in this case (so a re-`adapt` clears an already-stale pin); all user `env` keys are preserved.
+  Governed downstream projects (`read_root != write_root`) are byte-for-byte unchanged. Cross-tree
+  dogfood generation (a sibling-worktree binary writing another clone's settings) is a known residual,
+  tracked in #54.
+
 ## v0.10.0 — 2026-06-13
 
 Two Phase 15 substance engines (Track 3), both **shadow-first** — they surface verdicts without

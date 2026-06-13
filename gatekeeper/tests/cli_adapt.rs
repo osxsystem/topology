@@ -643,3 +643,50 @@ fn ac8_malformed_managed_block_exits_2() {
     let _ = fs::remove_dir_all(&fw);
     let _ = fs::remove_dir_all(&proj);
 }
+
+#[test]
+fn dogfood_settings_are_portable() {
+    let root = scratch_root("portable");
+    assert_eq!(run(&root, &["adapt", "--harness", "claude"]).0, 0);
+    let v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "${CLAUDE_PROJECT_DIR}/hooks/security-scan.sh"
+    );
+    assert_eq!(
+        v["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"],
+        "${CLAUDE_PROJECT_DIR}/hooks/skill-activation.sh"
+    );
+    let s = fs::read_to_string(root.join(".claude/settings.json")).unwrap();
+    assert!(
+        !s.contains(root.to_str().unwrap()),
+        "no absolute clone path baked in"
+    );
+    assert!(
+        v["env"].get("GATEKEEPER_BIN").is_none(),
+        "GATEKEEPER_BIN dropped in-framework"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn readapt_removes_stale_gatekeeper_bin() {
+    let root = scratch_root("stale");
+    fs::create_dir_all(root.join(".claude")).unwrap();
+    fs::write(
+        root.join(".claude/settings.json"),
+        "{\n  \"env\": { \"GATEKEEPER_BIN\": \"/deleted/worktree/bin/gatekeeper\" }\n}\n",
+    )
+    .unwrap();
+    assert_eq!(run(&root, &["adapt", "--harness", "claude"]).0, 0);
+    let v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert!(
+        v["env"].get("GATEKEEPER_BIN").is_none(),
+        "re-adapt clears the stale pin"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
