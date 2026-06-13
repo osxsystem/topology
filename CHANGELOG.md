@@ -4,6 +4,11 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
+## v0.10.0 — 2026-06-13
+
+Two Phase 15 substance engines (Track 3), both **shadow-first** — they surface verdicts without
+changing exit codes; the default→enforce flips are deferred behind burn-in data.
+
 Entropy scanner (ROADMAP Phase 15, ADR-0018) — the FM5 class fix for **unlabeled** secrets. **Ships
 shadow-first (`severity = "warn"`); promotion to `block` is deferred behind a burn-in FP measurement.**
 
