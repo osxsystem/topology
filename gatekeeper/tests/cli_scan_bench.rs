@@ -10,11 +10,19 @@
 //! its *expected* rule ids appears in the findings, so a lucky overlap from the wrong rule
 //! cannot satisfy the floor.
 //!
-//! RED BY DESIGN at v0.4.0: the in-scope floor is 9/11 and the shipped rules catch 5/11
-//! (jwt-bearer, openai-sk-proj, anthropic-sk-ant, password-labeled have no covering rule
-//! yet). It turns green when the Phase 0 rules land; Phase 2 flips the two
-//! `in_scope: false` entropy classes and moves the negatives to a path-aware lane (see the
-//! corpus README — `--content` carries no path, so entropy path-excludes cannot see them).
+//! History: red by design at v0.4.0 (floor 9/11, 5 covering rules); green once the Phase 0
+//! rules landed. The entropy phase (schema v2) then flipped the two former
+//! `in_scope: false` entropy classes (`hex64-unlabeled`, `base64-unlabeled`) to in-scope,
+//! detected via `WARN ` from the shipped `hex-high-entropy` / `base64-high-entropy` rules.
+//!
+//! Path-aware lane: `[scan] exclude_paths` suppresses the entropy lane only on path-bearing
+//! lanes (`--staged`, `--hook`). This bench drives `gatekeeper scan --content`, which carries
+//! NO path, so excludes never apply here — high-entropy benign negatives (cargo-lock hashes,
+//! git OIDs, base64 vectors) DO `WARN ` under `--content`, by design. Entropy ships `warn`
+//! (shadow) precisely because it cannot distinguish a benign high-entropy blob from a real
+//! secret; the false-positive rate is measured in burn-in, not asserted away here. Hence the
+//! negative bench asserts only that no negative produces a `BLOCK ` (a warn is expected and
+//! allowed); see docs/specs/2026-06-13-entropy-scanner.md ("Fundamental limit").
 //!
 //! Hygiene: no *secret-shaped* literal here is ≥20 consecutive chars of [A-Za-z0-9+/=_-];
 //! long values are assembled from shorter pieces at runtime. (Identifiers are still ≥20-char
@@ -70,7 +78,8 @@ fn run_scan_content(cwd: &Path, stdin: &[u8]) -> (i32, String) {
 }
 
 /// Rule ids parsed from `report()` finding lines (`BLOCK <id>: …` / `WARN <id>: …`). The
-/// stderr clause is load-bearing for warn-severity rules, which never flip the exit code.
+/// stderr clause is load-bearing for warn-severity rules, which never flip the exit code —
+/// counting `WARN ` here is what lets the positives floor credit shadow entropy detections.
 fn fired_rules(stderr: &str) -> Vec<String> {
     stderr
         .lines()
@@ -80,10 +89,23 @@ fn fired_rules(stderr: &str) -> Vec<String> {
         .collect()
 }
 
+/// Rule ids from BLOCK-severity finding lines only (`BLOCK <id>: …`). The negatives bench
+/// asserts on this — a `WARN ` from the shadow entropy lane on a benign high-entropy blob is
+/// expected, so the contract is "no negative BLOCKs", not "no negative fires".
+fn blocked_rules(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with("BLOCK "))
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .map(|id| id.trim_end_matches(':').to_string())
+        .collect()
+}
+
 struct Case {
     id: &'static str,
-    /// Asserted at the v0.4.1 floor. The two `false` entries are the entropy classes,
-    /// deferred to Phase 2 by design; they are reported on the scoreboard but not asserted.
+    /// Whether this class is asserted (vs. scoreboard-only). All eleven classes are now
+    /// in-scope: the two entropy classes (`hex64-unlabeled`, `base64-unlabeled`) flipped to
+    /// `true` when the schema-v2 entropy rules shipped — they are detected via `WARN ` (shadow).
     in_scope: bool,
     /// Rule ids accepted as this class's detector (any one suffices; empty for out-of-scope
     /// classes). Encodes the spec's recommended rule ids — a rename at approval is a
@@ -154,8 +176,8 @@ fn positives() -> Vec<Case> {
         },
         Case {
             id: "hex64-unlabeled",
-            in_scope: false, // entropy class — Phase 2
-            expect_rules: &[],
+            in_scope: true, // entropy class — detected via WARN (shadow) by hex-high-entropy
+            expect_rules: &["hex-high-entropy"],
             payload: format!(
                 "{}{}{}{}\n",
                 "9f86d081884c7d65", "9a2feaa0c55ad015", "a3bf4f1b2b0b822c", "d15d6c15b0f00a08"
@@ -163,8 +185,8 @@ fn positives() -> Vec<Case> {
         },
         Case {
             id: "base64-unlabeled",
-            in_scope: false, // entropy class — Phase 2
-            expect_rules: &[],
+            in_scope: true, // entropy class — detected via WARN (shadow) by base64-high-entropy
+            expect_rules: &["base64-high-entropy"],
             payload: format!("{}{}{}\n", "Zm9vYmFyYmF6cXV4", "Y29yZ2VncmF1bHQx", "MjM0NTY3OA=="),
         },
         Case {
@@ -222,7 +244,11 @@ fn bench_positives_meet_phase0_floor() {
         rows.push(format!(
             "  {:<20} {:<9} {:<8} via {}",
             case.id,
-            if case.in_scope { "in-scope" } else { "phase-2" },
+            if case.in_scope {
+                "in-scope"
+            } else {
+                "scoreboard"
+            },
             if hit { "DETECTED" } else { "missed" },
             if fired.is_empty() {
                 "-".to_string()
@@ -235,16 +261,25 @@ fn bench_positives_meet_phase0_floor() {
     assert!(
         missed.is_empty(),
         "secrets-bench floor not met: {hits}/11 detected, in-scope misses:\n  {}\n\
-         (red by design until the Phase 0 rules land in security/rules.toml — \
-         see docs/specs/2026-06-11-day-zero-containment.md §1)\n\
+         (all 11 classes are in-scope; the two entropy classes are credited via WARN — \
+         see docs/specs/2026-06-13-entropy-scanner.md)\n\
          scoreboard:\n{}",
         missed.join("\n  "),
         rows.join("\n")
     );
 }
 
+/// Negatives must not BLOCK. A `WARN ` from the shadow entropy lane on a genuinely
+/// high-entropy benign blob (cargo-lock hash, git OID, base64 vector) is EXPECTED under
+/// `--content` — that lane carries no path, so `[scan] exclude_paths` cannot apply, and
+/// entropy cannot distinguish a benign blob from a real secret (it ships `warn` precisely for
+/// that reason; FP rate is a burn-in measurement, not a bench assertion — see
+/// docs/specs/2026-06-13-entropy-scanner.md "Fundamental limit"). So this asserts on
+/// BLOCK-severity findings only: any negative that BLOCKs (e.g. a future labeled rule
+/// misfiring on benign input) still fails the test. The non-vacuity guard below proves the
+/// assertion would catch a BLOCK.
 #[test]
-fn bench_negatives_stay_clean() {
+fn bench_negatives_produce_no_block() {
     let root = scratch_root("neg");
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -258,13 +293,16 @@ fn bench_negatives_stay_clean() {
         .filter(|p| p.extension().is_some_and(|e| e == "txt"))
         .collect();
     names.sort();
-    let mut flagged = Vec::new();
+    let mut blocked = Vec::new();
     for path in &names {
         let content = fs::read(path).unwrap();
         let (code, stderr) = run_scan_content(&root, &content);
-        if code != 0 || !fired_rules(&stderr).is_empty() {
+        // A block-severity finding flips the exit code to 1; a shadow WARN keeps it 0. Assert
+        // on both signals so a BLOCK can never slip through as "no parsed rule".
+        let block_hits = blocked_rules(&stderr);
+        if code == 1 || !block_hits.is_empty() {
             // Finding lines are redacted by design, so quoting them here leaks nothing.
-            flagged.push(format!(
+            blocked.push(format!(
                 "{}: exit {code}, {}",
                 path.file_name().unwrap().to_string_lossy(),
                 stderr.lines().next().unwrap_or("(no output)")
@@ -274,8 +312,37 @@ fn bench_negatives_stay_clean() {
     let _ = fs::remove_dir_all(&root);
     assert_eq!(names.len(), 6, "expected the six negative fixtures");
     assert!(
-        flagged.is_empty(),
-        "false positives on the negative corpus:\n  {}",
-        flagged.join("\n  ")
+        blocked.is_empty(),
+        "BLOCK-severity false positives on the negative corpus (warns are expected and \
+         permitted — entropy is shadow; see docs/specs/2026-06-13-entropy-scanner.md):\n  {}",
+        blocked.join("\n  ")
+    );
+}
+
+/// Non-vacuity guard for `bench_negatives_produce_no_block`: a synthetic input carrying a
+/// labeled secret (which the shipped `private-key-block` rule BLOCKs) MUST be caught by the
+/// same `blocked_rules` + exit-code signal the negatives test relies on. If this regresses,
+/// the negatives assertion has gone blind to BLOCKs and the corpus contract is no longer
+/// machine-checked.
+#[test]
+fn blocked_rules_signal_is_non_vacuous() {
+    let root = scratch_root("nonvacuous");
+    // A real BLOCK-severity trigger (PEM private-key header), assembled at RUNTIME (the `{pem_word}`
+    // split keeps the committed source free of a literal the scanner would block) — mirrors the
+    // `pem-private-key` positive case. Never a benign negative.
+    let pem_word = "KEY";
+    let payload =
+        format!("-----BEGIN RSA PRIVATE {pem_word}-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE {pem_word}-----\n");
+    let (code, stderr) = run_scan_content(&root, payload.as_bytes());
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(
+        code, 1,
+        "a PEM private-key header must flip the exit code to 1"
+    );
+    assert!(
+        blocked_rules(&stderr)
+            .iter()
+            .any(|r| r == "private-key-block"),
+        "blocked_rules must parse the BLOCK line for private-key-block; got: {stderr}"
     );
 }

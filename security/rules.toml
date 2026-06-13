@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 # ---------- content rules (scanned on every input: files, command strings, blobs) ----------
 [[rule]]
@@ -66,6 +66,29 @@ kind = "content"
 severity = "warn"
 description = "credential-labeled assignment (api key / auth token / password / bearer)"
 pattern = '(?i)\b(?:api[_-]?key|auth[_-]?token|password|passwd|bearer)\s*[=:]\s*[\x22\x27]?[A-Za-z0-9+/=_-]{16,}'
+
+# ---------- entropy rules (schema v2; unlabeled high-entropy secrets — FM5) ----------
+# Shipped severity = "warn" (shadow): emitted but never block. Entropy cannot distinguish a
+# genuine secret from a benign high-entropy blob (git OID, lockfile hash, base64 vector), so
+# false positives are bounded by `[scan] exclude_paths` (path-bearing lanes) and a burn-in FP
+# measurement precedes any promotion to "block". Thresholds are the detect-secrets lineage.
+[[rule]]
+id = "hex-high-entropy"
+kind = "entropy"
+severity = "warn"
+description = "high-entropy hex run (unlabeled secret candidate)"
+charset = "hex"
+min_length = 32
+threshold_bits_per_char = 3.0
+
+[[rule]]
+id = "base64-high-entropy"
+kind = "entropy"
+severity = "warn"
+description = "high-entropy base64 run (unlabeled secret candidate)"
+charset = "base64"
+min_length = 20
+threshold_bits_per_char = 4.5
 
 # ---------- command rules (scanned only on shell-command inputs: --cmd, --hook Bash) ----------
 [[rule]]
@@ -200,3 +223,10 @@ protected_paths = [
 #   governed project (project != framework): artifacts_root = <project>/.claude/topology → .claude/topology/memory
 # is_protected uses Path::starts_with (component-wise), so memory-evil/ is NOT matched.
 protected_artifact_paths = ["memory"]
+
+# ---------- scanner config (schema v2) ----------
+# Paths whose ENTROPY-lane findings are suppressed (regex/labeled rules always run). Applied only
+# on path-bearing lanes (--staged, --hook); --content/--cmd have no path so excludes don't apply.
+# These globs cover high-entropy-but-benign content that would otherwise generate shadow-warn noise.
+[scan]
+exclude_paths = ["*.lock", "*.svg", "*.min.js", "tests/fixtures/"]

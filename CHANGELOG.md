@@ -4,6 +4,23 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
+Entropy scanner (ROADMAP Phase 15, ADR-0018) — the FM5 class fix for **unlabeled** secrets. **Ships
+shadow-first (`severity = "warn"`); promotion to `block` is deferred behind a burn-in FP measurement.**
+
+- Rules **schema v2**: parser accepts schema 1 or 2 (back-compat). New `kind = "entropy"` rule with
+  `charset = "base64" | "hex"`, `min_length`, `threshold_bits_per_char`. Detection walks maximal
+  charset runs and flags those whose per-character Shannon entropy meets the threshold — so a bare
+  64-hex token or 40-char base64 blob now WARNs where it previously committed clean. Seed rules
+  `hex-high-entropy` (32 / 3.0) and `base64-high-entropy` (20 / 4.5).
+- New `[scan] exclude_paths` (`*.lock`, `*.svg`, `*.min.js`, `tests/fixtures/`) with a dep-free glob
+  matcher suppresses the **entropy lane only**, and **only on path-bearing lanes** (`--staged`,
+  `--hook`) — labeled/regex rules always run; `--content`/`--cmd` have no path so excludes don't apply.
+- `scripts/sync-gitleaks-rules.sh` (+ `just sync-gitleaks`): produces a human-reviewed provider-rule
+  **review file** with a `synced-from: gitleaks@<sha>` provenance header; never edits `rules.toml`,
+  never auto-merges, no-op offline/CI.
+- Secrets bench: the two unlabeled positives are now in-scope (detected via WARN); negatives are
+  asserted BLOCK-clean (shadow warns on benign high-entropy content are expected and measured).
+
 TDD red-green replay engine (ROADMAP Phase 15, ADR-0017) — the FM2 substance fix. **Ships
 shadow-first; the default→enforce flip is deferred to Phase 14 burn-in.**
 

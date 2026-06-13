@@ -14,7 +14,7 @@ use std::process::Command;
 use regex::bytes::{Regex, RegexSet};
 use serde::Deserialize;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Expose the rules schema version to sibling modules without leaking the private const.
 pub fn schema_version() -> u32 {
@@ -40,6 +40,17 @@ struct RulesFile {
     allow_blob: Vec<AllowBlob>,
     #[serde(default)]
     integrity: Integrity,
+    #[serde(default)]
+    scan: ScanConfig,
+}
+
+/// `[scan]` table. Carries path globs whose files are exempt from the entropy lane (only). Regex
+/// (content/command) rules always run — excludes never weaken labeled detection.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScanConfig {
+    #[serde(default)]
+    exclude_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,7 +60,16 @@ struct RawRule {
     kind: Kind,
     severity: Severity,
     description: String,
-    pattern: String,
+    // Regex rules (content/command) carry a `pattern`; entropy rules carry charset/length/threshold
+    // instead. Optional so a v2 entropy rule parses; presence is validated per-kind in parse_rules.
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    charset: Option<String>,
+    #[serde(default)]
+    min_length: Option<usize>,
+    #[serde(default)]
+    threshold_bits_per_char: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -57,6 +77,17 @@ struct RawRule {
 enum Kind {
     Content,
     Command,
+    Entropy,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Content => "content",
+            Kind::Command => "command",
+            Kind::Entropy => "entropy",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -113,6 +144,49 @@ struct CompiledRule {
     re: Regex,
 }
 
+/// Token alphabet an entropy rule scans for. Parsed from the rule's `charset` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Charset {
+    Base64,
+    Hex,
+}
+
+impl Charset {
+    fn parse(s: &str) -> Result<Charset, String> {
+        match s {
+            "base64" => Ok(Charset::Base64),
+            "hex" => Ok(Charset::Hex),
+            other => Err(format!(
+                "unknown charset '{other}' (expected base64 or hex)"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Charset::Base64 => "base64",
+            Charset::Hex => "hex",
+        }
+    }
+}
+
+// Lets the test compare a compiled rule's charset against a string literal (`er.charset == "hex"`).
+impl PartialEq<&str> for Charset {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug)]
+struct CompiledEntropyRule {
+    id: String,
+    severity: Severity,
+    description: String,
+    charset: Charset,
+    min_length: usize,
+    threshold: f64,
+}
+
 #[derive(Debug)]
 enum AllowMatch {
     Exact(Vec<u8>),
@@ -132,6 +206,10 @@ pub struct Rules {
     content_set: RegexSet,
     command: Vec<CompiledRule>,
     command_set: RegexSet,
+    /// Entropy rules — a separate lane from the regex `RegexSet`, applied alongside `scan_with`.
+    entropy: Vec<CompiledEntropyRule>,
+    /// Path globs (from `[scan] exclude_paths`) whose files skip the entropy lane only.
+    exclude_paths: Vec<String>,
     allows: Vec<CompiledAllow>,
     allow_blobs: Vec<AllowBlob>,
     /// Paths protected under the FRAMEWORK root (e.g. security/rules.toml, gatekeeper/src/…).
@@ -159,9 +237,9 @@ pub fn parse_rules_pub(raw: &str) -> Result<Rules, String> {
 fn parse_rules(raw: &str) -> Result<Rules, String> {
     let parsed: RulesFile =
         toml::from_str(raw).map_err(|e| format!("rules.toml parse/validation error: {e}"))?;
-    if parsed.schema_version != SCHEMA_VERSION {
+    if parsed.schema_version != 1 && parsed.schema_version != 2 {
         return Err(format!(
-            "unsupported schema_version {} (expected {SCHEMA_VERSION})",
+            "unsupported schema_version {} (expected 1 or 2)",
             parsed.schema_version
         ));
     }
@@ -175,18 +253,47 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
 
     let mut content = Vec::new();
     let mut command = Vec::new();
+    let mut entropy = Vec::new();
     for r in &parsed.rule {
-        let re =
-            Regex::new(&r.pattern).map_err(|e| format!("rule '{}': invalid pattern: {e}", r.id))?;
-        let cr = CompiledRule {
-            id: r.id.clone(),
-            severity: r.severity,
-            description: r.description.clone(),
-            re,
-        };
         match r.kind {
-            Kind::Content => content.push(cr),
-            Kind::Command => command.push(cr),
+            Kind::Content | Kind::Command => {
+                let pattern = r.pattern.as_deref().ok_or_else(|| {
+                    format!(
+                        "rule '{}': {} rule requires a 'pattern'",
+                        r.id,
+                        r.kind.as_str()
+                    )
+                })?;
+                let re = Regex::new(pattern)
+                    .map_err(|e| format!("rule '{}': invalid pattern: {e}", r.id))?;
+                let cr = CompiledRule {
+                    id: r.id.clone(),
+                    severity: r.severity,
+                    description: r.description.clone(),
+                    re,
+                };
+                match r.kind {
+                    Kind::Content => content.push(cr),
+                    Kind::Command => command.push(cr),
+                    Kind::Entropy => unreachable!(),
+                }
+            }
+            Kind::Entropy => {
+                let charset_str = r
+                    .charset
+                    .as_deref()
+                    .ok_or_else(|| format!("rule '{}': entropy rule requires a 'charset'", r.id))?;
+                let charset =
+                    Charset::parse(charset_str).map_err(|e| format!("rule '{}': {e}", r.id))?;
+                entropy.push(CompiledEntropyRule {
+                    id: r.id.clone(),
+                    severity: r.severity,
+                    description: r.description.clone(),
+                    charset,
+                    min_length: r.min_length.unwrap_or(20),
+                    threshold: r.threshold_bits_per_char.unwrap_or(4.0),
+                });
+            }
         }
     }
     let content_set = RegexSet::new(content.iter().map(|c| c.re.as_str()))
@@ -226,6 +333,8 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
         content_set,
         command,
         command_set,
+        entropy,
+        exclude_paths: parsed.scan.exclude_paths,
         allows,
         allow_blobs: parsed.allow_blob,
         protected: parsed.integrity.protected_paths,
@@ -250,6 +359,27 @@ fn redact(span: &[u8]) -> String {
         .map(|&b| if b.is_ascii_graphic() { b as char } else { '.' })
         .collect();
     format!("{prefix}…<len={}>", span.len())
+}
+
+/// Shannon entropy of `token` in bits per character: `H = -Σ p_i·log2(p_i)` over its distinct
+/// chars (`p_i` = count_i / len). An empty token is `0.0` (no symbols → guard the div-by-zero).
+fn shannon_entropy(token: &str) -> f64 {
+    let len = token.chars().count();
+    if len == 0 {
+        return 0.0;
+    }
+    let mut counts: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+    for c in token.chars() {
+        *counts.entry(c).or_insert(0) += 1;
+    }
+    let len = len as f64;
+    counts
+        .values()
+        .map(|&count| {
+            let p = count as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
 }
 
 fn line_of(data: &[u8], offset: usize) -> usize {
@@ -302,6 +432,98 @@ fn scan_with(
         }
     }
     findings
+}
+
+/// True iff `c` belongs to the candidate alphabet for `charset`. Hex is the strict hex alphabet
+/// (so prose/base64 cannot trip a hex rule); base64 is the URL/standard base64 superset.
+fn in_charset(charset: Charset, c: u8) -> bool {
+    match charset {
+        Charset::Hex => c.is_ascii_hexdigit(),
+        Charset::Base64 => {
+            c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=' | b'_' | b'-')
+        }
+    }
+}
+
+/// Entropy lane: for each rule, walk maximal runs of charset bytes; a run of `>= min_length`
+/// whose Shannon entropy clears the rule threshold becomes a `Finding` (through `is_allowed`).
+fn scan_entropy(
+    entropy: &[CompiledEntropyRule],
+    data: &[u8],
+    allows: &[CompiledAllow],
+    file: Option<&str>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for rule in entropy {
+        let mut i = 0;
+        while i < data.len() {
+            if !in_charset(rule.charset, data[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < data.len() && in_charset(rule.charset, data[i]) {
+                i += 1;
+            }
+            let span = &data[start..i];
+            if span.len() < rule.min_length {
+                continue;
+            }
+            // The candidate run is charset-only ASCII, so a lossless str view is sound.
+            let token = String::from_utf8_lossy(span);
+            if shannon_entropy(&token) < rule.threshold {
+                continue;
+            }
+            if is_allowed(allows, &rule.id, span) {
+                continue;
+            }
+            let location = match file {
+                Some(f) => format!("{f}:{}", line_of(data, start)),
+                None => format!("offset {start}"),
+            };
+            findings.push(Finding {
+                rule_id: rule.id.clone(),
+                severity: rule.severity,
+                description: rule.description.clone(),
+                redacted: redact(span),
+                location,
+            });
+        }
+    }
+    findings
+}
+
+/// Dep-free path glob: `*` matches any run of characters (including none); a trailing-`/` glob is a
+/// directory prefix matching any path beneath it. Sufficient for `*.lock`/`*.min.js`/`tests/fixtures/`.
+fn glob_match(path: &str, glob: &str) -> bool {
+    if let Some(prefix) = glob.strip_suffix('/') {
+        return path == prefix || path.starts_with(&format!("{prefix}/"));
+    }
+    // Split on `*`; each literal segment must appear in order, with the first anchored at the
+    // start and the last anchored at the end (a `*`-free glob therefore matches exactly).
+    let parts: Vec<&str> = glob.split('*').collect();
+    let mut pos = 0;
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if idx == 0 {
+            if !path[pos..].starts_with(part) {
+                return false;
+            }
+            pos += part.len();
+        } else if idx == parts.len() - 1 {
+            // Last segment: must end the string (and not overlap an already-consumed prefix).
+            return path[pos..].ends_with(part) && path.len() - pos >= part.len();
+        } else {
+            match path[pos..].find(part) {
+                Some(off) => pos += off + part.len(),
+                None => return false,
+            }
+        }
+    }
+    // No trailing literal to anchor: a glob ending in `*` (or all-`*`) matches the remainder.
+    glob.ends_with('*') || pos == path.len()
 }
 
 /// Print findings to stderr (redacted) and return an exit code: 1 if any `block`, else 0.
@@ -457,13 +679,15 @@ fn scan_content_cmd(rules: &Rules) -> i32 {
             return 1; // fail closed
         }
     };
-    report(&scan_with(
+    let mut findings = scan_with(
         &rules.content_set,
         &rules.content,
         &data,
         &rules.allows,
         None,
-    ))
+    );
+    findings.extend(scan_entropy(&rules.entropy, &data, &rules.allows, None));
+    report(&findings)
 }
 
 fn scan_cmd_cmd(rules: &Rules) -> i32 {
@@ -492,6 +716,7 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
         &rules.allows,
         None,
     ));
+    findings.extend(scan_entropy(&rules.entropy, &cmd, &rules.allows, None));
     report(&findings)
 }
 
@@ -800,13 +1025,23 @@ fn scan_staged(
                             }
                             continue;
                         }
-                        let f = scan_with(
+                        let mut f = scan_with(
                             &rules.content_set,
                             &rules.content,
                             &blob,
                             &rules.allows,
                             Some(&path),
                         );
+                        // Entropy is suppressed for excluded paths (path-bearing lane); the regex
+                        // content scan above always runs — excludes never weaken labeled detection.
+                        if !rules.exclude_paths.iter().any(|g| glob_match(&path, g)) {
+                            f.extend(scan_entropy(
+                                &rules.entropy,
+                                &blob,
+                                &rules.allows,
+                                Some(&path),
+                            ));
+                        }
                         if report(&f) == 1 {
                             blocked = true;
                         }
@@ -1111,6 +1346,8 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                 &rules.allows,
                 None,
             ));
+            // Bash is a command string with no path — entropy always runs (no exclude applies).
+            f.extend(scan_entropy(&rules.entropy, &joined, &rules.allows, None));
             emit_decision(&f)
         }
         "Write" => {
@@ -1132,13 +1369,23 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                 eprintln!("gatekeeper scan --hook: Write event missing 'content'");
                 return 2;
             };
-            emit_decision(&scan_with(
+            let mut f = scan_with(
                 &rules.content_set,
                 &rules.content,
                 content.as_bytes(),
                 &rules.allows,
                 None,
-            ))
+            );
+            // Path-bearing lane: entropy is suppressed when the target matches an exclude glob.
+            if !rules.exclude_paths.iter().any(|g| glob_match(&fp, g)) {
+                f.extend(scan_entropy(
+                    &rules.entropy,
+                    content.as_bytes(),
+                    &rules.allows,
+                    None,
+                ));
+            }
+            emit_decision(&f)
         }
         "Edit" | "MultiEdit" => {
             let Some(fp) = event.tool_input.file_path.clone() else {
@@ -1184,13 +1431,23 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                      secret-free; human approval required."
                 ));
             };
-            emit_decision(&scan_with(
+            let mut f = scan_with(
                 &rules.content_set,
                 &rules.content,
                 text.as_bytes(),
                 &rules.allows,
                 None,
-            ))
+            );
+            // Path-bearing lane: entropy is suppressed when the target matches an exclude glob.
+            if !rules.exclude_paths.iter().any(|g| glob_match(&fp, g)) {
+                f.extend(scan_entropy(
+                    &rules.entropy,
+                    text.as_bytes(),
+                    &rules.allows,
+                    None,
+                ));
+            }
+            emit_decision(&f)
         }
         _ => 0, // out of scope (MCP / other tools we do not gate): silent allow
     }
@@ -1856,6 +2113,203 @@ mod load_tests {
     fn allow_with_value_ok() {
         let ok = format!("{VALID}\n[[allow]]\nrule = \"k\"\nvalue = \"AKIAIOSFODNN7EXAMPLE\"\n");
         assert!(parse_rules(&ok).is_ok());
+    }
+}
+
+// ── Schema v2 acceptance (back-compat) — Task 1 ───────────────────────────────
+//
+// schema_version = 2 must parse (the new entropy schema), schema_version = 1 must STILL
+// parse (back-compat with every committed rules.toml), and an out-of-range version (3) must
+// be rejected with a message that names the accepted range ("expected 1 or 2").
+//
+// These compile against the EXISTING parser; they go red at RUNTIME today because the parser
+// rejects anything != SCHEMA_VERSION (== 1). That is the intended Task-1 red.
+#[cfg(test)]
+mod schema_v2_tests {
+    use super::*;
+
+    /// A minimal v-N rules doc carrying one existing `kind="content"` rule. `{ver}` is substituted.
+    fn doc(ver: u32) -> String {
+        format!(
+            "schema_version = {ver}\n\n\
+             [[rule]]\n\
+             id = \"k\"\n\
+             kind = \"content\"\n\
+             severity = \"block\"\n\
+             description = \"d\"\n\
+             pattern = '\\bAKIA[0-9A-Z]{{16}}\\b'\n"
+        )
+    }
+
+    #[test]
+    fn schema_version_2_accepted() {
+        let r = parse_rules(&doc(2));
+        assert!(
+            r.is_ok(),
+            "schema_version = 2 must parse (entropy schema); got: {:?}",
+            r.err()
+        );
+    }
+
+    #[test]
+    fn schema_version_1_still_accepted() {
+        // Back-compat: every committed rules.toml is v1 and must keep parsing.
+        assert!(
+            parse_rules(&doc(1)).is_ok(),
+            "schema_version = 1 must still parse (back-compat)"
+        );
+    }
+
+    #[test]
+    fn schema_version_3_rejected() {
+        let err = parse_rules(&doc(3))
+            .expect_err("schema_version = 3 is out of the accepted range and must be rejected");
+        assert!(
+            err.contains("1 or 2"),
+            "rejection message must name the accepted range (\"expected 1 or 2\"); got: {err}"
+        );
+    }
+}
+
+// ── Shannon entropy helper — Task 2 ───────────────────────────────────────────
+//
+// `shannon_entropy(token: &str) -> f64` returns bits per character:
+//   H = -Σ p_i · log2 p_i   over the distinct chars of `token`.
+// These reference a not-yet-existing free function, so the crate will not compile until it is
+// added — that compile error naming `shannon_entropy` is the intended Task-2 red.
+#[cfg(test)]
+mod shannon_entropy_tests {
+    use super::*;
+
+    #[test]
+    fn shannon_entropy_uniform_hex_near_4() {
+        // 64 chars cycling through all 16 hex digits uniformly (each appears 4×).
+        // A uniform distribution over 16 symbols has entropy log2(16) = 4.0 bits/char.
+        let token: String = "0123456789abcdef".chars().cycle().take(64).collect();
+        assert_eq!(token.len(), 64);
+        let h = shannon_entropy(&token);
+        assert!(
+            (h - 4.0).abs() < 0.2,
+            "uniform-hex token entropy must be ≈ 4.0 bits/char, got {h}"
+        );
+    }
+
+    #[test]
+    fn shannon_entropy_repetitive_is_low() {
+        // A single repeated char carries no information → entropy near 0.
+        let h = shannon_entropy("aaaaaaaaaaaaaaaa");
+        assert!(
+            h < 0.1,
+            "a repeated single character must have near-zero entropy, got {h}"
+        );
+    }
+
+    #[test]
+    fn shannon_entropy_empty_is_zero() {
+        // Empty input must be 0.0 — no panic, no NaN (the Σ over zero symbols).
+        let h = shannon_entropy("");
+        assert!(
+            h.is_finite(),
+            "empty-token entropy must not be NaN/inf, got {h}"
+        );
+        assert_eq!(h, 0.0, "empty token must have entropy 0.0");
+    }
+}
+
+// ── kind = "entropy" parsing — Task 3 ─────────────────────────────────────────
+//
+// A `kind = "entropy"` rule carries `charset` / `min_length` / `threshold_bits_per_char`
+// instead of a regex `pattern`, and compiles into an entropy-rule vector on `Rules` (the plan's
+// `CompiledEntropyRule { id, severity, description, charset, min_length, threshold }`).
+// References to `Kind::Entropy`, the new `RawRule` fields, and `Rules.entropy` do not exist yet,
+// so the crate will not compile — that is the intended Task-3 red.
+#[cfg(test)]
+mod entropy_rule_parse_tests {
+    use super::*;
+
+    /// A v2 doc with a single hex entropy rule (no regex `pattern`).
+    const ENTROPY_DOC: &str = "schema_version = 2\n\n\
+        [[rule]]\n\
+        id = \"hex-he\"\n\
+        kind = \"entropy\"\n\
+        severity = \"warn\"\n\
+        description = \"high-entropy hex run\"\n\
+        charset = \"hex\"\n\
+        min_length = 32\n\
+        threshold_bits_per_char = 3.0\n";
+
+    #[test]
+    fn entropy_rule_parses() {
+        let r =
+            parse_rules(ENTROPY_DOC).expect("a v2 doc with one kind=\"entropy\" rule must parse");
+        // The entropy rule is routed into its own compiled vector (NOT the content RegexSet).
+        assert_eq!(
+            r.entropy.len(),
+            1,
+            "exactly one compiled entropy rule must be produced"
+        );
+        assert_eq!(
+            r.content.len(),
+            0,
+            "an entropy rule must not land in the content lane"
+        );
+        let er = &r.entropy[0];
+        assert_eq!(er.id, "hex-he");
+        assert_eq!(er.charset, "hex", "compiled rule must carry charset = hex");
+        assert_eq!(
+            er.min_length, 32,
+            "compiled rule must carry min_length = 32"
+        );
+        assert!(
+            (er.threshold - 3.0).abs() < 1e-9,
+            "compiled rule must carry threshold ≈ 3.0, got {}",
+            er.threshold
+        );
+    }
+}
+
+// ── [scan] exclude_paths glob matcher — Task 5 ────────────────────────────────
+//
+// `glob_match(path: &str, glob: &str) -> bool` is the dep-free matcher backing
+// `[scan] exclude_paths`.  Supported syntax (ADR-0007 / plan §Conventions):
+//   - a leading/embedded `*` wildcard (e.g. `*.lock`, `*.min.js`)
+//   - a trailing-slash directory prefix (e.g. `tests/fixtures/` matches any path under it).
+// `glob_match` does not exist yet — this module references it, so the crate will not compile
+// until Task 5 adds it.  That compile error naming `glob_match` is the intended Task-5 red.
+#[cfg(test)]
+mod glob_match_tests {
+    use super::*;
+
+    #[test]
+    fn star_lock_matches_cargo_lock() {
+        assert!(
+            glob_match("Cargo.lock", "*.lock"),
+            "`*.lock` must match `Cargo.lock`"
+        );
+    }
+
+    #[test]
+    fn star_lock_does_not_match_rust_file() {
+        assert!(
+            !glob_match("a.rs", "*.lock"),
+            "`*.lock` must NOT match `a.rs`"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_dir_prefix_matches_file_under_it() {
+        assert!(
+            glob_match("tests/fixtures/x.txt", "tests/fixtures/"),
+            "a trailing-slash dir glob must match any path beneath it"
+        );
+    }
+
+    #[test]
+    fn star_min_js_matches_app_min_js() {
+        assert!(
+            glob_match("app.min.js", "*.min.js"),
+            "`*.min.js` must match `app.min.js`"
+        );
     }
 }
 
