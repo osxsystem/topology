@@ -671,6 +671,44 @@ fn dogfood_settings_are_portable() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// Characterization (test-after of existing behavior, per the #58 design): in the self-governed
+/// (single-root) case a *claude* `adapt` apply writes settings.json once, then is a true no-op on
+/// re-run — the property the `just setup` auto-wire trigger depends on. Self-governed harness
+/// (scratch_root + run), so it does not overlap the governed ac4_settings_no_clobber.
+#[test]
+fn dogfood_settings_claude_apply_rerun_is_noop() {
+    let root = scratch_root("rerun_noop");
+
+    // First apply writes the file.
+    let (code1, out1) = run(&root, &["adapt", "--harness", "claude"]);
+    assert_eq!(code1, 0, "first apply must succeed; out:\n{out1}");
+    assert!(
+        out1.contains("wrote .claude/settings.json"),
+        "first apply must write settings.json; out:\n{out1}"
+    );
+
+    // Second apply is a true no-op: settings already correct → nothing written.
+    let (code2, out2) = run(&root, &["adapt", "--harness", "claude"]);
+    assert_eq!(code2, 0, "second apply must succeed; out:\n{out2}");
+    assert!(
+        !out2.contains("wrote .claude/settings.json"),
+        "second apply must NOT rewrite settings.json (write-on-drift no-op); out:\n{out2}"
+    );
+
+    // --check confirms no drift after the write.
+    let (code3, out3) = run(&root, &["adapt", "--harness", "claude", "--check"]);
+    assert_eq!(
+        code3, 0,
+        "--check after write must report no drift (exit 0); out:\n{out3}"
+    );
+    assert!(
+        !out3.contains("DRIFT .claude/settings.json"),
+        "--check must not report settings.json drift after a clean write; out:\n{out3}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── #54: cross-tree dogfood — project root is itself a topology clone (root hooks/) ──
 
 /// A scratch project that is *itself* a topology framework clone: git-initialised, with
