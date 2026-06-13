@@ -50,7 +50,9 @@ case "$1" in
     exit 0
     ;;
   check)
-    echo 'SHADOW {"ts":1,"gate":"tdd","check":"replay","configured":"default","artifact":null,"command":"x","result":"pass","detail":"stub"}'
+    # Mirrors the engine's stderr SHADOW line: no leading "ts" field (the file
+    # sink adds ts; the stderr line the replay script scrapes does not).
+    echo 'SHADOW {"gate":"tdd","check":"replay","configured":"default","artifact":null,"command":"x","result":"pass","detail":"stub"}'
     exit 0
     ;;
 esac
@@ -133,11 +135,15 @@ test_replay_idempotent() {
   n1=$(grep -c '"check":"replay"' "$d/docs/logs/burn-in-tdd.jsonl" 2>/dev/null || echo 0)
   (cd "$d" && GATEKEEPER_BIN="$stub" bash "$REPO_ROOT/scripts/burn-in-replay-tdd.sh" >/dev/null 2>&1) || rc=$?
   n2=$(grep -c '"check":"replay"' "$d/docs/logs/burn-in-tdd.jsonl" 2>/dev/null || echo 0)
+  # The appended line must carry a ts field so shadow-stats.sh's would-block
+  # triage section renders (it keys detail extraction on "ts").
+  has_ts=no
+  grep -qE '"ts":[0-9]+' "$d/docs/logs/burn-in-tdd.jsonl" 2>/dev/null && has_ts=yes
   rm -rf "$d" "$stub"
-  if [ "$rc" -eq 0 ] && [ "$n1" = "1" ] && [ "$n2" = "1" ]; then
+  if [ "$rc" -eq 0 ] && [ "$n1" = "1" ] && [ "$n2" = "1" ] && [ "$has_ts" = "yes" ]; then
     ok replay_idempotent
   else
-    bad replay_idempotent "rc=$rc n1=$n1 n2=$n2 (expected 1 and 1)"
+    bad replay_idempotent "rc=$rc n1=$n1 n2=$n2 has_ts=$has_ts (expected 1, 1, yes)"
   fi
 }
 

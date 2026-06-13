@@ -48,7 +48,12 @@ for m in "${merges[@]}"; do
   printf 'test_command = "%s"\n' "$TEST_CMD" >"$WT/docs/config.toml"
 
   out="$(cd "$WT" && "$GATEKEEPER" check tdd --feature "$short" --base "$p1" 2>&1)" || true
-  if printf '%s\n' "$out" | grep -E '^SHADOW .*"check":"replay"' >>"$LOG"; then
+  # The engine's stderr SHADOW line has no `ts`; the file sink does. Inject one so
+  # shadow-stats.sh's would-block triage section (keyed on `ts`) renders.
+  matched="$(printf '%s\n' "$out" | grep -E '^SHADOW .*"check":"replay"' || true)"
+  if [ -n "$matched" ]; then
+    ts=$(date +%s)
+    printf '%s\n' "$matched" | sed "s/^SHADOW {/SHADOW {\"ts\":$ts,/" >>"$LOG"
     evals=$((evals + 1))
   fi
 done
