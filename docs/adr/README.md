@@ -24,3 +24,4 @@ a real trade-off**.
 | [0016](0016-contract-split.md) | 0016 — Contract split: portable template + dev doc + generated AGENTS.md | Accepted |
 | [0017](0017-tdd-red-green-replay.md) | 0017 — TDD red-green replay: execute the new test at the merge-base, require red | Accepted |
 | [0018](0018-entropy-scanning.md) | 0018 — Entropy scanning: detect unlabeled secrets by Shannon entropy (schema v2, shadow-first) | Accepted |
+| [0019](0019-generated-only-settings-json.md) | 0019 — `.claude/settings.json` stays generated-only, never committed | Accepted |
