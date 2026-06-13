@@ -53,7 +53,9 @@ for m in "${merges[@]}"; do
   matched="$(printf '%s\n' "$out" | grep -E '^SHADOW .*"check":"replay"' || true)"
   if [ -n "$matched" ]; then
     ts=$(date +%s)
-    printf '%s\n' "$matched" | sed "s/^SHADOW {/SHADOW {\"ts\":$ts,/" >>"$LOG"
+    # Inject ts (so shadow-stats.sh triage renders) and the source merge SHA (so each
+    # would-block is traceable to the PR it came from — the engine doesn't echo --feature).
+    printf '%s\n' "$matched" | sed "s/^SHADOW {/SHADOW {\"ts\":$ts,\"merge\":\"$short\",/" >>"$LOG"
     evals=$((evals + 1))
   fi
 done

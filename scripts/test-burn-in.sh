@@ -139,11 +139,14 @@ test_replay_idempotent() {
   # triage section renders (it keys detail extraction on "ts").
   has_ts=no
   grep -qE '"ts":[0-9]+' "$d/docs/logs/burn-in-tdd.jsonl" 2>/dev/null && has_ts=yes
+  # Each verdict must be traceable to its source merge SHA for triage.
+  has_merge=no
+  grep -qE '"merge":"[0-9a-f]+"' "$d/docs/logs/burn-in-tdd.jsonl" 2>/dev/null && has_merge=yes
   rm -rf "$d" "$stub"
-  if [ "$rc" -eq 0 ] && [ "$n1" = "1" ] && [ "$n2" = "1" ] && [ "$has_ts" = "yes" ]; then
+  if [ "$rc" -eq 0 ] && [ "$n1" = "1" ] && [ "$n2" = "1" ] && [ "$has_ts" = "yes" ] && [ "$has_merge" = "yes" ]; then
     ok replay_idempotent
   else
-    bad replay_idempotent "rc=$rc n1=$n1 n2=$n2 has_ts=$has_ts (expected 1, 1, yes)"
+    bad replay_idempotent "rc=$rc n1=$n1 n2=$n2 has_ts=$has_ts has_merge=$has_merge (expected 1,1,yes,yes)"
   fi
 }
 
