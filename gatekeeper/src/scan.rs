@@ -14,7 +14,7 @@ use std::process::Command;
 use regex::bytes::{Regex, RegexSet};
 use serde::Deserialize;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Expose the rules schema version to sibling modules without leaking the private const.
 pub fn schema_version() -> u32 {
@@ -49,7 +49,16 @@ struct RawRule {
     kind: Kind,
     severity: Severity,
     description: String,
-    pattern: String,
+    // Regex rules (content/command) carry a `pattern`; entropy rules carry charset/length/threshold
+    // instead. Optional so a v2 entropy rule parses; presence is validated per-kind in parse_rules.
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    charset: Option<String>,
+    #[serde(default)]
+    min_length: Option<usize>,
+    #[serde(default)]
+    threshold_bits_per_char: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -57,6 +66,17 @@ struct RawRule {
 enum Kind {
     Content,
     Command,
+    Entropy,
+}
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Content => "content",
+            Kind::Command => "command",
+            Kind::Entropy => "entropy",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -113,6 +133,52 @@ struct CompiledRule {
     re: Regex,
 }
 
+/// Token alphabet an entropy rule scans for. Parsed from the rule's `charset` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Charset {
+    Base64,
+    Hex,
+}
+
+impl Charset {
+    fn parse(s: &str) -> Result<Charset, String> {
+        match s {
+            "base64" => Ok(Charset::Base64),
+            "hex" => Ok(Charset::Hex),
+            other => Err(format!(
+                "unknown charset '{other}' (expected base64 or hex)"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Charset::Base64 => "base64",
+            Charset::Hex => "hex",
+        }
+    }
+}
+
+// Lets the test compare a compiled rule's charset against a string literal (`er.charset == "hex"`).
+impl PartialEq<&str> for Charset {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+// Fields are populated at parse time (Task 3) but only consumed by the scanning lane in Task 4;
+// until then the unit tests are the sole readers, so suppress dead-code in non-test builds.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug)]
+struct CompiledEntropyRule {
+    id: String,
+    severity: Severity,
+    description: String,
+    charset: Charset,
+    min_length: usize,
+    threshold: f64,
+}
+
 #[derive(Debug)]
 enum AllowMatch {
     Exact(Vec<u8>),
@@ -132,6 +198,10 @@ pub struct Rules {
     content_set: RegexSet,
     command: Vec<CompiledRule>,
     command_set: RegexSet,
+    /// Entropy rules — a separate lane from the regex `RegexSet`. Parsed + stored in Task 3;
+    /// wired into the scanning passes in Task 4 (only the tests read it until then).
+    #[cfg_attr(not(test), allow(dead_code))]
+    entropy: Vec<CompiledEntropyRule>,
     allows: Vec<CompiledAllow>,
     allow_blobs: Vec<AllowBlob>,
     /// Paths protected under the FRAMEWORK root (e.g. security/rules.toml, gatekeeper/src/…).
@@ -159,9 +229,9 @@ pub fn parse_rules_pub(raw: &str) -> Result<Rules, String> {
 fn parse_rules(raw: &str) -> Result<Rules, String> {
     let parsed: RulesFile =
         toml::from_str(raw).map_err(|e| format!("rules.toml parse/validation error: {e}"))?;
-    if parsed.schema_version != SCHEMA_VERSION {
+    if parsed.schema_version != 1 && parsed.schema_version != 2 {
         return Err(format!(
-            "unsupported schema_version {} (expected {SCHEMA_VERSION})",
+            "unsupported schema_version {} (expected 1 or 2)",
             parsed.schema_version
         ));
     }
@@ -175,18 +245,47 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
 
     let mut content = Vec::new();
     let mut command = Vec::new();
+    let mut entropy = Vec::new();
     for r in &parsed.rule {
-        let re =
-            Regex::new(&r.pattern).map_err(|e| format!("rule '{}': invalid pattern: {e}", r.id))?;
-        let cr = CompiledRule {
-            id: r.id.clone(),
-            severity: r.severity,
-            description: r.description.clone(),
-            re,
-        };
         match r.kind {
-            Kind::Content => content.push(cr),
-            Kind::Command => command.push(cr),
+            Kind::Content | Kind::Command => {
+                let pattern = r.pattern.as_deref().ok_or_else(|| {
+                    format!(
+                        "rule '{}': {} rule requires a 'pattern'",
+                        r.id,
+                        r.kind.as_str()
+                    )
+                })?;
+                let re = Regex::new(pattern)
+                    .map_err(|e| format!("rule '{}': invalid pattern: {e}", r.id))?;
+                let cr = CompiledRule {
+                    id: r.id.clone(),
+                    severity: r.severity,
+                    description: r.description.clone(),
+                    re,
+                };
+                match r.kind {
+                    Kind::Content => content.push(cr),
+                    Kind::Command => command.push(cr),
+                    Kind::Entropy => unreachable!(),
+                }
+            }
+            Kind::Entropy => {
+                let charset_str = r
+                    .charset
+                    .as_deref()
+                    .ok_or_else(|| format!("rule '{}': entropy rule requires a 'charset'", r.id))?;
+                let charset =
+                    Charset::parse(charset_str).map_err(|e| format!("rule '{}': {e}", r.id))?;
+                entropy.push(CompiledEntropyRule {
+                    id: r.id.clone(),
+                    severity: r.severity,
+                    description: r.description.clone(),
+                    charset,
+                    min_length: r.min_length.unwrap_or(20),
+                    threshold: r.threshold_bits_per_char.unwrap_or(4.0),
+                });
+            }
         }
     }
     let content_set = RegexSet::new(content.iter().map(|c| c.re.as_str()))
@@ -226,6 +325,7 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
         content_set,
         command,
         command_set,
+        entropy,
         allows,
         allow_blobs: parsed.allow_blob,
         protected: parsed.integrity.protected_paths,
@@ -250,6 +350,29 @@ fn redact(span: &[u8]) -> String {
         .map(|&b| if b.is_ascii_graphic() { b as char } else { '.' })
         .collect();
     format!("{prefix}…<len={}>", span.len())
+}
+
+/// Shannon entropy of `token` in bits per character: `H = -Σ p_i·log2(p_i)` over its distinct
+/// chars (`p_i` = count_i / len). An empty token is `0.0` (no symbols → guard the div-by-zero).
+// Wired into the entropy scanning lane in Task 4; until then only the unit tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
+fn shannon_entropy(token: &str) -> f64 {
+    let len = token.chars().count();
+    if len == 0 {
+        return 0.0;
+    }
+    let mut counts: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+    for c in token.chars() {
+        *counts.entry(c).or_insert(0) += 1;
+    }
+    let len = len as f64;
+    counts
+        .values()
+        .map(|&count| {
+            let p = count as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
 }
 
 fn line_of(data: &[u8], offset: usize) -> usize {
@@ -1856,6 +1979,158 @@ mod load_tests {
     fn allow_with_value_ok() {
         let ok = format!("{VALID}\n[[allow]]\nrule = \"k\"\nvalue = \"AKIAIOSFODNN7EXAMPLE\"\n");
         assert!(parse_rules(&ok).is_ok());
+    }
+}
+
+// ── Schema v2 acceptance (back-compat) — Task 1 ───────────────────────────────
+//
+// schema_version = 2 must parse (the new entropy schema), schema_version = 1 must STILL
+// parse (back-compat with every committed rules.toml), and an out-of-range version (3) must
+// be rejected with a message that names the accepted range ("expected 1 or 2").
+//
+// These compile against the EXISTING parser; they go red at RUNTIME today because the parser
+// rejects anything != SCHEMA_VERSION (== 1). That is the intended Task-1 red.
+#[cfg(test)]
+mod schema_v2_tests {
+    use super::*;
+
+    /// A minimal v-N rules doc carrying one existing `kind="content"` rule. `{ver}` is substituted.
+    fn doc(ver: u32) -> String {
+        format!(
+            "schema_version = {ver}\n\n\
+             [[rule]]\n\
+             id = \"k\"\n\
+             kind = \"content\"\n\
+             severity = \"block\"\n\
+             description = \"d\"\n\
+             pattern = '\\bAKIA[0-9A-Z]{{16}}\\b'\n"
+        )
+    }
+
+    #[test]
+    fn schema_version_2_accepted() {
+        let r = parse_rules(&doc(2));
+        assert!(
+            r.is_ok(),
+            "schema_version = 2 must parse (entropy schema); got: {:?}",
+            r.err()
+        );
+    }
+
+    #[test]
+    fn schema_version_1_still_accepted() {
+        // Back-compat: every committed rules.toml is v1 and must keep parsing.
+        assert!(
+            parse_rules(&doc(1)).is_ok(),
+            "schema_version = 1 must still parse (back-compat)"
+        );
+    }
+
+    #[test]
+    fn schema_version_3_rejected() {
+        let err = parse_rules(&doc(3))
+            .expect_err("schema_version = 3 is out of the accepted range and must be rejected");
+        assert!(
+            err.contains("1 or 2"),
+            "rejection message must name the accepted range (\"expected 1 or 2\"); got: {err}"
+        );
+    }
+}
+
+// ── Shannon entropy helper — Task 2 ───────────────────────────────────────────
+//
+// `shannon_entropy(token: &str) -> f64` returns bits per character:
+//   H = -Σ p_i · log2 p_i   over the distinct chars of `token`.
+// These reference a not-yet-existing free function, so the crate will not compile until it is
+// added — that compile error naming `shannon_entropy` is the intended Task-2 red.
+#[cfg(test)]
+mod shannon_entropy_tests {
+    use super::*;
+
+    #[test]
+    fn shannon_entropy_uniform_hex_near_4() {
+        // 64 chars cycling through all 16 hex digits uniformly (each appears 4×).
+        // A uniform distribution over 16 symbols has entropy log2(16) = 4.0 bits/char.
+        let token: String = "0123456789abcdef".chars().cycle().take(64).collect();
+        assert_eq!(token.len(), 64);
+        let h = shannon_entropy(&token);
+        assert!(
+            (h - 4.0).abs() < 0.2,
+            "uniform-hex token entropy must be ≈ 4.0 bits/char, got {h}"
+        );
+    }
+
+    #[test]
+    fn shannon_entropy_repetitive_is_low() {
+        // A single repeated char carries no information → entropy near 0.
+        let h = shannon_entropy("aaaaaaaaaaaaaaaa");
+        assert!(
+            h < 0.1,
+            "a repeated single character must have near-zero entropy, got {h}"
+        );
+    }
+
+    #[test]
+    fn shannon_entropy_empty_is_zero() {
+        // Empty input must be 0.0 — no panic, no NaN (the Σ over zero symbols).
+        let h = shannon_entropy("");
+        assert!(
+            h.is_finite(),
+            "empty-token entropy must not be NaN/inf, got {h}"
+        );
+        assert_eq!(h, 0.0, "empty token must have entropy 0.0");
+    }
+}
+
+// ── kind = "entropy" parsing — Task 3 ─────────────────────────────────────────
+//
+// A `kind = "entropy"` rule carries `charset` / `min_length` / `threshold_bits_per_char`
+// instead of a regex `pattern`, and compiles into an entropy-rule vector on `Rules` (the plan's
+// `CompiledEntropyRule { id, severity, description, charset, min_length, threshold }`).
+// References to `Kind::Entropy`, the new `RawRule` fields, and `Rules.entropy` do not exist yet,
+// so the crate will not compile — that is the intended Task-3 red.
+#[cfg(test)]
+mod entropy_rule_parse_tests {
+    use super::*;
+
+    /// A v2 doc with a single hex entropy rule (no regex `pattern`).
+    const ENTROPY_DOC: &str = "schema_version = 2\n\n\
+        [[rule]]\n\
+        id = \"hex-he\"\n\
+        kind = \"entropy\"\n\
+        severity = \"warn\"\n\
+        description = \"high-entropy hex run\"\n\
+        charset = \"hex\"\n\
+        min_length = 32\n\
+        threshold_bits_per_char = 3.0\n";
+
+    #[test]
+    fn entropy_rule_parses() {
+        let r =
+            parse_rules(ENTROPY_DOC).expect("a v2 doc with one kind=\"entropy\" rule must parse");
+        // The entropy rule is routed into its own compiled vector (NOT the content RegexSet).
+        assert_eq!(
+            r.entropy.len(),
+            1,
+            "exactly one compiled entropy rule must be produced"
+        );
+        assert_eq!(
+            r.content.len(),
+            0,
+            "an entropy rule must not land in the content lane"
+        );
+        let er = &r.entropy[0];
+        assert_eq!(er.id, "hex-he");
+        assert_eq!(er.charset, "hex", "compiled rule must carry charset = hex");
+        assert_eq!(
+            er.min_length, 32,
+            "compiled rule must carry min_length = 32"
+        );
+        assert!(
+            (er.threshold - 3.0).abs() < 1e-9,
+            "compiled rule must carry threshold ≈ 3.0, got {}",
+            er.threshold
+        );
     }
 }
 
