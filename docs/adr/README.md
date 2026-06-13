@@ -23,3 +23,4 @@ a real trade-off**.
 | [0015](0015-plugin-channel-retirement.md) | 0015 — Plugin channel retired: one install channel, payload-only provisioning | Accepted |
 | [0016](0016-contract-split.md) | 0016 — Contract split: portable template + dev doc + generated AGENTS.md | Accepted |
 | [0017](0017-tdd-red-green-replay.md) | 0017 — TDD red-green replay: execute the new test at the merge-base, require red | Accepted |
+| [0018](0018-entropy-scanning.md) | 0018 — Entropy scanning: detect unlabeled secrets by Shannon entropy (schema v2, shadow-first) | Accepted |

@@ -512,11 +512,15 @@ invented it).
 
 ## Phase 15 — Substance engines *(target: v0.6.0)*
 
-> **Status (2026-06-13):** the **TDD red-green replay engine** is delivered (ADR-0017): `[tdd] mode =
-> "history" | "replay"`, worktree replay at the merge-base, shadow-logged in the default `history`
-> mode. The `assert!(true)` hollow fixture is now caught. The remaining deliverables (entropy scanning
-> + synced ruleset, path-triggered routing, the router eval harness) and the Phase 14 default→enforce
-> flips are still open and tracked here. (Version label `v0.6.0` predates Track 2's bump to v0.9.0.)
+> **Status (2026-06-13):** two of the deep fixes are delivered. **(1) TDD red-green replay** (ADR-0017):
+> `[tdd] mode = "history" | "replay"`, worktree replay at the merge-base, shadow-logged in the default
+> `history` mode; the `assert!(true)` hollow fixture is now caught. **(2) Entropy scanning** (ADR-0018):
+> rules schema v2 + `kind = "entropy"` (per-token Shannon entropy), shipped `severity = "warn"`
+> (shadow), with `[scan] exclude_paths` and a `sync-gitleaks-rules.sh` review-file generator — a bare
+> 64-hex / 40-char-base64 token now WARNs where it previously committed clean (FM5). The remaining
+> deliverables (path-triggered routing, the router eval harness) and the Phase 14 default→enforce flips
+> (incl. promoting entropy from `warn` to `block` after a burn-in FP measurement) are still open and
+> tracked here. (Version label `v0.6.0` predates Track 2's bump to v0.9.0.)
 
 **Goal.** The deep fixes — red-green replay, entropy scanning with a synced ruleset, path-triggered
 routing, a measured router — and the Phase 14 shadow flips, gated on burn-in data.

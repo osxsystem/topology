@@ -55,6 +55,10 @@ test-payload:
 test-fetch:
     bash scripts/test-fetch-version.sh
 
+# Refresh the gitleaks provider-rule REVIEW file (never edits rules.toml; no-op offline/CI).
+sync-gitleaks:
+    bash scripts/sync-gitleaks-rules.sh
+
 # Offline end-to-end: build payload, serve via file://, install, assert gatekeeper works.
 test-e2e:
     bash scripts/test-payload-e2e.sh
