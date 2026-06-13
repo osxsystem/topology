@@ -47,7 +47,7 @@ Both print `0 evaluations` and exit 0. ✔
 
 ## AC6 — committed burn-in report with the required fields
 
-[docs/burn-in/2026-06-14-burn-in-report.md](../burn-in/2026-06-14-burn-in-report.md) records, per engine: eval count, would-block count, **vacuous-compile-red note**, the 5 would-blocks traced to source merges (#61/#44/#43/#42/#40), and each number vs its criterion (TDD `8/50`, 62.5% vs `<2%`; entropy `20.23` vs `<1`/10k). It flips nothing. ✔
+[docs/burn-in/2026-06-14-burn-in-report.md](../burn-in/2026-06-14-burn-in-report.md) records, per engine: eval count, would-block count, **vacuous-compile-red note**, the 5 would-blocks traced to source merges (#61/#44/#43/#42/#40), and each number vs its criterion (TDD `8/50`, 62.5% vs `<2%`; entropy `21.80` vs `<1`/10k). It flips nothing. ✔
 
 ## AC7 — no protected-path edits; diff is scripts + docs only
 
@@ -81,4 +81,4 @@ No `scan.rs`/`tdd.rs`/`verify.rs`/`rules.toml`/`gatekeeper/`/`hooks/` change. �
 
 ## The original symptom, reproduced-then-resolved
 
-**Symptom (research gate):** `docs/logs/shadow.jsonl` held 0 TDD-replay and 0 entropy evals — the flip was un-evidenced and unmeasurable. **Resolved:** the harness now produces both numbers on demand (8 TDD evals @ 62.5% would-block; 20.23 entropy WARN/10k), and the report states each against its criterion (8 TDD evals @ 62.5% would-block; 21.80 entropy WARN/10k). The flip remains correctly deferred — on evidence, not on a feeling.
+**Symptom (research gate):** `docs/logs/shadow.jsonl` held 0 TDD-replay and 0 entropy evals — the flip was un-evidenced and unmeasurable. **Resolved:** the harness now produces both numbers on demand (8 TDD evals @ 62.5% would-block; 21.80 entropy WARN/10k), and the report states each against its criterion. The flip remains correctly deferred — on evidence, not on a feeling.
