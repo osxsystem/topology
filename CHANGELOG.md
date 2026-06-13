@@ -2,7 +2,15 @@
 
 Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page for their artifacts.
 
-## Unreleased
+## v0.11.0 — 2026-06-13
+
+### Added
+
+- `gatekeeper doctor` now emits an advisory `WARN:` when a hook `command` or `env.GATEKEEPER_BIN`
+  path in the project's `.claude/settings.json` does not exist on disk, naming the stale path (and
+  resolving `${CLAUDE_PROJECT_DIR}` so a valid portable path is not flagged). It catches the
+  worktree-portability break before it surfaces as a runtime `PreToolUse` hook error, and is
+  advisory only — it never changes doctor's exit code (#52).
 
 ### Changed
 
@@ -15,6 +23,12 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ### Fixed
 
+- The pre-commit hook no longer pins `TOPOLOGY_ROOT` on the bare existence of a `.topology/`
+  directory. A self-governed framework clone with a deliberate non-marked `.topology/` (the
+  contract-split stub holding `CONTRACT.md`) was mis-detected as a governed project, pointing
+  `gatekeeper scan` at a nonexistent `.topology/security/rules.toml` → fail-closed → **every commit
+  blocked**. The binary's own `is_marked_root` resolution is now authoritative (self-governed in the
+  framework repo; `.topology` via binary-adjacent in a governed project) (#60).
 - `adapt` now generates a **portable** `.claude/settings.json` for the in-framework (dogfood) case
   (`read_root == write_root`): hook `command` paths use `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh` (which
   Claude Code expands in hook command strings) instead of an absolute clone path (#50), and no
