@@ -150,12 +150,13 @@ fn ensure_managed_block(existing: Option<&str>, body: &str) -> Edit {
 /// - `existing = None` or `null` → start from `{}`.
 /// - Non-object existing → `Err("not a JSON object")`.
 /// - Sets `obj["hooks"] = hooks` (adapt-owned, replaced wholesale).
-/// - Ensures `obj["env"]` is an object; sets `obj["env"]["GATEKEEPER_BIN"] = bin`.
+/// - `bin = Some(b)` sets `env.GATEKEEPER_BIN = b`; `bin = None` removes it (in-framework case),
+///   preserving all other `env` keys and leaving an empty `env` object in place.
 /// - All other top-level keys and all other `env` keys are preserved.
 pub(crate) fn merge_claude_settings(
     existing: Option<serde_json::Value>,
     hooks: serde_json::Value,
-    bin: &str,
+    bin: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let mut obj = match existing {
         None | Some(serde_json::Value::Null) => serde_json::Map::new(),
@@ -165,22 +166,30 @@ pub(crate) fn merge_claude_settings(
 
     obj.insert("hooks".to_owned(), hooks);
 
-    let env = obj
-        .entry("env")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let serde_json::Value::Object(env_map) = env {
-        env_map.insert(
-            "GATEKEEPER_BIN".to_owned(),
-            serde_json::Value::String(bin.to_owned()),
-        );
-    } else {
-        // env exists but is not an object; replace it.
-        let mut env_map = serde_json::Map::new();
-        env_map.insert(
-            "GATEKEEPER_BIN".to_owned(),
-            serde_json::Value::String(bin.to_owned()),
-        );
-        obj.insert("env".to_owned(), serde_json::Value::Object(env_map));
+    match bin {
+        Some(b) => {
+            let env = obj
+                .entry("env")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(env_map) = env {
+                env_map.insert(
+                    "GATEKEEPER_BIN".to_owned(),
+                    serde_json::Value::String(b.to_owned()),
+                );
+            } else {
+                let mut env_map = serde_json::Map::new();
+                env_map.insert(
+                    "GATEKEEPER_BIN".to_owned(),
+                    serde_json::Value::String(b.to_owned()),
+                );
+                obj.insert("env".to_owned(), serde_json::Value::Object(env_map));
+            }
+        }
+        None => {
+            if let Some(serde_json::Value::Object(env_map)) = obj.get_mut("env") {
+                env_map.remove("GATEKEEPER_BIN"); // leaves an empty {} in place by design (G4)
+            }
+        }
     }
 
     Ok(serde_json::Value::Object(obj))
@@ -512,11 +521,20 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
 
 /// Build the hooks JSON value for the Claude harness. Hook command paths are rooted at
 /// `framework_root` (where the hooks actually live).
-fn build_claude_hooks(framework_root: &Path) -> Result<serde_json::Value, String> {
+fn build_claude_hooks(
+    framework_root: &Path,
+    in_framework: bool,
+) -> Result<serde_json::Value, String> {
     require_agents_md(framework_root)?;
-    let root = framework_root;
-    let skill_activation = root.join("hooks/skill-activation.sh").display().to_string();
-    let security_scan = root.join("hooks/security-scan.sh").display().to_string();
+    let cmd = |name: &str| -> String {
+        if in_framework {
+            format!("${{CLAUDE_PROJECT_DIR}}/hooks/{name}")
+        } else {
+            framework_root.join("hooks").join(name).display().to_string()
+        }
+    };
+    let skill_activation = cmd("skill-activation.sh");
+    let security_scan = cmd("security-scan.sh");
     Ok(serde_json::json!({
         "UserPromptSubmit": [
             { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
@@ -533,7 +551,7 @@ fn build_claude_hooks(framework_root: &Path) -> Result<serde_json::Value, String
 /// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
 /// Returns an empty list; the AGENTS.md check is done by build_claude_hooks.
 fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
-    build_claude_hooks(framework_root)?;
+    require_agents_md(framework_root)?;
     Ok(Vec::new())
 }
 
@@ -821,6 +839,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 (Ok(r), Ok(w)) => r != w,
                 _ => read_root != write_root,
             };
+            let in_framework = !roots_differ;
 
             // The claude harness *merges* `.claude/settings.json` (hooks + env.GATEKEEPER_BIN)
             // rather than emitting a whole file, so the user's other keys survive. Its verdict is
@@ -828,7 +847,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
             // import / scaffold / contract checks below would be skipped (a hollow `--check`).
             let mut settings_code = 0;
             if harness == "claude" {
-                let hooks = match build_claude_hooks(read_root) {
+                let hooks = match build_claude_hooks(read_root, in_framework) {
                     Ok(h) => h,
                     Err(e) => {
                         eprintln!("gatekeeper adapt claude: {e}");
@@ -840,6 +859,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     .join("gatekeeper")
                     .display()
                     .to_string();
+                let bin_opt: Option<&str> = if roots_differ { Some(bin.as_str()) } else { None };
                 let settings_path = write_root.join(".claude").join("settings.json");
 
                 let existing: Option<serde_json::Value> = if settings_path.exists() {
@@ -871,12 +891,16 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     .as_ref()
                     .and_then(|v| v.as_object())
                     .map(|obj| {
-                        obj.get("hooks") == Some(&hooks)
-                            && obj
-                                .get("env")
-                                .and_then(|e| e.get("GATEKEEPER_BIN"))
-                                .and_then(|b| b.as_str())
-                                == Some(bin.as_str())
+                        let hooks_ok = obj.get("hooks") == Some(&hooks);
+                        let cur = obj
+                            .get("env")
+                            .and_then(|e| e.get("GATEKEEPER_BIN"))
+                            .and_then(|b| b.as_str());
+                        let bin_ok = match bin_opt {
+                            Some(b) => cur == Some(b),
+                            None => cur.is_none(),
+                        };
+                        hooks_ok && bin_ok
                     })
                     .unwrap_or(false);
 
@@ -886,7 +910,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                         settings_code = 1;
                     }
                 } else if !disk_ok {
-                    let merged = match merge_claude_settings(existing, hooks, &bin) {
+                    let merged = match merge_claude_settings(existing, hooks, bin_opt) {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("gatekeeper adapt: {e}");
@@ -1084,11 +1108,37 @@ mod tests {
     }
 
     #[test]
-    fn claude_wires_both_hooks() {
+    fn build_claude_hooks_governed_uses_absolute() {
+        let root = fixture("gov");
+        let h = build_claude_hooks(&root, false).unwrap();
+        assert!(h
+            .to_string()
+            .contains(&root.join("hooks/security-scan.sh").display().to_string()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_claude_hooks_in_framework_uses_project_dir_var() {
+        let root = fixture("inframework");
+        let h = build_claude_hooks(&root, true).unwrap();
+        assert_eq!(
+            h["UserPromptSubmit"][0]["hooks"][0]["command"],
+            "${CLAUDE_PROJECT_DIR}/hooks/skill-activation.sh"
+        );
+        assert_eq!(
+            h["PreToolUse"][0]["hooks"][0]["command"],
+            "${CLAUDE_PROJECT_DIR}/hooks/security-scan.sh"
+        );
+        assert!(!h.to_string().contains(root.to_str().unwrap()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn claude_wires_both_hooks_governed() {
         // build_claude_hooks returns the hooks JSON; merge_claude_settings embeds them.
-        let root = fixture("claude");
-        let hooks = build_claude_hooks(&root).unwrap();
-        let merged = merge_claude_settings(None, hooks, "/fw/bin/gatekeeper").unwrap();
+        let root = fixture("wires_gov");
+        let hooks = build_claude_hooks(&root, false).unwrap();
+        let merged = merge_claude_settings(None, hooks, Some("/fw/bin/gatekeeper")).unwrap();
         let s = serde_json::to_string_pretty(&merged).unwrap();
         assert!(s.contains("UserPromptSubmit"));
         assert!(s.contains("PreToolUse"));
@@ -1097,6 +1147,19 @@ mod tests {
         assert!(s.contains("Bash|Write|Edit|MultiEdit"));
         // Framework root is referenced in hook paths.
         assert!(s.contains(root.to_str().unwrap()));
+        assert!(s.contains("GATEKEEPER_BIN"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn claude_wires_both_hooks_in_framework() {
+        let root = fixture("wires_inframe");
+        let hooks = build_claude_hooks(&root, true).unwrap();
+        let merged = merge_claude_settings(None, hooks, None).unwrap();
+        let s = serde_json::to_string_pretty(&merged).unwrap();
+        assert!(s.contains("${CLAUDE_PROJECT_DIR}/hooks/"));
+        assert!(!s.contains(root.to_str().unwrap()));
+        assert!(!s.contains("GATEKEEPER_BIN"));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1422,9 +1485,33 @@ mod tests {
     #[test]
     fn merge_settings_none_existing_sets_hooks_and_env() {
         let hooks = serde_json::json!({"UserPromptSubmit": []});
-        let result = merge_claude_settings(None, hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+        let result = merge_claude_settings(None, hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
         assert_eq!(result["hooks"], hooks);
         assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
+    }
+
+    #[test]
+    fn merge_settings_none_bin_removes_gatekeeper_bin() {
+        let existing = serde_json::json!({"env": {"GATEKEEPER_BIN": "old_path", "MY_VAR": "hello"}});
+        let result = merge_claude_settings(Some(existing), serde_json::json!({}), None).unwrap();
+        assert!(
+            result["env"].get("GATEKEEPER_BIN").is_none(),
+            "None bin removes GATEKEEPER_BIN"
+        );
+        assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
+    }
+
+    #[test]
+    fn merge_settings_none_bin_absent_env_stays_absent() {
+        let result = merge_claude_settings(Some(serde_json::json!({})), serde_json::json!({}), None)
+            .unwrap();
+        assert!(
+            result
+                .get("env")
+                .and_then(|e| e.get("GATEKEEPER_BIN"))
+                .is_none(),
+            "no GATEKEEPER_BIN; an env key may be absent"
+        );
     }
 
     #[test]
@@ -1432,7 +1519,7 @@ mod tests {
         let existing = serde_json::json!({"model": "claude-opus-4-5", "other": "value"});
         let hooks = serde_json::json!({"PreToolUse": []});
         let result =
-            merge_claude_settings(Some(existing), hooks.clone(), "/fw/bin/gatekeeper").unwrap();
+            merge_claude_settings(Some(existing), hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
         assert_eq!(
             result["model"], "claude-opus-4-5",
             "user model key preserved"
@@ -1448,7 +1535,7 @@ mod tests {
             "env": {"MY_VAR": "hello", "GATEKEEPER_BIN": "old_path"}
         });
         let hooks = serde_json::json!({});
-        let result = merge_claude_settings(Some(existing), hooks, "/fw/bin/gatekeeper").unwrap();
+        let result = merge_claude_settings(Some(existing), hooks, Some("/fw/bin/gatekeeper")).unwrap();
         assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
         assert_eq!(
             result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper",
@@ -1459,7 +1546,7 @@ mod tests {
     #[test]
     fn merge_settings_non_object_existing_is_err() {
         let existing = serde_json::json!([1, 2, 3]);
-        let result = merge_claude_settings(Some(existing), serde_json::json!({}), "/bin/gk");
+        let result = merge_claude_settings(Some(existing), serde_json::json!({}), Some("/bin/gk"));
         assert!(result.is_err(), "non-object existing → Err");
         let msg = result.unwrap_err();
         assert!(msg.contains("not a JSON object"), "error message: {msg}");
