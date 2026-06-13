@@ -40,6 +40,17 @@ struct RulesFile {
     allow_blob: Vec<AllowBlob>,
     #[serde(default)]
     integrity: Integrity,
+    #[serde(default)]
+    scan: ScanConfig,
+}
+
+/// `[scan]` table. Carries path globs whose files are exempt from the entropy lane (only). Regex
+/// (content/command) rules always run — excludes never weaken labeled detection.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScanConfig {
+    #[serde(default)]
+    exclude_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,9 +177,6 @@ impl PartialEq<&str> for Charset {
     }
 }
 
-// Fields are populated at parse time (Task 3) but only consumed by the scanning lane in Task 4;
-// until then the unit tests are the sole readers, so suppress dead-code in non-test builds.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 struct CompiledEntropyRule {
     id: String,
@@ -198,10 +206,10 @@ pub struct Rules {
     content_set: RegexSet,
     command: Vec<CompiledRule>,
     command_set: RegexSet,
-    /// Entropy rules — a separate lane from the regex `RegexSet`. Parsed + stored in Task 3;
-    /// wired into the scanning passes in Task 4 (only the tests read it until then).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Entropy rules — a separate lane from the regex `RegexSet`, applied alongside `scan_with`.
     entropy: Vec<CompiledEntropyRule>,
+    /// Path globs (from `[scan] exclude_paths`) whose files skip the entropy lane only.
+    exclude_paths: Vec<String>,
     allows: Vec<CompiledAllow>,
     allow_blobs: Vec<AllowBlob>,
     /// Paths protected under the FRAMEWORK root (e.g. security/rules.toml, gatekeeper/src/…).
@@ -326,6 +334,7 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
         command,
         command_set,
         entropy,
+        exclude_paths: parsed.scan.exclude_paths,
         allows,
         allow_blobs: parsed.allow_blob,
         protected: parsed.integrity.protected_paths,
@@ -354,8 +363,6 @@ fn redact(span: &[u8]) -> String {
 
 /// Shannon entropy of `token` in bits per character: `H = -Σ p_i·log2(p_i)` over its distinct
 /// chars (`p_i` = count_i / len). An empty token is `0.0` (no symbols → guard the div-by-zero).
-// Wired into the entropy scanning lane in Task 4; until then only the unit tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
 fn shannon_entropy(token: &str) -> f64 {
     let len = token.chars().count();
     if len == 0 {
@@ -425,6 +432,98 @@ fn scan_with(
         }
     }
     findings
+}
+
+/// True iff `c` belongs to the candidate alphabet for `charset`. Hex is the strict hex alphabet
+/// (so prose/base64 cannot trip a hex rule); base64 is the URL/standard base64 superset.
+fn in_charset(charset: Charset, c: u8) -> bool {
+    match charset {
+        Charset::Hex => c.is_ascii_hexdigit(),
+        Charset::Base64 => {
+            c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'=' | b'_' | b'-')
+        }
+    }
+}
+
+/// Entropy lane: for each rule, walk maximal runs of charset bytes; a run of `>= min_length`
+/// whose Shannon entropy clears the rule threshold becomes a `Finding` (through `is_allowed`).
+fn scan_entropy(
+    entropy: &[CompiledEntropyRule],
+    data: &[u8],
+    allows: &[CompiledAllow],
+    file: Option<&str>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for rule in entropy {
+        let mut i = 0;
+        while i < data.len() {
+            if !in_charset(rule.charset, data[i]) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < data.len() && in_charset(rule.charset, data[i]) {
+                i += 1;
+            }
+            let span = &data[start..i];
+            if span.len() < rule.min_length {
+                continue;
+            }
+            // The candidate run is charset-only ASCII, so a lossless str view is sound.
+            let token = String::from_utf8_lossy(span);
+            if shannon_entropy(&token) < rule.threshold {
+                continue;
+            }
+            if is_allowed(allows, &rule.id, span) {
+                continue;
+            }
+            let location = match file {
+                Some(f) => format!("{f}:{}", line_of(data, start)),
+                None => format!("offset {start}"),
+            };
+            findings.push(Finding {
+                rule_id: rule.id.clone(),
+                severity: rule.severity,
+                description: rule.description.clone(),
+                redacted: redact(span),
+                location,
+            });
+        }
+    }
+    findings
+}
+
+/// Dep-free path glob: `*` matches any run of characters (including none); a trailing-`/` glob is a
+/// directory prefix matching any path beneath it. Sufficient for `*.lock`/`*.min.js`/`tests/fixtures/`.
+fn glob_match(path: &str, glob: &str) -> bool {
+    if let Some(prefix) = glob.strip_suffix('/') {
+        return path == prefix || path.starts_with(&format!("{prefix}/"));
+    }
+    // Split on `*`; each literal segment must appear in order, with the first anchored at the
+    // start and the last anchored at the end (a `*`-free glob therefore matches exactly).
+    let parts: Vec<&str> = glob.split('*').collect();
+    let mut pos = 0;
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if idx == 0 {
+            if !path[pos..].starts_with(part) {
+                return false;
+            }
+            pos += part.len();
+        } else if idx == parts.len() - 1 {
+            // Last segment: must end the string (and not overlap an already-consumed prefix).
+            return path[pos..].ends_with(part) && path.len() - pos >= part.len();
+        } else {
+            match path[pos..].find(part) {
+                Some(off) => pos += off + part.len(),
+                None => return false,
+            }
+        }
+    }
+    // No trailing literal to anchor: a glob ending in `*` (or all-`*`) matches the remainder.
+    glob.ends_with('*') || pos == path.len()
 }
 
 /// Print findings to stderr (redacted) and return an exit code: 1 if any `block`, else 0.
@@ -580,13 +679,15 @@ fn scan_content_cmd(rules: &Rules) -> i32 {
             return 1; // fail closed
         }
     };
-    report(&scan_with(
+    let mut findings = scan_with(
         &rules.content_set,
         &rules.content,
         &data,
         &rules.allows,
         None,
-    ))
+    );
+    findings.extend(scan_entropy(&rules.entropy, &data, &rules.allows, None));
+    report(&findings)
 }
 
 fn scan_cmd_cmd(rules: &Rules) -> i32 {
@@ -615,6 +716,7 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
         &rules.allows,
         None,
     ));
+    findings.extend(scan_entropy(&rules.entropy, &cmd, &rules.allows, None));
     report(&findings)
 }
 
@@ -923,13 +1025,23 @@ fn scan_staged(
                             }
                             continue;
                         }
-                        let f = scan_with(
+                        let mut f = scan_with(
                             &rules.content_set,
                             &rules.content,
                             &blob,
                             &rules.allows,
                             Some(&path),
                         );
+                        // Entropy is suppressed for excluded paths (path-bearing lane); the regex
+                        // content scan above always runs — excludes never weaken labeled detection.
+                        if !rules.exclude_paths.iter().any(|g| glob_match(&path, g)) {
+                            f.extend(scan_entropy(
+                                &rules.entropy,
+                                &blob,
+                                &rules.allows,
+                                Some(&path),
+                            ));
+                        }
                         if report(&f) == 1 {
                             blocked = true;
                         }
@@ -1234,6 +1346,8 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                 &rules.allows,
                 None,
             ));
+            // Bash is a command string with no path — entropy always runs (no exclude applies).
+            f.extend(scan_entropy(&rules.entropy, &joined, &rules.allows, None));
             emit_decision(&f)
         }
         "Write" => {
@@ -1255,13 +1369,23 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                 eprintln!("gatekeeper scan --hook: Write event missing 'content'");
                 return 2;
             };
-            emit_decision(&scan_with(
+            let mut f = scan_with(
                 &rules.content_set,
                 &rules.content,
                 content.as_bytes(),
                 &rules.allows,
                 None,
-            ))
+            );
+            // Path-bearing lane: entropy is suppressed when the target matches an exclude glob.
+            if !rules.exclude_paths.iter().any(|g| glob_match(&fp, g)) {
+                f.extend(scan_entropy(
+                    &rules.entropy,
+                    content.as_bytes(),
+                    &rules.allows,
+                    None,
+                ));
+            }
+            emit_decision(&f)
         }
         "Edit" | "MultiEdit" => {
             let Some(fp) = event.tool_input.file_path.clone() else {
@@ -1307,13 +1431,23 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
                      secret-free; human approval required."
                 ));
             };
-            emit_decision(&scan_with(
+            let mut f = scan_with(
                 &rules.content_set,
                 &rules.content,
                 text.as_bytes(),
                 &rules.allows,
                 None,
-            ))
+            );
+            // Path-bearing lane: entropy is suppressed when the target matches an exclude glob.
+            if !rules.exclude_paths.iter().any(|g| glob_match(&fp, g)) {
+                f.extend(scan_entropy(
+                    &rules.entropy,
+                    text.as_bytes(),
+                    &rules.allows,
+                    None,
+                ));
+            }
+            emit_decision(&f)
         }
         _ => 0, // out of scope (MCP / other tools we do not gate): silent allow
     }
@@ -2130,6 +2264,51 @@ mod entropy_rule_parse_tests {
             (er.threshold - 3.0).abs() < 1e-9,
             "compiled rule must carry threshold ≈ 3.0, got {}",
             er.threshold
+        );
+    }
+}
+
+// ── [scan] exclude_paths glob matcher — Task 5 ────────────────────────────────
+//
+// `glob_match(path: &str, glob: &str) -> bool` is the dep-free matcher backing
+// `[scan] exclude_paths`.  Supported syntax (ADR-0007 / plan §Conventions):
+//   - a leading/embedded `*` wildcard (e.g. `*.lock`, `*.min.js`)
+//   - a trailing-slash directory prefix (e.g. `tests/fixtures/` matches any path under it).
+// `glob_match` does not exist yet — this module references it, so the crate will not compile
+// until Task 5 adds it.  That compile error naming `glob_match` is the intended Task-5 red.
+#[cfg(test)]
+mod glob_match_tests {
+    use super::*;
+
+    #[test]
+    fn star_lock_matches_cargo_lock() {
+        assert!(
+            glob_match("Cargo.lock", "*.lock"),
+            "`*.lock` must match `Cargo.lock`"
+        );
+    }
+
+    #[test]
+    fn star_lock_does_not_match_rust_file() {
+        assert!(
+            !glob_match("a.rs", "*.lock"),
+            "`*.lock` must NOT match `a.rs`"
+        );
+    }
+
+    #[test]
+    fn trailing_slash_dir_prefix_matches_file_under_it() {
+        assert!(
+            glob_match("tests/fixtures/x.txt", "tests/fixtures/"),
+            "a trailing-slash dir glob must match any path beneath it"
+        );
+    }
+
+    #[test]
+    fn star_min_js_matches_app_min_js() {
+        assert!(
+            glob_match("app.min.js", "*.min.js"),
+            "`*.min.js` must match `app.min.js`"
         );
     }
 }
