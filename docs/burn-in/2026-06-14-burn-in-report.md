@@ -12,7 +12,7 @@
 | Engine | Criterion | Measured | Verdict |
 |--------|-----------|----------|---------|
 | TDD red-green replay | ≥50 evals **and** <2% false-block (ADR-0017:40) | **8 evals**, **62.5%** would-block | ❌ both unmet (6× too few evals; ~31× the FP bar) |
-| Entropy scanner | FP <1 per 10k lines (ADR-0018) | **20.23 WARN per 10k lines** | ❌ ~20× over |
+| Entropy scanner | FP <1 per 10k lines (ADR-0018) | **21.80 WARN per 10k lines** | ❌ ~22× over |
 
 ## TDD red-green replay
 
@@ -48,17 +48,19 @@ All five are legitimate features that passed every gate and shipped. The `vacuou
 **Command:** `bash scripts/burn-in-entropy-sweep.sh` (env unset).
 
 ```
-files scanned:        256
-excluded (path glob): 8
+files scanned:        265
+excluded (path glob): 1
 skipped (oversize):   0
-total lines:          52887
-entropy WARN hits:    107
-WARN per 10k lines:   20.23
+total lines:          53208
+entropy WARN hits:    116
+WARN per 10k lines:   21.80
 ```
 
-- **107 entropy WARNs across the working tree → 20.23 per 10k lines**, ~20× the `<1` criterion.
-- These are dominated by **benign high-entropy tokens**: 40-hex git commit SHAs quoted throughout `docs/` (ADRs, specs, this very report), checksums, and base64 test vectors. Entropy genuinely cannot distinguish them from secrets (ADR-0018 "fundamental limit") — which is exactly why entropy ships `severity = "warn"`.
-- Flipping entropy to `block` today would wrongly block 107 commits' worth of content on the current tree alone. **Not flip-ready.**
+- **116 entropy WARNs across the working tree → 21.80 per 10k lines**, ~22× the `<1` criterion.
+- These are dominated by **benign high-entropy tokens**: 40-hex git commit SHAs quoted throughout `docs/` (ADRs, specs, this very report), checksums, and base64 test vectors — including the secrets-bench *negatives* under `gatekeeper/tests/fixtures/` (deliberately benign high-entropy blobs). Entropy genuinely cannot distinguish them from secrets (ADR-0018 "fundamental limit") — which is exactly why entropy ships `severity = "warn"`.
+- Flipping entropy to `block` today would wrongly block 116 findings' worth of content on the current tree alone. **Not flip-ready.**
+
+> **Fidelity notes (review-gate driven).** (1) The sweep's exclude globs mirror the engine's `glob_match` exactly (`tests/fixtures/` is prefix-anchored at the start — top-level only; scan.rs:498-501), so the nested `gatekeeper/tests/fixtures/` negatives are scanned here just as `--staged`/`--hook` would scan them. An earlier `*/tests/fixtures/*` glob wrongly suppressed them and understated the figure (20.23 → corrected 21.80). (2) `wc -l` undercounts a file lacking a trailing newline by one line, marginally inflating the rate — a conservative direction against an already-22×-over number.
 
 ## Conclusions & follow-ups
 

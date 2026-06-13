@@ -27,14 +27,14 @@ The replay completed exit 0 across all 49 merges even though `check tdd` returne
 
 `bash scripts/burn-in-entropy-sweep.sh`:
 ```
-files scanned:        256
-excluded (path glob): 8
+files scanned:        265
+excluded (path glob): 1
 skipped (oversize):   0
-total lines:          52887
-entropy WARN hits:    107
-WARN per 10k lines:   20.23
+total lines:          53208
+entropy WARN hits:    116
+WARN per 10k lines:   21.80
 ```
-8 files excluded by glob (the entropy lane the script applies because `--content` carries no path); a per-10k rate printed. ✔
+Excludes mirror the engine's `glob_match` exactly (prefix-anchored `tests/fixtures/`, scan.rs:498-501), so the figure matches the `--staged`/`--hook` lanes; a per-10k rate printed. ✔ (An earlier `*/tests/fixtures/*` over-excluded the nested negatives — fixed under the review gate, 20.23 → 21.80.)
 
 ## AC5 — zero-data → "0 evaluations", exit 0 (both scripts)
 
@@ -81,4 +81,4 @@ No `scan.rs`/`tdd.rs`/`verify.rs`/`rules.toml`/`gatekeeper/`/`hooks/` change. �
 
 ## The original symptom, reproduced-then-resolved
 
-**Symptom (research gate):** `docs/logs/shadow.jsonl` held 0 TDD-replay and 0 entropy evals — the flip was un-evidenced and unmeasurable. **Resolved:** the harness now produces both numbers on demand (8 TDD evals @ 62.5% would-block; 20.23 entropy WARN/10k), and the report states each against its criterion. The flip remains correctly deferred — on evidence, not on a feeling.
+**Symptom (research gate):** `docs/logs/shadow.jsonl` held 0 TDD-replay and 0 entropy evals — the flip was un-evidenced and unmeasurable. **Resolved:** the harness now produces both numbers on demand (8 TDD evals @ 62.5% would-block; 20.23 entropy WARN/10k), and the report states each against its criterion (8 TDD evals @ 62.5% would-block; 21.80 entropy WARN/10k). The flip remains correctly deferred — on evidence, not on a feeling.
