@@ -4,6 +4,15 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
+### Changed
+
+- `just setup` now builds the release binary and runs `gatekeeper adapt --harness claude` after
+  installing the pre-commit hook, so a fresh clone or worktree self-wires its portable
+  `.claude/settings.json` with no manual step (#58). Complements the `gatekeeper doctor` stale-path
+  warning (#52); the generated-only decision is recorded in ADR-0019. Re-running is a no-op on
+  settings.json (write-on-drift). The release build is load-bearing — portable settings omit
+  `GATEKEEPER_BIN`, so the hooks resolve `gatekeeper/target/release/gatekeeper`.
+
 ### Fixed
 
 - `adapt` now generates a **portable** `.claude/settings.json` for the in-framework (dogfood) case

@@ -7,9 +7,13 @@
 default:
     @just --list
 
-# Install hooks/pre-commit.sh as the git pre-commit hook in this framework clone.
-# Copies (does not symlink) the hook so it survives in-place edits to the source.
-# Stops with an error if a non-topology pre-commit hook already exists.
+# Bootstrap a fresh framework clone or worktree:
+#   1. install hooks/pre-commit.sh as the git pre-commit hook (copy, not symlink; survives
+#      in-place edits); stops with an error if a non-topology pre-commit hook already exists.
+#   2. build the release binary, then `gatekeeper adapt --harness claude` to (re)generate the
+#      portable .claude/settings.json. The RELEASE build is load-bearing: portable settings drop
+#      GATEKEEPER_BIN, so the hooks resolve gatekeeper/target/release/gatekeeper (see
+#      docs/DEVELOPMENT.md + ADR-0019). adapt writes settings.json only on drift → re-run no-op.
 setup:
     @HOOKS_DIR="$(git rev-parse --git-path hooks)" && \
     DEST="$HOOKS_DIR/pre-commit" && \
@@ -26,6 +30,9 @@ setup:
         cp hooks/pre-commit.sh "$DEST" && chmod +x "$DEST" && \
         echo "setup: installed $DEST"; \
     fi
+    @echo "setup: building gatekeeper (release) and wiring .claude/settings.json…"
+    cargo build --release --manifest-path gatekeeper/Cargo.toml
+    ./gatekeeper/target/release/gatekeeper adapt --harness claude
 
 # Format Rust sources in place.
 fmt:
