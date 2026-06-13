@@ -660,8 +660,14 @@ fn dogfood_settings_are_portable() {
         "${CLAUDE_PROJECT_DIR}/hooks/skill-activation.sh"
     );
     let s = fs::read_to_string(root.join(".claude/settings.json")).unwrap();
-    assert!(!s.contains(root.to_str().unwrap()), "no absolute clone path baked in");
-    assert!(v["env"].get("GATEKEEPER_BIN").is_none(), "GATEKEEPER_BIN dropped in-framework");
+    assert!(
+        !s.contains(root.to_str().unwrap()),
+        "no absolute clone path baked in"
+    );
+    assert!(
+        v["env"].get("GATEKEEPER_BIN").is_none(),
+        "GATEKEEPER_BIN dropped in-framework"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
@@ -669,12 +675,18 @@ fn dogfood_settings_are_portable() {
 fn readapt_removes_stale_gatekeeper_bin() {
     let root = scratch_root("stale");
     fs::create_dir_all(root.join(".claude")).unwrap();
-    fs::write(root.join(".claude/settings.json"),
-        "{\n  \"env\": { \"GATEKEEPER_BIN\": \"/deleted/worktree/bin/gatekeeper\" }\n}\n").unwrap();
+    fs::write(
+        root.join(".claude/settings.json"),
+        "{\n  \"env\": { \"GATEKEEPER_BIN\": \"/deleted/worktree/bin/gatekeeper\" }\n}\n",
+    )
+    .unwrap();
     assert_eq!(run(&root, &["adapt", "--harness", "claude"]).0, 0);
     let v: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join(".claude/settings.json")).unwrap())
             .unwrap();
-    assert!(v["env"].get("GATEKEEPER_BIN").is_none(), "re-adapt clears the stale pin");
+    assert!(
+        v["env"].get("GATEKEEPER_BIN").is_none(),
+        "re-adapt clears the stale pin"
+    );
     let _ = fs::remove_dir_all(&root);
 }

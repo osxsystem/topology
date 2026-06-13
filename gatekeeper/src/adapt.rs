@@ -532,7 +532,11 @@ fn build_claude_hooks(
         if in_framework {
             format!("${{CLAUDE_PROJECT_DIR}}/hooks/{name}")
         } else {
-            framework_root.join("hooks").join(name).display().to_string()
+            framework_root
+                .join("hooks")
+                .join(name)
+                .display()
+                .to_string()
         }
     };
     let skill_activation = cmd("skill-activation.sh");
@@ -862,7 +866,11 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     .join("gatekeeper")
                     .display()
                     .to_string();
-                let bin_opt: Option<&str> = if roots_differ { Some(bin.as_str()) } else { None };
+                let bin_opt: Option<&str> = if roots_differ {
+                    Some(bin.as_str())
+                } else {
+                    None
+                };
                 let settings_path = write_root.join(".claude").join("settings.json");
 
                 let existing: Option<serde_json::Value> = if settings_path.exists() {
@@ -1488,14 +1496,16 @@ mod tests {
     #[test]
     fn merge_settings_none_existing_sets_hooks_and_env() {
         let hooks = serde_json::json!({"UserPromptSubmit": []});
-        let result = merge_claude_settings(None, hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
+        let result =
+            merge_claude_settings(None, hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
         assert_eq!(result["hooks"], hooks);
         assert_eq!(result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper");
     }
 
     #[test]
     fn merge_settings_none_bin_removes_gatekeeper_bin() {
-        let existing = serde_json::json!({"env": {"GATEKEEPER_BIN": "old_path", "MY_VAR": "hello"}});
+        let existing =
+            serde_json::json!({"env": {"GATEKEEPER_BIN": "old_path", "MY_VAR": "hello"}});
         let result = merge_claude_settings(Some(existing), serde_json::json!({}), None).unwrap();
         assert!(
             result["env"].get("GATEKEEPER_BIN").is_none(),
@@ -1506,8 +1516,9 @@ mod tests {
 
     #[test]
     fn merge_settings_none_bin_absent_env_stays_absent() {
-        let result = merge_claude_settings(Some(serde_json::json!({})), serde_json::json!({}), None)
-            .unwrap();
+        let result =
+            merge_claude_settings(Some(serde_json::json!({})), serde_json::json!({}), None)
+                .unwrap();
         assert!(
             result
                 .get("env")
@@ -1522,7 +1533,8 @@ mod tests {
         let existing = serde_json::json!({"model": "claude-opus-4-5", "other": "value"});
         let hooks = serde_json::json!({"PreToolUse": []});
         let result =
-            merge_claude_settings(Some(existing), hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
+            merge_claude_settings(Some(existing), hooks.clone(), Some("/fw/bin/gatekeeper"))
+                .unwrap();
         assert_eq!(
             result["model"], "claude-opus-4-5",
             "user model key preserved"
@@ -1538,7 +1550,8 @@ mod tests {
             "env": {"MY_VAR": "hello", "GATEKEEPER_BIN": "old_path"}
         });
         let hooks = serde_json::json!({});
-        let result = merge_claude_settings(Some(existing), hooks, Some("/fw/bin/gatekeeper")).unwrap();
+        let result =
+            merge_claude_settings(Some(existing), hooks, Some("/fw/bin/gatekeeper")).unwrap();
         assert_eq!(result["env"]["MY_VAR"], "hello", "other env key preserved");
         assert_eq!(
             result["env"]["GATEKEEPER_BIN"], "/fw/bin/gatekeeper",
