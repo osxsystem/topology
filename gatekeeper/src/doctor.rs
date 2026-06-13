@@ -6,7 +6,7 @@
 //! See docs/adr/0010-packaging-distribution.md §1 and §2.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -680,6 +680,13 @@ fn probe_hooks(dir: &Path) -> usize {
     fails
 }
 
+/// Resolve the portable `${CLAUDE_PROJECT_DIR}` literal in a settings.json path against the
+/// project root. A path with no literal is returned unchanged. Pure — unit-tested directly so the
+/// "no false positive on a valid portable path" guarantee is exercised at the unit level.
+fn resolve_claude_project_dir(raw: &str, project_root: &Path) -> PathBuf {
+    PathBuf::from(raw.replace("${CLAUDE_PROJECT_DIR}", &project_root.to_string_lossy()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +773,21 @@ mod tests {
         assert!(
             version_skew(&skewed),
             "version_skew must return true when payload version differs from binary version"
+        );
+    }
+
+    #[test]
+    fn resolve_claude_project_dir_substitutes_literal() {
+        let root = Path::new("/tmp/proj");
+        assert_eq!(
+            resolve_claude_project_dir("${CLAUDE_PROJECT_DIR}/hooks/x.sh", root),
+            PathBuf::from("/tmp/proj/hooks/x.sh"),
+            "portable literal must expand to project_root + suffix"
+        );
+        assert_eq!(
+            resolve_claude_project_dir("/abs/hooks/y.sh", root),
+            PathBuf::from("/abs/hooks/y.sh"),
+            "a path with no literal must be returned unchanged"
         );
     }
 
