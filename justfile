@@ -62,6 +62,10 @@ test-payload:
 test-fetch:
     bash scripts/test-fetch-version.sh
 
+# Phase 15 burn-in harness self-tests (stubbed gatekeeper; no long replay).
+test-burn-in:
+    bash scripts/test-burn-in.sh
+
 # Refresh the gitleaks provider-rule REVIEW file (never edits rules.toml; no-op offline/CI).
 sync-gitleaks:
     bash scripts/sync-gitleaks-rules.sh
