@@ -528,17 +528,15 @@ fn project_has_root_hooks(write_root: &Path) -> bool {
         && write_root.join("hooks/security-scan.sh").exists()
 }
 
-/// Build the hooks JSON value for the Claude harness. When `in_framework` (the dogfood case, where
-/// the project root *is* the framework root), hook command paths are emitted as the portable literal
-/// `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh`; otherwise they are absolute, rooted at `framework_root`
-/// (where the hooks actually live, e.g. an external payload in a governed project).
-fn build_claude_hooks(
-    framework_root: &Path,
-    in_framework: bool,
-) -> Result<serde_json::Value, String> {
+/// Build the hooks JSON value for the Claude harness. When `portable` (the dogfood cases — the project
+/// root either *is* `framework_root`, or is a sibling topology clone with its own root `hooks/`), hook
+/// command paths are emitted as the portable literal `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh`; otherwise
+/// they are absolute, rooted at `framework_root` (where the hooks actually live, e.g. an external
+/// payload in a governed project). The caller decides via `use_portable` (see `cmd_adapt`).
+fn build_claude_hooks(framework_root: &Path, portable: bool) -> Result<serde_json::Value, String> {
     require_agents_md(framework_root)?;
     let cmd = |name: &str| -> String {
-        if in_framework {
+        if portable {
             format!("${{CLAUDE_PROJECT_DIR}}/hooks/{name}")
         } else {
             framework_root
@@ -565,7 +563,7 @@ fn build_claude_hooks(
 
 /// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
 /// Returns an empty list after the AGENTS.md presence check (the hooks JSON is built later in the
-/// claude branch of cmd_adapt, where `in_framework` is known).
+/// claude branch of cmd_adapt, where `use_portable` is known).
 fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
     require_agents_md(framework_root)?;
     Ok(Vec::new())
