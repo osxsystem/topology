@@ -2343,6 +2343,42 @@ mod tests {
     }
 
     #[test]
+    fn resolve_root_rejects_non_marked_vendored_topology() {
+        // Negative gate for #60: an UNMARKED project root with a NON-marked .topology/ child must
+        // NOT resolve as ProjectVendored — is_marked_root (the gate at the ProjectVendored step)
+        // rejects the stub, so resolution falls through to Fallback. This is the branch the
+        // stub-.topology safety relies on, and the one no prior test exercises (the SelfGoverned
+        // tests short-circuit at step 2 before reaching it).
+        let base = env::temp_dir().join("topology_nonmarked_vendored");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        // base is NOT a marked root (no skills/). Its .topology child is also non-marked: a lone
+        // CONTRACT.md, mirroring the framework repo's deliberate contract-split stub.
+        let vendored = base.join(".topology");
+        fs::create_dir_all(&vendored).unwrap();
+        fs::write(vendored.join("CONTRACT.md"), "stub\n").unwrap();
+        // Empty home (no <home>/.topology) so the GlobalHome step can't fire — isolate the gate.
+        let fake_home = base.parent().unwrap().join("home_nonmarked");
+        let _ = fs::remove_dir_all(&fake_home);
+        fs::create_dir_all(&fake_home).unwrap();
+
+        // exe_path = None so the BinaryAdjacent step cannot pre-empt the ProjectVendored gate.
+        let result = resolve_root(&base, None, None, Some(&fake_home));
+        assert_ne!(
+            result.source,
+            RootSource::ProjectVendored,
+            "a non-marked .topology/ stub must NOT be selected as ProjectVendored (#60)"
+        );
+        assert_eq!(
+            result.source,
+            RootSource::Fallback,
+            "with no marked root anywhere, resolution must fall through to Fallback"
+        );
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&fake_home);
+    }
+
+    #[test]
     fn resolve_root_global_home_topology_found() {
         // When no other step resolves, <home>/.topology that is a marked root → GlobalHome.
         let base = env::temp_dir().join("topology_global_home");
