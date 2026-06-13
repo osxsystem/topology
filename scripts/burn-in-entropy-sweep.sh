@@ -10,11 +10,14 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 GATEKEEPER="${GATEKEEPER_BIN:-$REPO_ROOT/gatekeeper/target/release/gatekeeper}"
 CAP_BYTES=$((5 * 1024 * 1024)) # scan --content HOOK_INPUT_CAP (scan.rs:25)
 
-# Globs the entropy lane skips on path-bearing lanes (CHANGELOG v0.6.0 / spec).
+# Globs the entropy lane skips on path-bearing lanes. Mirror the engine's glob_match
+# (scan.rs:498-501) exactly: a trailing-slash glob is a prefix anchored at the start, so
+# "tests/fixtures/" excludes ONLY top-level — a nested gatekeeper/tests/fixtures/ is scanned
+# (and WARNs) on --staged/--hook, so the sweep must scan it too. Set: security/rules.toml:232.
 is_excluded() {
   case "$1" in
   *.lock | *.svg | *.min.js) return 0 ;;
-  tests/fixtures/* | */tests/fixtures/*) return 0 ;;
+  tests/fixtures | tests/fixtures/*) return 0 ;;
   esac
   return 1
 }

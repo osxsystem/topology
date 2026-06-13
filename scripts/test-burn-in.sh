@@ -100,6 +100,30 @@ test_entropy_detects_and_excludes() {
   fi
 }
 
+# ── entropy: exclusion glob mirrors the engine (top-level tests/fixtures/ only) ──
+test_entropy_fixtures_glob_matches_engine() {
+  local d stub out rc=0
+  d="$(mk_repo)"
+  stub="$(mk_stub)"
+  # Engine glob_match (scan.rs:498-501) anchors "tests/fixtures/" at the start:
+  # top-level is excluded; a NESTED gatekeeper/tests/fixtures/ is NOT (it is scanned
+  # on --staged/--hook). The sweep must match, else its figure understates the lanes.
+  mkdir -p "$d/tests/fixtures" "$d/pkg/tests/fixtures"
+  printf '%s\n' "$HEX64" >"$d/tests/fixtures/top.txt"     # excluded (top-level)
+  printf '%s\n' "$HEX64" >"$d/pkg/tests/fixtures/nest.txt" # scanned (nested)
+  git -C "$d" add -A
+  git -C "$d" commit -qm x
+  out="$(cd "$d" && GATEKEEPER_BIN="$stub" bash "$REPO_ROOT/scripts/burn-in-entropy-sweep.sh" 2>&1)" || rc=$?
+  rm -rf "$d" "$stub"
+  if [ "$rc" -eq 0 ] &&
+    printf '%s' "$out" | grep -qE "files scanned: +1" &&
+    printf '%s' "$out" | grep -qE "excluded \(path glob\): +1"; then
+    ok entropy_fixtures_glob_matches_engine
+  else
+    bad entropy_fixtures_glob_matches_engine "rc=$rc out=[$out]"
+  fi
+}
+
 # ── replay: zero data (no merges) ───────────────────────────────────────────
 test_replay_zero_data() {
   local d stub out rc=0
@@ -153,6 +177,7 @@ test_replay_idempotent() {
 echo "burn-in harness self-tests"
 test_entropy_zero_data
 test_entropy_detects_and_excludes
+test_entropy_fixtures_glob_matches_engine
 test_replay_zero_data
 test_replay_idempotent
 echo "----"
