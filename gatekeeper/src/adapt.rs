@@ -519,8 +519,10 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
     Ok(files)
 }
 
-/// Build the hooks JSON value for the Claude harness. Hook command paths are rooted at
-/// `framework_root` (where the hooks actually live).
+/// Build the hooks JSON value for the Claude harness. When `in_framework` (the dogfood case, where
+/// the project root *is* the framework root), hook command paths are emitted as the portable literal
+/// `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh`; otherwise they are absolute, rooted at `framework_root`
+/// (where the hooks actually live, e.g. an external payload in a governed project).
 fn build_claude_hooks(
     framework_root: &Path,
     in_framework: bool,
@@ -549,7 +551,8 @@ fn build_claude_hooks(
 }
 
 /// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
-/// Returns an empty list; the AGENTS.md check is done by build_claude_hooks.
+/// Returns an empty list after the AGENTS.md presence check (the hooks JSON is built later in the
+/// claude branch of cmd_adapt, where `in_framework` is known).
 fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
     require_agents_md(framework_root)?;
     Ok(Vec::new())
