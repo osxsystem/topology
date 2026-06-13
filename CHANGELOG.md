@@ -12,9 +12,15 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
   `env.GATEKEEPER_BIN` is pinned — the hook's own binary-resolution fallback finds it (#51). The wiring
   now survives deletion of a sibling worktree. `adapt` **deletes** the adapt-owned `GATEKEEPER_BIN` key
   in this case (so a re-`adapt` clears an already-stale pin); all user `env` keys are preserved.
-  Governed downstream projects (`read_root != write_root`) are byte-for-byte unchanged. Cross-tree
-  dogfood generation (a sibling-worktree binary writing another clone's settings) is a known residual,
-  tracked in #54.
+  Governed downstream projects (`read_root != write_root`) are byte-for-byte unchanged.
+- `adapt` now also emits the portable form in the **cross-tree dogfood** case: when `read_root !=
+  write_root` but the project root is itself a topology clone (has `hooks/skill-activation.sh` +
+  `hooks/security-scan.sh` at its root). This is the case behind the original incident — a `gatekeeper`
+  built in one worktree adapting another clone previously baked the generating worktree's absolute
+  paths, which dangled when that worktree was deleted. Detection is a filesystem check on the project
+  root (not git-common-dir, which would misclassify a vendored-`.topology` governed project as
+  cross-tree); vendored/external governed projects (no root `hooks/`) stay on absolute paths + pinned
+  bin, unchanged. (#54)
 
 ## v0.10.0 — 2026-06-13
 
