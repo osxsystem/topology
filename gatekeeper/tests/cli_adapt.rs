@@ -671,6 +671,120 @@ fn dogfood_settings_are_portable() {
     let _ = fs::remove_dir_all(&root);
 }
 
+// ── #54: cross-tree dogfood — project root is itself a topology clone (root hooks/) ──
+
+/// A scratch project that is *itself* a topology framework clone: git-initialised, with
+/// `AGENTS.md`, a skill, an instinct (mirroring `scratch_root`), AND `hooks/skill-activation.sh`
+/// + `hooks/security-scan.sh` at its own root. Used as the `write_root` for the cross-tree case.
+fn scratch_clone_as_project(tag: &str) -> PathBuf {
+    let proj = std::env::temp_dir().join(format!("topo_xtree_clone_{tag}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&proj);
+    fs::create_dir_all(proj.join("skills").join("brainstorm-design")).unwrap();
+    fs::create_dir_all(proj.join("instincts")).unwrap();
+    fs::create_dir_all(proj.join("hooks")).unwrap();
+    fs::write(
+        proj.join("AGENTS.md"),
+        "# Topology Agent\n\nGate sequence: design then plan then tdd.\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join("skills")
+            .join("brainstorm-design")
+            .join("SKILL.md"),
+        "---\nname: brainstorm-design\ndescription: Turn an idea into a design. Use when starting a feature.\n---\n# Brainstorm\n\nNo code before a design doc.\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join("instincts").join("gates-not-rules.md"),
+        "---\nid: gates-not-rules\npriority: high\n---\nPhrase a commitment as trigger then check then act.\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join("hooks").join("skill-activation.sh"),
+        "#!/usr/bin/env bash\n",
+    )
+    .unwrap();
+    fs::write(
+        proj.join("hooks").join("security-scan.sh"),
+        "#!/usr/bin/env bash\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .args(["-C", proj.to_str().unwrap(), "init", "-q", "-b", "main"])
+        .status()
+        .unwrap();
+    proj
+}
+
+/// #54: a cross-tree generation (binary's framework root ≠ project root, but the project root is
+/// itself a topology clone with root hooks/) emits PORTABLE settings — `${CLAUDE_PROJECT_DIR}` hook
+/// paths, no baked absolute framework path, no pinned GATEKEEPER_BIN — even though `roots_differ`.
+#[test]
+fn cross_tree_dogfood_settings_are_portable() {
+    let fw = scratch_fw_with_template("xtree");
+    let proj = scratch_clone_as_project("xtree");
+
+    let (code, _stdout, stderr) = run_proj(&fw, &proj, &["adapt", "--harness", "claude"]);
+    assert_eq!(code, 0, "adapt must succeed; stderr:\n{stderr}");
+
+    let s = fs::read_to_string(proj.join(".claude").join("settings.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+
+    assert_eq!(
+        v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "${CLAUDE_PROJECT_DIR}/hooks/security-scan.sh",
+        "cross-tree clone must get the portable hook path; settings:\n{s}"
+    );
+
+    // run_proj pins TOPOLOGY_ROOT to the canonicalized fw; assert that path is not baked in.
+    let fw_canonical = fs::canonicalize(&fw).unwrap_or_else(|_| fw.clone());
+    let fw_canonical_str = fw_canonical.to_str().unwrap();
+    assert!(
+        !s.contains(fw_canonical_str),
+        "no absolute framework path may be baked in; settings:\n{s}"
+    );
+
+    assert!(
+        v["env"].get("GATEKEEPER_BIN").is_none(),
+        "GATEKEEPER_BIN must be dropped for a cross-tree clone; settings:\n{s}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
+/// #54 / M1: a cross-tree project with only ONE of the two root hook scripts is NOT a complete
+/// clone, so adapt must keep the governed/absolute branch — absolute hook path + pinned bin.
+/// (Passes today; a guard that the AND in `project_has_root_hooks` holds end-to-end.)
+#[test]
+fn cross_tree_partial_hooks_stays_absolute() {
+    let fw = scratch_fw_with_template("xtree_partial");
+    let proj = scratch_clone_as_project("xtree_partial");
+    // Make the clone partial: only skill-activation.sh remains at the root.
+    fs::remove_file(proj.join("hooks").join("security-scan.sh")).unwrap();
+
+    let (code, _stdout, stderr) = run_proj(&fw, &proj, &["adapt", "--harness", "claude"]);
+    assert_eq!(code, 0, "adapt must succeed; stderr:\n{stderr}");
+
+    let s = fs::read_to_string(proj.join(".claude").join("settings.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+
+    let fw_canonical = fs::canonicalize(&fw).unwrap_or_else(|_| fw.clone());
+    let fw_canonical_str = fw_canonical.to_str().unwrap();
+    assert!(
+        s.contains(fw_canonical_str),
+        "partial-hooks clone must stay on the absolute branch; settings:\n{s}"
+    );
+
+    assert!(
+        v["env"]["GATEKEEPER_BIN"].is_string(),
+        "partial-hooks clone must keep the pinned bin; settings:\n{s}"
+    );
+
+    let _ = fs::remove_dir_all(&fw);
+    let _ = fs::remove_dir_all(&proj);
+}
+
 #[test]
 fn readapt_removes_stale_gatekeeper_bin() {
     let root = scratch_root("stale");

@@ -519,17 +519,24 @@ fn build_opencode(root: &Path) -> Result<Vec<GenFile>, String> {
     Ok(files)
 }
 
-/// Build the hooks JSON value for the Claude harness. When `in_framework` (the dogfood case, where
-/// the project root *is* the framework root), hook command paths are emitted as the portable literal
-/// `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh`; otherwise they are absolute, rooted at `framework_root`
-/// (where the hooks actually live, e.g. an external payload in a governed project).
-fn build_claude_hooks(
-    framework_root: &Path,
-    in_framework: bool,
-) -> Result<serde_json::Value, String> {
+/// True when the portable `${CLAUDE_PROJECT_DIR}/hooks/<name>` form resolves correctly — i.e. the
+/// project root (`write_root`) is itself a topology framework clone, with the hook scripts at its
+/// own root. Distinguishes cross-tree dogfood (sibling clone — has root `hooks/`) from
+/// vendored/external governed (hooks under `.topology/` or elsewhere — no root `hooks/`).
+fn project_has_root_hooks(write_root: &Path) -> bool {
+    write_root.join("hooks/skill-activation.sh").exists()
+        && write_root.join("hooks/security-scan.sh").exists()
+}
+
+/// Build the hooks JSON value for the Claude harness. When `portable` (the dogfood cases — the project
+/// root either *is* `framework_root`, or is a sibling topology clone with its own root `hooks/`), hook
+/// command paths are emitted as the portable literal `${CLAUDE_PROJECT_DIR}/hooks/<name>.sh`; otherwise
+/// they are absolute, rooted at `framework_root` (where the hooks actually live, e.g. an external
+/// payload in a governed project). The caller decides via `use_portable` (see `cmd_adapt`).
+fn build_claude_hooks(framework_root: &Path, portable: bool) -> Result<serde_json::Value, String> {
     require_agents_md(framework_root)?;
     let cmd = |name: &str| -> String {
-        if in_framework {
+        if portable {
             format!("${{CLAUDE_PROJECT_DIR}}/hooks/{name}")
         } else {
             framework_root
@@ -556,7 +563,7 @@ fn build_claude_hooks(
 
 /// Claude: no adapt-owned whole files to write (settings.json is merged in cmd_adapt).
 /// Returns an empty list after the AGENTS.md presence check (the hooks JSON is built later in the
-/// claude branch of cmd_adapt, where `in_framework` is known).
+/// claude branch of cmd_adapt, where `use_portable` is known).
 fn build_claude(framework_root: &Path) -> Result<Vec<GenFile>, String> {
     require_agents_md(framework_root)?;
     Ok(Vec::new())
@@ -846,7 +853,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                 (Ok(r), Ok(w)) => r != w,
                 _ => read_root != write_root,
             };
-            let in_framework = !roots_differ;
+            let use_portable = !roots_differ || project_has_root_hooks(write_root);
 
             // The claude harness *merges* `.claude/settings.json` (hooks + env.GATEKEEPER_BIN)
             // rather than emitting a whole file, so the user's other keys survive. Its verdict is
@@ -854,7 +861,7 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
             // import / scaffold / contract checks below would be skipped (a hollow `--check`).
             let mut settings_code = 0;
             if harness == "claude" {
-                let hooks = match build_claude_hooks(read_root, in_framework) {
+                let hooks = match build_claude_hooks(read_root, use_portable) {
                     Ok(h) => h,
                     Err(e) => {
                         eprintln!("gatekeeper adapt claude: {e}");
@@ -866,10 +873,10 @@ pub fn cmd_adapt(args: &[String], read_root: &Path, write_root: &Path) -> i32 {
                     .join("gatekeeper")
                     .display()
                     .to_string();
-                let bin_opt: Option<&str> = if roots_differ {
-                    Some(bin.as_str())
-                } else {
+                let bin_opt: Option<&str> = if use_portable {
                     None
+                } else {
+                    Some(bin.as_str())
                 };
                 let settings_path = write_root.join(".claude").join("settings.json");
 
@@ -1566,5 +1573,42 @@ mod tests {
         assert!(result.is_err(), "non-object existing → Err");
         let msg = result.unwrap_err();
         assert!(msg.contains("not a JSON object"), "error message: {msg}");
+    }
+
+    // ── #54: project_has_root_hooks (cross-tree dogfood predicate) ─────────────
+
+    #[test]
+    fn project_has_root_hooks_true_for_clone() {
+        let root = fixture("phrt_true");
+        fs::create_dir_all(root.join("hooks")).unwrap();
+        fs::write(
+            root.join("hooks/skill-activation.sh"),
+            "#!/usr/bin/env bash\n",
+        )
+        .unwrap();
+        fs::write(root.join("hooks/security-scan.sh"), "#!/usr/bin/env bash\n").unwrap();
+        assert!(project_has_root_hooks(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_has_root_hooks_false_without_hooks() {
+        let root = fixture("phrt_none");
+        assert!(!project_has_root_hooks(&root));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_has_root_hooks_false_with_partial_hooks() {
+        let root = fixture("phrt_partial");
+        fs::create_dir_all(root.join("hooks")).unwrap();
+        // Only skill-activation.sh present — security-scan.sh missing.
+        fs::write(
+            root.join("hooks/skill-activation.sh"),
+            "#!/usr/bin/env bash\n",
+        )
+        .unwrap();
+        assert!(!project_has_root_hooks(&root));
+        let _ = fs::remove_dir_all(&root);
     }
 }
