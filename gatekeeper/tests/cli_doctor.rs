@@ -82,6 +82,23 @@ fn run_with_env(cwd: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> (i32, S
     )
 }
 
+/// Write a `.claude/settings.json` into `root` with one PreToolUse hook `command` and an optional
+/// `env.GATEKEEPER_BIN`. Used by the settings-path probe tests (issue #52).
+fn write_settings(root: &Path, hook_command: &str, gatekeeper_bin: Option<&str>) {
+    let claude = root.join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    let env_block = match gatekeeper_bin {
+        Some(b) => format!("\"env\": {{ \"GATEKEEPER_BIN\": \"{b}\" }},"),
+        None => String::new(),
+    };
+    let json = format!(
+        "{{\n  {env_block}\n  \"hooks\": {{\n    \"PreToolUse\": [\n      \
+         {{ \"hooks\": [ {{ \"type\": \"command\", \"command\": \"{hook_command}\", \
+         \"timeout\": 30 }} ] }}\n    ]\n  }}\n}}"
+    );
+    fs::write(claude.join("settings.json"), json).unwrap();
+}
+
 // ── Healthy root → exit 0 ─────────────────────────────────────────────────
 
 #[test]
@@ -486,6 +503,63 @@ fn doctor_recognizes_tdd_config_section() {
         "doctor must not flag [tdd] sub-keys 'mode'/'replay_test_command' as unknown; got:\n{out}"
     );
 
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── settings.json stale-path probe (advisory, issue #52) ──────────────────
+
+#[test]
+fn doctor_warns_on_stale_settings_hook_path() {
+    let root = scratch_root("settings_stale_hook");
+    write_settings(&root, "/nonexistent/topology/hooks/security-scan.sh", None);
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(
+        code, 0,
+        "stale settings path is advisory and must not change the exit code; out:\n{out}"
+    );
+    assert!(
+        out.contains(
+            "hook command path does not exist: /nonexistent/topology/hooks/security-scan.sh"
+        ),
+        "doctor must WARN naming the stale hook path; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_no_warn_on_resolvable_portable_hook_path() {
+    let root = scratch_root("settings_portable_ok");
+    // scratch_root() created hooks/test-hook.sh; reference it via the portable literal.
+    write_settings(&root, "${CLAUDE_PROJECT_DIR}/hooks/test-hook.sh", None);
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(code, 0, "out:\n{out}");
+    assert!(
+        out.contains("settings.json paths: ok"),
+        "a resolvable portable hook path must report ok; got:\n{out}"
+    );
+    assert!(
+        !out.contains("WARN: hook command path"),
+        "a resolvable portable hook path must not WARN; got:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn doctor_warns_on_stale_gatekeeper_bin() {
+    let root = scratch_root("settings_stale_bin");
+    write_settings(
+        &root,
+        "${CLAUDE_PROJECT_DIR}/hooks/test-hook.sh",
+        Some("/nonexistent/gatekeeper/target/release/gatekeeper"),
+    );
+    let (code, out) = run(&root, &["doctor"]);
+    assert_eq!(code, 0, "out:\n{out}");
+    assert!(
+        out.contains(
+            "GATEKEEPER_BIN path does not exist: /nonexistent/gatekeeper/target/release/gatekeeper"
+        ),
+        "doctor must WARN naming the stale GATEKEEPER_BIN path; got:\n{out}"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 

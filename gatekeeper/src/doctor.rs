@@ -376,6 +376,12 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
     // operator can prune. Informational only — never flips doctor to a failure.
     probe_orphaned_replay_worktrees();
 
+    // ── .claude/settings.json stale paths (advisory) ─────────────────────────
+    // Warn (never FAIL) when a hook command or GATEKEEPER_BIN path in the project's
+    // settings.json no longer exists on disk — catches the worktree-portability break before it
+    // surfaces as a runtime PreToolUse hook error. Issue #52.
+    probe_settings_paths(&crate::project_root());
+
     // ── Summary ─────────────────────────────────────────────────────────────
     if failures == 0 {
         println!("doctor: all probes ok");
@@ -685,6 +691,88 @@ fn probe_hooks(dir: &Path) -> usize {
 /// "no false positive on a valid portable path" guarantee is exercised at the unit level.
 fn resolve_claude_project_dir(raw: &str, project_root: &Path) -> PathBuf {
     PathBuf::from(raw.replace("${CLAUDE_PROJECT_DIR}", &project_root.to_string_lossy()))
+}
+
+/// Advisory probe (issue #52): warn when a path referenced in the project's
+/// `.claude/settings.json` — a hook `command` or `env.GATEKEEPER_BIN` — does not exist on disk.
+/// The portable `${CLAUDE_PROJECT_DIR}` literal in hook commands is resolved against
+/// `project_root` before the check, so a valid portable path produces no warning. Prints only —
+/// never increments doctor's failure count (advisory, not a gate).
+fn probe_settings_paths(project_root: &Path) {
+    let settings_path = project_root.join(".claude").join("settings.json");
+    let raw = match fs::read_to_string(&settings_path) {
+        Ok(s) => s,
+        Err(_) => {
+            println!("settings.json paths: n/a (no .claude/settings.json)");
+            return;
+        }
+    };
+    let val: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            println!("settings.json paths: skipped (.claude/settings.json is malformed)");
+            return;
+        }
+    };
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Hook commands: hooks.<event>[].hooks[].command — resolve ${CLAUDE_PROJECT_DIR} first, then
+    // check the whole command string as the path (topology never emits arguments, so a split
+    // would only ever truncate a real path that contains a space).
+    if let Some(events) = val.get("hooks").and_then(|h| h.as_object()) {
+        for entries in events.values() {
+            let arr = match entries.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+            for entry in arr {
+                let hook_list = match entry.get("hooks").and_then(|h| h.as_array()) {
+                    Some(h) => h,
+                    None => continue,
+                };
+                for hook in hook_list {
+                    let cmd = match hook.get("command").and_then(|c| c.as_str()) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    let resolved = resolve_claude_project_dir(cmd, project_root);
+                    if !resolved.exists() {
+                        warnings.push(format!(
+                            "settings.json paths: WARN: hook command path does not exist: {} \
+                             (stale clone/worktree — reinstall the framework or re-run \
+                             'gatekeeper adapt --harness claude' to repoint)",
+                            resolved.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // GATEKEEPER_BIN: checked as-is — the env block carries no ${CLAUDE_PROJECT_DIR}
+    // interpolation (post #50/#51 it is absent or an absolute path).
+    if let Some(bin) = val
+        .get("env")
+        .and_then(|e| e.get("GATEKEEPER_BIN"))
+        .and_then(|b| b.as_str())
+    {
+        if !Path::new(bin).exists() {
+            warnings.push(format!(
+                "settings.json paths: WARN: GATEKEEPER_BIN path does not exist: {bin} \
+                 (security-scan.sh will fall back to a repo/PATH build; re-run \
+                 'gatekeeper adapt --harness claude' to repoint)"
+            ));
+        }
+    }
+
+    if warnings.is_empty() {
+        println!("settings.json paths: ok");
+    } else {
+        for w in warnings {
+            println!("{w}");
+        }
+    }
 }
 
 #[cfg(test)]
