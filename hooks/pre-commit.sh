@@ -25,11 +25,11 @@ else
   exit 1
 fi
 
-# Governed project: the framework root is the vendored .topology, passed via env — never via cd;
-# the scan must run from the COMMITTED repo so the staged lane targets this repo's index.
-if [[ -z "${TOPOLOGY_ROOT:-}" && -d "$ROOT/.topology" ]]; then
-  export TOPOLOGY_ROOT="$ROOT/.topology"
-fi
+# Do not pin TOPOLOGY_ROOT here. The binary resolves the framework root itself via its
+# is_marked_root ladder: a self-governed clone resolves to the repo, and a governed project
+# resolves to its marked .topology payload (reached binary-adjacent from .topology/bin). Pinning
+# it on the bare existence of a .topology directory misfires when that directory is a deliberate
+# non-marked stub, blocking every commit (issue #60).
 
 if (cd "$ROOT" && "$GK" scan --staged); then
   exit 0
