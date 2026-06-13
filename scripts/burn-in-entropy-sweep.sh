@@ -40,8 +40,7 @@ while IFS= read -r f; do
   lines=$(wc -l <"$f")
   total_lines=$((total_lines + lines))
   scanned=$((scanned + 1))
-  rc=0
-  out="$("$GATEKEEPER" scan --content <"$f" 2>&1)" || rc=$?
+  out="$("$GATEKEEPER" scan --content <"$f" 2>&1)" || true
   hits=$(printf '%s\n' "$out" | grep -cE '^WARN (hex|base64)-high-entropy:' || true)
   warn_hits=$((warn_hits + hits))
 done < <(git -C "$REPO_ROOT" ls-files)
