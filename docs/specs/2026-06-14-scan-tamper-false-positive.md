@@ -3,7 +3,10 @@
 - **Date:** 2026-06-14
 - **Feature slug:** scan-tamper-false-positive
 - **Status:** approved
-- **Approved by:** maintainer (Do Viet Hung), 2026-06-14 — wrapper set `sudo`/`env`/`xargs` accepted as proposed
+- **History:** Approach 1 (regex) approved 2026-06-14; superseded after two fresh-context reviews found
+  systematic command-position false-negatives (see "Update — post-review" and "Approach 3" below).
+  **Approach 3** (tokenized detection in `scan.rs`) detailed design approved by maintainer
+  (Do Viet Hung), 2026-06-14.
 
 ## Problem
 
@@ -101,8 +104,12 @@ identical treatment so they cannot drift.
 - **Open question (for approval): how many command-position wrappers?** `sudo`/`env`/`xargs` cover the
   realistic privileged/batched writes; `eval`/backtick-built paths stay in the residual. Is that the
   right line, or should the wrapper set be wider/narrower?
-- **Residual unchanged:** indirectly-built paths and interpreter writes (`python -c "open(...)"`) still
-  evade both rules, exactly as today. This slice does not claim to close that.
+- **Residual (expanded after review — see Update below):** indirectly-built paths, `eval`, interpreter
+  writes (`python -c "open(...)"`), **arg-taking or exotic command wrappers** beyond the recognized set
+  (e.g. `timeout 5 tee security/rules.toml`, where `5` is a positional arg), and **multi-slash path
+  tricks** (`security//rules.toml`, the pre-existing F-001 coarse-token-boundary class) still evade both
+  rules. This slice narrows the gap but does not claim to close it; closing the class is Approach 3
+  (tokenized detection in `scan.rs`), tracked separately.
 
 ## Acceptance criteria
 
@@ -121,3 +128,100 @@ Driven against the **shipped** `security/rules.toml` via the `cli_scan.rs` `real
   - `sudo tee security/rules.toml < /tmp/x` → exit 1 (privileged write)
 - **AC3 — suite & lint clean:** `cargo test` (full suite) green; `cargo fmt --check` and
   `cargo clippy -- -D warnings` clean.
+
+## Update — post-review (2026-06-14)
+
+The first fresh-context review **failed** the change: it found real false-negatives the narrow regex
+introduced, outside the documented residual. Recorded here as the audit trail.
+
+**Found (regressions — blocked by the OLD rule, allowed by the first fix):**
+- Force-clobber redirects: `echo x >| security/rules.toml` (and fd-dup `>&`). The redirect branch
+  `>>?\s*<P>` could not bridge the `|`/`&` between the operator and the target.
+- Wrapped / prefixed verbs: `command tee …`, `\tee …`, `env FOO=1 tee …`, `env env tee …`,
+  `sudo -- tee …`, `nohup cp …`. The command-position anchor recognized only `sudo|env|xargs` with
+  `-flags`.
+
+**Resolved (maintainer chose "widen regex + document residual"):**
+- Redirect branch widened to `>>?[&|]?\s*<P>` — catches `>`, `>>`, `>|`, `>&`, and fd-prefixed forms
+  (`2>`, `&>`), while a redirect to a non-protected target (`2>/dev/null`) stays allowed.
+- Verb command-position anchor widened: optional leading `\`, a bounded wrapper set
+  (`sudo|doas|env|command|builtin|exec|nohup|setsid|time|timeout|nice|ionice|stdbuf|xargs`) with flags
+  and optional `--`, `VAR=val` assignments, all repeatable.
+- All eight review cases added as red→green regression guards in
+  `real_ruleset_distinguishes_reads_from_writes_to_wiring` and
+  `real_ruleset_blocks_bash_writes_into_memory_artifacts`.
+
+**Accepted residual** (see the amended Risks bullet): arg-taking/exotic wrappers (`timeout 5 tee …`),
+multi-slash path tricks (F-001 class), `eval`, and interpreter writes. The proper closure of this whole
+coarse-token-boundary class is Approach 3 (argument-aware tokenization in `scan.rs`), explicitly out of
+this slice's scope and tracked as a follow-up.
+
+## Approach 3 — adopted after review (2026-06-14), pending re-approval
+
+A **second** fresh-context review then found a further in-scope regression: shell control-flow keywords
+defeat the regex's command-position anchor — `if true; then cp /tmp/x security/rules.toml; fi` and
+`for f in a; do rm gatekeeper/src/scan.rs; done` are allowed (confirmed live, exit 0; the old rule
+blocked both). The same class includes `case … )` patterns and `!` negation. The regex is trying to do
+a parser's job (deciding command-vs-argument across shell grammar); each review finds another
+command-position form, and the rule is already ~430 chars. The maintainer chose to **escalate to
+Approach 3**: argument-aware detection in Rust.
+
+### Decision
+Replace the two regex command-rules with a built-in, quote-aware command detector in `scan.rs`.
+Detection logic lives in Rust (enforcement lane); the protected-path token sets stay declarative in
+`security/rules.toml` (data/source-of-truth lane); the shell grammar (verbs, wrappers, keywords) lives
+in Rust because it is universal, not per-project config.
+
+### Algorithm (in `scan.rs`, run on `--cmd` / `--hook Bash` inputs)
+1. **Lex** the command string into words with quote/escape awareness (single-quote, double-quote,
+   backslash), and record redirect operators and their target words.
+2. **Split** into simple-commands on unquoted separators (`;`, `&`, `&&`, `||`, `|`, newline, `(`, `)`,
+   `{`, `}`, backtick, `$(`).
+3. For each simple-command, **skip prefix tokens**: shell keywords
+   (`if then elif else fi for while until do done case esac select in function time ! coproc`),
+   wrapper commands (`sudo doas env command builtin exec nohup setsid time timeout nice ionice stdbuf
+   xargs`), `VAR=val` assignments, and flags. The first remaining token is the **verb**.
+4. **Block iff**: the verb is a mutating verb (`tee cp mv ln chmod rm dd install truncate`, or `sed`
+   with an in-place `-i` flag) AND any of its operand words (path-normalized: collapse `//`, resolve
+   `./`) matches a protected token; **OR** any redirect target word (path-normalized) matches a
+   protected token.
+5. Protected token sets come from the two rule definitions in `rules.toml` (see below).
+
+### What changes in `rules.toml`
+The two `kind = "command"` regex rules (`tamper-security-wiring`, `tamper-memory-artifacts`) become a
+new `kind = "path-mutation"` carrying a `protected = [ … ]` list of path substrings (the same tokens as
+today), interpreted by the Rust detector. No regex `pattern` for these two rules. All other rules
+(secrets, `rm -rf /`, git rules) are untouched.
+
+### Why this converges where regex did not
+It parses structure instead of matching position, so command-position is computed, not enumerated:
+wrappers, keywords, `)`, `!`, and every redirect form fall out of the same logic. Quote-awareness fixes
+the original false-positive at the root (`grep "tee" rules.toml` → verb is `grep`, `"tee"` is a quoted
+argument → allowed). Path-normalization closes the F-001 multi-slash class.
+
+### Residual (Approach 3)
+Smaller and principled: only **runtime-resolved** writes evade — variable/command-substitution-built
+paths (`d=security/rules.toml; cp x $d`), `eval`, and interpreter writes (`python -c "open(...)"`).
+These cannot be resolved by static lexing and remain the documented floor residual (mistakes, not a
+determined evader — matching the contract's threat boundary).
+
+### Acceptance criteria (Approach 3 — supersede AC1–AC3 above; the prior tests remain and must stay green)
+- **A3-1 (reads allowed):** the AC1 cases plus quoted-verb reads (`grep "rm -rf x" security/rules.toml`,
+  `cat docs/memory/h.md`, `time cat gatekeeper/src/main.rs`, `command grep tee security/rules.toml`) → allow.
+- **A3-2 (writes block — no FN regression):** every existing `real_ruleset_blocks_*` assertion, the eight
+  Approach-1 regression guards, **plus** the keyword/`)`/`!` forms:
+  `if true; then cp /tmp/x security/rules.toml; fi`, `for f in a; do rm gatekeeper/src/scan.rs; done`,
+  `case $x in y) cp /tmp/z security/rules.toml;; esac`, `! tee security/rules.toml` → block. Both the
+  wiring and memory token sets.
+- **A3-3 (quote-awareness):** a mutating verb inside quotes is treated as an argument, not a command.
+- **A3-4 (path-normalization):** `cp /tmp/x security//rules.toml` and `./security/rules.toml` → block.
+- **A3-5 (residual documented, not silently closed):** `d=security/rules.toml; cp x $d` and
+  `python -c "..."` remain allowed (residual), asserted as such with a comment so the boundary is explicit.
+- **A3-6 (suite & lint clean):** full `cargo test` green; `cargo fmt --check` + `cargo clippy -- -D warnings` clean.
+
+### Scope & cost (honest)
+This is no longer a one-line slice: new Rust module/function in the **protected** `scan.rs`, a small
+shell lexer, a new rule `kind`, and config-parsing for it. Implementation will be delegated to the
+`feature-implementer` / `test-engineer-tdd` agents under TDD, with the main loop owning this design and
+the fresh-context review. The commit touching `scan.rs`/`rules.toml` is protected (authorized
+`--no-verify`, maintainer-run).
