@@ -77,6 +77,31 @@ pub(crate) fn route_by_paths(rules: &serde_json::Value, paths: &[&str]) -> Vec<(
     out
 }
 
+/// Route skills from a PostToolUse hook event (JSON on stdin).
+///
+/// Mirrors the JSON shape `scan --hook` consumes (`scan.rs` `HookEvent`/`ToolInput`) but with a
+/// local minimal deserialize struct, so the protected scanner is untouched (design D1). On any
+/// parse failure or a missing `file_path`, returns an empty vec (never panics) — the hook is
+/// advisory and must fail open (design D2). Otherwise routes by the touched path via
+/// `route_by_paths`.
+pub(crate) fn route_by_hook_json(rules: &serde_json::Value, stdin: &str) -> Vec<(String, String)> {
+    #[derive(serde::Deserialize)]
+    struct HookEvent {
+        tool_input: Option<ToolInput>,
+    }
+    #[derive(serde::Deserialize)]
+    struct ToolInput {
+        file_path: Option<String>,
+    }
+    let Ok(event) = serde_json::from_str::<HookEvent>(stdin) else {
+        return Vec::new();
+    };
+    let Some(file_path) = event.tool_input.and_then(|t| t.file_path) else {
+        return Vec::new();
+    };
+    route_by_paths(rules, &[&file_path])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +122,41 @@ mod tests {
         );
         assert_eq!(
             route_by_paths(&rules, &["README.md"]),
+            Vec::<(String, String)>::new()
+        );
+    }
+
+    #[test]
+    fn route_by_hook_json_extracts_path() {
+        let rules = serde_json::json!({
+            "skills": {
+                "security-scanning": {
+                    "enforcement": "require",
+                    "pathTriggers": { "globs": ["hooks/*"] }
+                }
+            }
+        });
+        // A trigger path inside the PostToolUse JSON routes the skill.
+        let trigger = r#"{"tool_name":"Edit","tool_input":{"file_path":"hooks/x.sh"}}"#;
+        assert_eq!(
+            route_by_hook_json(&rules, trigger),
+            vec![("security-scanning".to_string(), "require".to_string())]
+        );
+        // A non-trigger path routes nothing.
+        let non_trigger = r#"{"tool_name":"Edit","tool_input":{"file_path":"README.md"}}"#;
+        assert_eq!(
+            route_by_hook_json(&rules, non_trigger),
+            Vec::<(String, String)>::new()
+        );
+        // Malformed JSON returns empty (never panics).
+        assert_eq!(
+            route_by_hook_json(&rules, "}{ not json"),
+            Vec::<(String, String)>::new()
+        );
+        // Missing file_path returns empty.
+        let no_path = r#"{"tool_name":"Edit","tool_input":{}}"#;
+        assert_eq!(
+            route_by_hook_json(&rules, no_path),
             Vec::<(String, String)>::new()
         );
     }

@@ -95,9 +95,9 @@ pub(crate) static SUBCOMMANDS: &[SubcommandSpec] = &[
     },
     SubcommandSpec {
         name: "route",
-        usage: "USAGE:\n  gatekeeper route --paths <p1> [<p2>...]\n  gatekeeper route --staged-paths",
+        usage: "USAGE:\n  gatekeeper route --paths <p1> [<p2>...]\n  gatekeeper route --staged-paths\n  gatekeeper route --hook",
         synopsis: "Route skills by file paths.",
-        known_flags: &["--paths", "--staged-paths"],
+        known_flags: &["--paths", "--staged-paths", "--hook"],
         handler: |args| cmd_route(args),
     },
     SubcommandSpec {
@@ -645,10 +645,32 @@ fn cmd_route(args: &[String]) -> i32 {
     if let Some(code) = check_help_or_unknown(
         "route",
         args,
-        &["--paths", "--staged-paths"],
+        &["--paths", "--staged-paths", "--hook"],
         lookup_usage("route"),
     ) {
         return code;
+    }
+
+    let rules_path = framework_root().join("hooks").join("skill-rules.json");
+
+    // `--hook`: read a PostToolUse JSON event on stdin and route by its `file_path`.
+    if args.iter().any(|a| a == "--hook") {
+        let mut raw = String::new();
+        if std::io::stdin().read_to_string(&mut raw).is_err() {
+            eprintln!("gatekeeper: failed to read stdin");
+            return 1;
+        }
+        let matched = match fs::read_to_string(&rules_path) {
+            Ok(rules_raw) => match serde_json::from_str::<serde_json::Value>(&rules_raw) {
+                Ok(v) => route::route_by_hook_json(&v, &raw),
+                Err(e) => {
+                    eprintln!("gatekeeper: skill-rules.json parse error: {e}");
+                    return 1;
+                }
+            },
+            Err(_) => Vec::new(),
+        };
+        return print_routed(matched);
     }
 
     let paths: Vec<String> = if let Some(pos) = args.iter().position(|a| a == "--paths") {
@@ -678,7 +700,6 @@ fn cmd_route(args: &[String]) -> i32 {
 
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
 
-    let rules_path = framework_root().join("hooks").join("skill-rules.json");
     let matched = match fs::read_to_string(&rules_path) {
         Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
             Ok(v) => route::route_by_paths(&v, &path_refs),
@@ -690,6 +711,11 @@ fn cmd_route(args: &[String]) -> i32 {
         Err(_) => Vec::new(),
     };
 
+    print_routed(matched)
+}
+
+/// Print path-routed skills with the same grammar as `activate`, then return exit 0.
+fn print_routed(matched: Vec<(String, String)>) -> i32 {
     println!("Topology: evaluate your skills before acting.");
     if matched.is_empty() {
         println!("No path-routed skills matched. Still run `getting-started` to pick the gate.");
