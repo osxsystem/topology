@@ -548,6 +548,7 @@ fn build_claude_hooks(framework_root: &Path, portable: bool) -> Result<serde_jso
     };
     let skill_activation = cmd("skill-activation.sh");
     let security_scan = cmd("security-scan.sh");
+    let post_tool = cmd("post-tool-routing.sh");
     Ok(serde_json::json!({
         "UserPromptSubmit": [
             { "hooks": [ { "type": "command", "command": skill_activation, "timeout": 30 } ] }
@@ -556,6 +557,12 @@ fn build_claude_hooks(framework_root: &Path, portable: bool) -> Result<serde_jso
             {
                 "matcher": "Bash|Write|Edit|MultiEdit",
                 "hooks": [ { "type": "command", "command": security_scan, "timeout": 30 } ]
+            }
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "Write|Edit|MultiEdit",
+                "hooks": [ { "type": "command", "command": post_tool, "timeout": 30 } ]
             }
         ]
     }))
@@ -1156,13 +1163,24 @@ mod tests {
         // build_claude_hooks returns the hooks JSON; merge_claude_settings embeds them.
         let root = fixture("wires_gov");
         let hooks = build_claude_hooks(&root, false).unwrap();
-        let merged = merge_claude_settings(None, hooks, Some("/fw/bin/gatekeeper")).unwrap();
+        let merged =
+            merge_claude_settings(None, hooks.clone(), Some("/fw/bin/gatekeeper")).unwrap();
         let s = serde_json::to_string_pretty(&merged).unwrap();
         assert!(s.contains("UserPromptSubmit"));
         assert!(s.contains("PreToolUse"));
         assert!(s.contains("security-scan.sh"));
         assert!(s.contains("skill-activation.sh"));
         assert!(s.contains("Bash|Write|Edit|MultiEdit"));
+        // PostToolUse path-routing hook is wired (matcher + command).
+        assert!(s.contains("PostToolUse"));
+        assert!(s.contains("Write|Edit|MultiEdit"));
+        assert_eq!(
+            hooks["PostToolUse"][0]["hooks"][0]["command"],
+            root.join("hooks/post-tool-routing.sh")
+                .display()
+                .to_string()
+        );
+        assert_eq!(hooks["PostToolUse"][0]["matcher"], "Write|Edit|MultiEdit");
         // Framework root is referenced in hook paths.
         assert!(s.contains(root.to_str().unwrap()));
         assert!(s.contains("GATEKEEPER_BIN"));
@@ -1173,11 +1191,17 @@ mod tests {
     fn claude_wires_both_hooks_in_framework() {
         let root = fixture("wires_inframe");
         let hooks = build_claude_hooks(&root, true).unwrap();
-        let merged = merge_claude_settings(None, hooks, None).unwrap();
+        let merged = merge_claude_settings(None, hooks.clone(), None).unwrap();
         let s = serde_json::to_string_pretty(&merged).unwrap();
         assert!(s.contains("${CLAUDE_PROJECT_DIR}/hooks/"));
         assert!(!s.contains(root.to_str().unwrap()));
         assert!(!s.contains("GATEKEEPER_BIN"));
+        // PostToolUse path-routing hook is wired (portable command + matcher).
+        assert_eq!(
+            hooks["PostToolUse"][0]["hooks"][0]["command"],
+            "${CLAUDE_PROJECT_DIR}/hooks/post-tool-routing.sh"
+        );
+        assert_eq!(hooks["PostToolUse"][0]["matcher"], "Write|Edit|MultiEdit");
         let _ = fs::remove_dir_all(&root);
     }
 
