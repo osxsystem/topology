@@ -200,10 +200,38 @@ the original false-positive at the root (`grep "tee" rules.toml` → verb is `gr
 argument → allowed). Path-normalization closes the F-001 multi-slash class.
 
 ### Residual (Approach 3)
-Smaller and principled: only **runtime-resolved** writes evade — variable/command-substitution-built
-paths (`d=security/rules.toml; cp x $d`), `eval`, and interpreter writes (`python -c "open(...)"`).
-These cannot be resolved by static lexing and remain the documented floor residual (mistakes, not a
-determined evader — matching the contract's threat boundary).
+Only **runtime-resolved** writes evade static lexing and remain the documented floor residual (mistakes,
+not a determined evader — matching the contract's threat boundary):
+- variable- or command-substitution-built paths (`d=security/rules.toml; cp x $d`, `cp x $(…)`, backticks);
+- shell-expansion forms whose result is known only at runtime — brace `{a,b}`, glob `?`/`*`, tilde `~`;
+- `eval`, and interpreter writes (`python -c "open(...)"`, `perl -e`, `ed`/`ex`).
+
+Everything **statically visible** is detected: wrappers, control-flow keywords, `case`/`!`, all redirect
+forms (`>`, `>>`, `>|`, `>&`, `2>`, `&>`), process substitution (including a write nested inside `>(…)`),
+flag-carried write targets (`cp -tDIR`, `--target-directory=DIR`), `.`/`..`/`//` path forms, and
+path-qualified verbs (`/bin/cp`, `./rm`, basenamed before matching). Input redirects (`<`) are reads,
+not writes.
+
+**Deliberate conservative over-block:** a mutating verb with a protected path in *any* operand position
+blocks — exactly right for `mv`/`rm`/`sed -i`/`chmod` (which mutate the path), and a fail-closed
+over-block for `cp <protected> dest` (which only reads it). Distinguishing read-source from
+write-destination needs per-verb argument semantics (cp's last arg, dd's `of=`, tee's args, …) — added
+floor complexity and bug surface not worth one uncommon false-positive. To *read* a protected file, use
+a non-mutating verb (`cat`/`grep`/`less`), which is allowed.
+
+**Threat-model boundary (the line we stop at).** The floor targets *mistakes, not a determined evader*
+(CONTRACT). Every **mistake-class** write above is detected — a normal command that happens to write a
+protected path (`/bin/cp … rules.toml`, `if true; then cp … fi`, `cp -tDIR`, `sed -ri … rules.toml`).
+**Deliberate adversarial shell obfuscation** (e.g. burying a write behind a quoted `)` in a process
+substitution, or any of the runtime forms above) is explicitly **out of scope**: an agent with a shell
+can disable the floor outright (`git commit --no-verify`, rewrite the hook), so chasing every obfuscation
+is not the floor's job and would only add bug surface. Shipping here is a deliberate decision, not an
+omission.
+
+Seven fresh-context reviews drove this out — the audit trail of how the tokenizer was hardened:
+(1) wrapper/keyword/`>|`; (2) keyword-led writes; (3) process-sub + interior `/./`+`/../` + `sed --in-place`;
+(4) flag-carried paths + input-redirect false-positive; (5) `sed` bundled in-place flags; (6) path-qualified
+verbs + the conservative-over-block decision above; (7) a quoted `)` desyncing the process-sub paren scan.
 
 ### Acceptance criteria (Approach 3 — supersede AC1–AC3 above; the prior tests remain and must stay green)
 - **A3-1 (reads allowed):** the AC1 cases plus quoted-verb reads (`grep "rm -rf x" security/rules.toml`,

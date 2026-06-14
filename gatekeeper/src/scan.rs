@@ -70,6 +70,10 @@ struct RawRule {
     min_length: Option<usize>,
     #[serde(default)]
     threshold_bits_per_char: Option<f64>,
+    // path-mutation rules carry a list of protected path substrings instead of a regex `pattern`;
+    // detection is the quote-aware tokenizer in `detect_path_mutation`, not a RegexSet.
+    #[serde(default)]
+    protected: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -78,6 +82,8 @@ enum Kind {
     Content,
     Command,
     Entropy,
+    #[serde(rename = "path-mutation")]
+    PathMutation,
 }
 
 impl Kind {
@@ -86,6 +92,7 @@ impl Kind {
             Kind::Content => "content",
             Kind::Command => "command",
             Kind::Entropy => "entropy",
+            Kind::PathMutation => "path-mutation",
         }
     }
 }
@@ -187,6 +194,17 @@ struct CompiledEntropyRule {
     threshold: f64,
 }
 
+/// A path-mutation rule: blocks a command iff the quote-aware tokenizer (`detect_path_mutation`)
+/// finds a mutating verb whose operand — or a redirect target — path-normalizes to a string
+/// containing one of `protected`. Detection lives in Rust; only the token LIST is data.
+#[derive(Debug)]
+struct CompiledPathMutationRule {
+    id: String,
+    severity: Severity,
+    description: String,
+    protected: Vec<String>,
+}
+
 #[derive(Debug)]
 enum AllowMatch {
     Exact(Vec<u8>),
@@ -208,6 +226,9 @@ pub struct Rules {
     command_set: RegexSet,
     /// Entropy rules — a separate lane from the regex `RegexSet`, applied alongside `scan_with`.
     entropy: Vec<CompiledEntropyRule>,
+    /// Path-mutation rules — a tokenizer lane (not regex), applied to command strings only,
+    /// alongside the command `RegexSet`.
+    path_mutation: Vec<CompiledPathMutationRule>,
     /// Path globs (from `[scan] exclude_paths`) whose files skip the entropy lane only.
     exclude_paths: Vec<String>,
     allows: Vec<CompiledAllow>,
@@ -254,6 +275,7 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
     let mut content = Vec::new();
     let mut command = Vec::new();
     let mut entropy = Vec::new();
+    let mut path_mutation = Vec::new();
     for r in &parsed.rule {
         match r.kind {
             Kind::Content | Kind::Command => {
@@ -275,8 +297,26 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
                 match r.kind {
                     Kind::Content => content.push(cr),
                     Kind::Command => command.push(cr),
-                    Kind::Entropy => unreachable!(),
+                    _ => unreachable!(),
                 }
+            }
+            Kind::PathMutation => {
+                let protected = r
+                    .protected
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "rule '{}': path-mutation rule requires a non-empty 'protected'",
+                            r.id
+                        )
+                    })?;
+                path_mutation.push(CompiledPathMutationRule {
+                    id: r.id.clone(),
+                    severity: r.severity,
+                    description: r.description.clone(),
+                    protected: protected.to_vec(),
+                });
             }
             Kind::Entropy => {
                 let charset_str = r
@@ -334,6 +374,7 @@ fn parse_rules(raw: &str) -> Result<Rules, String> {
         command,
         command_set,
         entropy,
+        path_mutation,
         exclude_paths: parsed.scan.exclude_paths,
         allows,
         allow_blobs: parsed.allow_blob,
@@ -491,6 +532,621 @@ fn scan_entropy(
         }
     }
     findings
+}
+
+// ---------- path-mutation tokenizer (replaces the tamper-* regexes; see scan-tamper-false-positive) ----------
+
+/// Mutating command verbs: a write to a protected operand by one of these blocks. `sed` is handled
+/// separately (only with an in-place flag), so it is not in this set.
+const MUTATING_VERBS: &[&str] = &[
+    "tee", "cp", "mv", "ln", "chmod", "rm", "dd", "install", "truncate",
+];
+
+/// Command wrappers skipped as prefix tokens so the verb after them is still classified. They run
+/// another command, so the protected-write check applies to that command's verb, not the wrapper.
+const WRAPPER_CMDS: &[&str] = &[
+    "sudo", "doas", "env", "command", "builtin", "exec", "nohup", "setsid", "timeout", "nice",
+    "ionice", "stdbuf", "xargs",
+];
+
+/// Shell keywords / control-flow words skipped as prefix tokens: the real verb of a simple-command
+/// follows them (`then cp …`, `do rm …`, `! tee …`).
+const SHELL_KEYWORDS: &[&str] = &[
+    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac",
+    "select", "in", "function", "time", "coproc", "!",
+];
+
+/// One lexed shell word: the concatenated literal content of its adjacent segments, plus whether
+/// ANY segment was inside single/double quotes. A quoted word can never be a command verb (a quoted
+/// `"tee"` is an argument). Backslash-escaping a byte (`\tee`) does NOT set `quoted`.
+#[derive(Debug, Clone)]
+struct LexWord {
+    text: String,
+    quoted: bool,
+}
+
+/// A lexed token: either a word, an unquoted control operator that separates simple-commands, or a
+/// redirect whose target word follows it.
+#[derive(Debug, Clone)]
+enum LexTok {
+    Word(LexWord),
+    /// Unquoted separator (`;` `&` `&&` `||` `|` newline `(` `)` `{` `}` backtick `$(`).
+    Sep,
+    /// A redirect operator (`>`, `>>`, `>|`, `>&`, `2>`, `&>`, …): its target is the next word.
+    Redir,
+    /// Process substitution `>(…)` / `<(…)`: an argument (a `/dev/fd` path), not a redirect target
+    /// and not a separator. The inner command is scanned recursively for nested writes.
+    ProcSub(String),
+    /// An input redirect (`<`, `<<`, `<<<`, `<&`): the following word is a READ source, never a write.
+    InRedir,
+}
+
+/// Consume a balanced parenthesised group starting at `open` (where `cmd[open] == b'('`). Returns the
+/// inner bytes (excluding the outer parens) and the index just past the matching `)`.
+fn consume_balanced_parens(cmd: &[u8], open: usize) -> (String, usize) {
+    let n = cmd.len();
+    let mut depth = 0i32;
+    let mut i = open;
+    let mut inner = String::new();
+    while i < n {
+        let b = cmd[i];
+        match b {
+            // Quoted segments are kept in `inner` but their `(`/`)` do not move `depth` — a quoted
+            // `")"` must not close the process-sub early (it would desync the paren scan).
+            b'\'' | b'"' => {
+                if depth > 0 {
+                    inner.push(b as char);
+                }
+                i += 1;
+                while i < n && cmd[i] != b {
+                    if depth > 0 {
+                        inner.push(cmd[i] as char);
+                    }
+                    i += 1;
+                }
+                if i < n {
+                    if depth > 0 {
+                        inner.push(b as char);
+                    }
+                    i += 1; // closing quote
+                }
+            }
+            b'\\' => {
+                if depth > 0 {
+                    inner.push('\\');
+                }
+                i += 1;
+                if i < n {
+                    if depth > 0 {
+                        inner.push(cmd[i] as char);
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => {
+                if depth > 0 {
+                    inner.push('(');
+                }
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    break;
+                }
+                inner.push(')');
+            }
+            _ => {
+                if depth > 0 {
+                    inner.push(b as char);
+                }
+                i += 1;
+            }
+        }
+    }
+    (inner, i)
+}
+
+/// Lex a command byte string into tokens with quote/escape awareness.
+/// - single-quote `'…'`: literal, no escapes
+/// - double-quote `"…"`: literal word content
+/// - backslash `\`: outside single-quotes, escapes the next byte (kept literally, word stays unquoted)
+/// - adjacent segments concatenate into one word (`a"b"c` → `abc`)
+///
+/// Redirect operators and the separators above are recognised only when UNQUOTED.
+fn lex_command(cmd: &[u8]) -> Vec<LexTok> {
+    let mut toks: Vec<LexTok> = Vec::new();
+    let mut i = 0;
+    let n = cmd.len();
+    // Accumulator for the current word and whether it has started / was quoted.
+    let mut cur = String::new();
+    let mut cur_started = false;
+    let mut cur_quoted = false;
+    macro_rules! flush_word {
+        () => {
+            if cur_started {
+                toks.push(LexTok::Word(LexWord {
+                    text: std::mem::take(&mut cur),
+                    quoted: cur_quoted,
+                }));
+                cur_started = false;
+                cur_quoted = false;
+            }
+        };
+    }
+    while i < n {
+        let b = cmd[i];
+        match b {
+            b'\'' => {
+                // Single-quoted segment: literal until the next `'` (no escapes inside).
+                cur_started = true;
+                cur_quoted = true;
+                i += 1;
+                while i < n && cmd[i] != b'\'' {
+                    cur.push(cmd[i] as char);
+                    i += 1;
+                }
+                i += 1; // consume closing quote (tolerate unterminated: i == n)
+            }
+            b'"' => {
+                // Double-quoted segment: literal word content (we do not expand `$`/backslash here;
+                // a `$var` inside stays as the literal `$var`, which never path-normalizes to a
+                // concrete protected path — the documented variable-built-path residual).
+                cur_started = true;
+                cur_quoted = true;
+                i += 1;
+                while i < n && cmd[i] != b'"' {
+                    cur.push(cmd[i] as char);
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'\\' => {
+                // Escape the next byte: keep it literally, word stays unquoted.
+                cur_started = true;
+                if i + 1 < n {
+                    cur.push(cmd[i + 1] as char);
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            b' ' | b'\t' => {
+                flush_word!();
+                i += 1;
+            }
+            b'\n' | b';' | b'(' | b')' | b'{' | b'}' | b'`' => {
+                flush_word!();
+                toks.push(LexTok::Sep);
+                i += 1;
+            }
+            b'$' if i + 1 < n && cmd[i + 1] == b'(' => {
+                // `$(` opens a command substitution — a fresh simple-command context.
+                flush_word!();
+                toks.push(LexTok::Sep);
+                i += 2;
+            }
+            b'&' => {
+                flush_word!();
+                // `&>` / `&>>` are redirects; `&` and `&&` are separators.
+                if i + 1 < n && cmd[i + 1] == b'>' {
+                    toks.push(LexTok::Redir);
+                    i += 2;
+                    if i < n && cmd[i] == b'>' {
+                        i += 1;
+                    }
+                } else {
+                    toks.push(LexTok::Sep);
+                    i += 1;
+                    if i < n && cmd[i] == b'&' {
+                        i += 1; // `&&`
+                    }
+                }
+            }
+            b'|' => {
+                flush_word!();
+                toks.push(LexTok::Sep);
+                i += 1;
+                if i < n && cmd[i] == b'|' {
+                    i += 1; // `||`
+                }
+            }
+            b'>' | b'<' if i + 1 < n && cmd[i + 1] == b'(' => {
+                // Process substitution `>(…)` / `<(…)`: an argument (a `/dev/fd` path), not a redirect
+                // to a file and not a separator. Consume the balanced group as one throwaway token;
+                // its inner command is scanned recursively (`tee >(cp x rules.toml)`).
+                flush_word!();
+                let (inner, next) = consume_balanced_parens(cmd, i + 1);
+                toks.push(LexTok::ProcSub(inner));
+                i = next;
+            }
+            b'>' => {
+                flush_word!();
+                toks.push(LexTok::Redir);
+                i += 1;
+                // Consume the redirect operator's trailing form: `>>`, `>|`, `>&`.
+                if i < n && matches!(cmd[i], b'>' | b'|' | b'&') {
+                    i += 1;
+                }
+            }
+            b'<' => {
+                // Input redirect (`<`, `<<`, `<<<`, `<&`): its target is a READ source, never a write.
+                // Emit InRedir so the detector skips the following source word (not a written operand).
+                flush_word!();
+                toks.push(LexTok::InRedir);
+                i += 1;
+                if i < n && matches!(cmd[i], b'<' | b'&') {
+                    i += 1;
+                }
+            }
+            // A digit/`&` immediately followed by `>` is an fd-prefixed redirect (`2>`, `2>>`).
+            b'0'..=b'9' if !cur_started && i + 1 < n && cmd[i + 1] == b'>' => {
+                toks.push(LexTok::Redir);
+                i += 2;
+                if i < n && matches!(cmd[i], b'>' | b'|' | b'&') {
+                    i += 1;
+                }
+            }
+            _ => {
+                cur_started = true;
+                cur.push(b as char);
+                i += 1;
+            }
+        }
+    }
+    // Final flush (inlined, consuming the accumulator — no reset needed at end of input; the macro's
+    // in-loop resets stay live because this check still reads `cur_started`).
+    if cur_started {
+        toks.push(LexTok::Word(LexWord {
+            text: cur,
+            quoted: cur_quoted,
+        }));
+    }
+    toks
+}
+
+/// Path-normalize a word for protected-substring matching: collapse repeated `/`, drop `.`
+/// components, and resolve `..` lexically (`security/foo/../rules.toml` → `security/rules.toml`,
+/// `security/./rules.toml` → `security/rules.toml`). Leading and trailing `/` are preserved so a
+/// directory-prefix token like `docs/memory/` still matches. (Quotes are removed by the lexer.)
+fn normalize_mutation_path(word: &str) -> String {
+    let leading_slash = word.starts_with('/');
+    let trailing_slash = word.len() > 1 && word.ends_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for comp in word.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    let mut joined = out.join("/");
+    if leading_slash {
+        joined.insert(0, '/');
+    }
+    if trailing_slash && !joined.ends_with('/') {
+        joined.push('/');
+    }
+    joined
+}
+
+/// True iff `word` (path-normalized) contains one of the rule's protected substrings.
+fn writes_protected(word: &str, protected: &[String]) -> bool {
+    let norm = normalize_mutation_path(word);
+    protected.iter().any(|p| norm.contains(p.as_str()))
+}
+
+/// True iff `word` is an unquoted `VAR=value` assignment prefix (`^[A-Za-z_][A-Za-z0-9_]*=`).
+fn is_assignment_prefix(word: &LexWord) -> bool {
+    if word.quoted {
+        return false;
+    }
+    let bytes = word.text.as_bytes();
+    let Some(eq) = word.text.find('=') else {
+        return false;
+    };
+    if eq == 0 {
+        return false;
+    }
+    if !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
+        return false;
+    }
+    bytes[1..eq]
+        .iter()
+        .all(|&c| c.is_ascii_alphanumeric() || c == b'_')
+}
+
+/// Tokenized detection: block a command iff a simple-command's verb is mutating AND one of its
+/// operands (or any redirect target in that simple-command) path-normalizes to a protected path.
+/// One `Finding` per rule whose `protected` list matched.
+fn detect_path_mutation(cmd: &[u8], rules: &[CompiledPathMutationRule]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if rules.is_empty() {
+        return findings;
+    }
+    let toks = lex_command(cmd);
+
+    // Walk simple-commands (token runs between `Sep`s). For each, collect the verb word, its
+    // operand words (flags excluded), whether the verb is `sed`-in-place, and all redirect targets.
+    let mut idx = 0;
+    while idx < toks.len() {
+        // Gather one simple-command's tokens up to the next separator.
+        let mut verb: Option<&str> = None;
+        let mut sed_in_place = false;
+        let mut operands: Vec<&str> = Vec::new();
+        let mut redirect_targets: Vec<&str> = Vec::new();
+        let mut verb_seen = false;
+
+        while idx < toks.len() {
+            match &toks[idx] {
+                LexTok::Sep => {
+                    idx += 1;
+                    break;
+                }
+                LexTok::Redir => {
+                    // The next word (if any) is this redirect's target.
+                    idx += 1;
+                    if let Some(LexTok::Word(w)) = toks.get(idx) {
+                        redirect_targets.push(w.text.as_str());
+                        idx += 1;
+                    }
+                }
+                LexTok::ProcSub(inner) => {
+                    // A write nested inside `>(…)` is still a write — scan it recursively. The
+                    // process-sub is an argument, so it neither ends the simple-command nor counts
+                    // as an operand of the outer verb.
+                    findings.extend(detect_path_mutation(inner.as_bytes(), rules));
+                    idx += 1;
+                }
+                LexTok::InRedir => {
+                    // The following word is a READ source (`tee out < rules.toml` reads rules.toml),
+                    // not a written operand — skip it so it is not mistaken for a write.
+                    idx += 1;
+                    if let Some(LexTok::Word(_)) = toks.get(idx) {
+                        idx += 1;
+                    }
+                }
+                LexTok::Word(w) => {
+                    if !verb_seen {
+                        // Prefix-skipping: keywords, wrappers, VAR=val assignments, option flags.
+                        let is_keyword = !w.quoted && SHELL_KEYWORDS.contains(&w.text.as_str());
+                        let is_wrapper = !w.quoted && WRAPPER_CMDS.contains(&w.text.as_str());
+                        let is_flag = !w.quoted && w.text.starts_with('-');
+                        if is_keyword || is_wrapper || is_assignment_prefix(w) || is_flag {
+                            idx += 1;
+                            continue;
+                        }
+                        // First non-prefix word is the VERB — even if quoted: the shell removes the
+                        // quotes and runs it (`"tee" f`, `'cp' a b` are real commands). Quote-awareness
+                        // only matters for telling the verb from later argument words, which the
+                        // first-word-wins position already handles.
+                        verb_seen = true;
+                        // Use the command basename so a path-qualified verb (`/bin/cp`, `./rm`,
+                        // `../bin/tee`) is still recognized — the shell runs the trailing program name.
+                        verb = Some(w.text.rsplit('/').next().unwrap_or(w.text.as_str()));
+                        idx += 1;
+                    } else {
+                        // After the verb: detect sed's in-place flag. Flags are NOT dropped — a flag
+                        // can carry a write target (`cp --target-directory=DIR`, `cp -tDIR`), so every
+                        // post-verb word is a candidate path for the protected check.
+                        if !w.quoted
+                            && w.text.starts_with('-')
+                            && verb == Some("sed")
+                            && is_sed_in_place_flag(&w.text)
+                        {
+                            sed_in_place = true;
+                        }
+                        operands.push(w.text.as_str());
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Is this simple-command's verb a write?
+        let mutating = match verb {
+            Some(v) => MUTATING_VERBS.contains(&v) || (v == "sed" && sed_in_place),
+            None => false,
+        };
+
+        for rule in rules {
+            // A redirect into a protected target is a write regardless of the verb (`:> rules.toml`,
+            // `echo x 2> rules.toml`). A mutating verb writing a protected operand is a write too.
+            let redirect_hit = redirect_targets
+                .iter()
+                .any(|t| writes_protected(t, &rule.protected));
+            let operand_hit = mutating
+                && operands
+                    .iter()
+                    .any(|o| writes_protected(o, &rule.protected));
+            if redirect_hit || operand_hit {
+                findings.push(Finding {
+                    rule_id: rule.id.clone(),
+                    severity: rule.severity,
+                    description: rule.description.clone(),
+                    redacted: redact(cmd),
+                    location: "offset 0".to_string(),
+                });
+            }
+        }
+    }
+    findings
+}
+
+/// True iff `flag` is a `sed` in-place flag: `-i`, `-i.bak`, `-ie`, etc. (a `-` then an `i`, with
+/// any suffix, no other letters before the `i`).
+fn is_sed_in_place_flag(flag: &str) -> bool {
+    if flag == "--in-place" || flag.starts_with("--in-place=") {
+        return true;
+    }
+    // GNU sed parses short options getopt-style, so `-i` enables in-place anywhere in a leading
+    // `-<letters>` bundle (`-i`, `-ri`, `-ni`, `-Ei`, `-i.bak`). Scan the option letters until a
+    // non-letter (a `.bak`-style suffix or `=`) ends the bundle.
+    let bytes = flag.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'-' || bytes[1] == b'-' {
+        return false;
+    }
+    for &b in &bytes[1..] {
+        if b == b'i' {
+            return true;
+        }
+        if !b.is_ascii_alphabetic() {
+            break;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod path_mutation_tests {
+    use super::*;
+
+    fn rule(protected: &[&str]) -> CompiledPathMutationRule {
+        CompiledPathMutationRule {
+            id: "t".into(),
+            severity: Severity::Block,
+            description: "t".into(),
+            protected: protected.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    fn blocks(cmd: &str, protected: &[&str]) -> bool {
+        !detect_path_mutation(cmd.as_bytes(), &[rule(protected)]).is_empty()
+    }
+    const P: &[&str] = &["security/rules.toml"];
+
+    #[test]
+    fn quoted_verb_in_command_position_blocks() {
+        assert!(blocks("\"tee\" security/rules.toml", P));
+        assert!(blocks("'cp' /tmp/x security/rules.toml", P));
+    }
+    #[test]
+    fn quoted_verb_as_argument_does_not_block() {
+        // grep's pattern is an argument, not the command verb.
+        assert!(!blocks("grep \"tee\" security/rules.toml", P));
+        assert!(!blocks("grep -n tee security/rules.toml", P));
+    }
+    #[test]
+    fn keyword_and_wrapper_prefixes_are_skipped() {
+        assert!(blocks("if true; then cp /tmp/x security/rules.toml; fi", P));
+        assert!(blocks("for f in a; do rm security/rules.toml; done", P));
+        assert!(blocks(
+            "case $x in y) cp /tmp/z security/rules.toml ;; esac",
+            P
+        ));
+        assert!(blocks("! tee security/rules.toml", P));
+        assert!(blocks("sudo -- tee security/rules.toml", P));
+        assert!(blocks("env FOO=1 nohup cp a security/rules.toml", P));
+    }
+    #[test]
+    fn redirect_target_blocks_regardless_of_verb() {
+        assert!(blocks("echo x > security/rules.toml", P));
+        assert!(blocks("echo x >| security/rules.toml", P));
+        assert!(blocks("echo x 2> security/rules.toml", P));
+        assert!(!blocks("echo x 2>/dev/null", P));
+        assert!(!blocks("grep x security/rules.toml 2>/dev/null", P)); // read with stderr redirect
+    }
+    #[test]
+    fn path_normalization_collapses_slashes_and_dot() {
+        assert!(blocks("cp a security//rules.toml", P));
+        assert!(blocks("cp a ./security/rules.toml", P));
+        assert_eq!(
+            normalize_mutation_path("security//rules.toml"),
+            "security/rules.toml"
+        );
+        assert_eq!(
+            normalize_mutation_path("./security/rules.toml"),
+            "security/rules.toml"
+        );
+        assert_eq!(
+            normalize_mutation_path("security/./rules.toml"),
+            "security/rules.toml"
+        );
+        assert_eq!(
+            normalize_mutation_path("security/foo/../rules.toml"),
+            "security/rules.toml"
+        );
+        assert_eq!(normalize_mutation_path("docs/memory/"), "docs/memory/");
+        assert!(blocks("cp a security/./rules.toml", P));
+        assert!(blocks("cp a security/foo/../rules.toml", P));
+    }
+    #[test]
+    fn process_substitution_handled() {
+        // The `>(…)` argument must not orphan the real operand, and a write nested inside it counts.
+        assert!(blocks("tee >(cat) security/rules.toml", P));
+        assert!(blocks("echo x >(cp /tmp/y security/rules.toml)", P));
+        assert!(!blocks("tee >(cat) /tmp/out", P));
+        // A quoted `)` inside the process-sub must not close it early (quote-aware paren scan).
+        assert!(blocks(
+            "echo x >(echo \")\"; cp /tmp/y security/rules.toml)",
+            P
+        ));
+    }
+    #[test]
+    fn flag_carrying_path_is_checked() {
+        // A flag may carry a write target; it must not be dropped before the protected check.
+        assert!(blocks(
+            "cp --target-directory=gatekeeper/src/ x",
+            &["gatekeeper/src/"]
+        ));
+        assert!(blocks("cp -tgatekeeper/src/ x", &["gatekeeper/src/"]));
+        assert!(blocks(
+            "install --target-directory=docs/memory/ x",
+            &["docs/memory/"]
+        ));
+    }
+    #[test]
+    fn input_redirect_source_is_a_read() {
+        assert!(!blocks("tee /tmp/out < security/rules.toml", P));
+        assert!(!blocks("dd < security/rules.toml of=/tmp/x", P));
+        // …but a real OUTPUT write to the same path still blocks.
+        assert!(blocks("tee security/rules.toml < /tmp/x", P));
+    }
+    #[test]
+    fn path_qualified_verb_is_basenamed() {
+        assert!(blocks("/bin/cp /tmp/x security/rules.toml", P));
+        assert!(blocks("./rm security/rules.toml", P));
+        assert!(blocks("/usr/bin/tee security/rules.toml", P));
+        assert!(blocks("../bin/cp /tmp/x security/rules.toml", P));
+    }
+    #[test]
+    fn mutating_verb_with_protected_operand_blocks_conservatively() {
+        // Documented conservative over-block: a mutating verb touching a protected path in ANY
+        // operand position blocks — correct for `mv`/`rm`/`sed -i` (which mutate the path), a
+        // fail-closed over-block for `cp <protected> dest` (which only reads it). To READ a protected
+        // file, use a non-mutating verb (`cat`/`grep`/`less`), which is allowed.
+        assert!(blocks("cp security/rules.toml /tmp/backup", P)); // over-block (read source) — accepted
+        assert!(blocks("mv security/rules.toml /tmp/x", P)); // correct: mv removes the source
+    }
+    #[test]
+    fn variable_built_path_is_residual_allow() {
+        // Documented residual: a runtime-resolved path can't be matched statically.
+        assert!(!blocks("d=security/rules.toml; cp /tmp/x $d", P));
+    }
+    #[test]
+    fn assignment_prefix_detection() {
+        let w = |t: &str, q: bool| LexWord {
+            text: t.into(),
+            quoted: q,
+        };
+        assert!(is_assignment_prefix(&w("FOO=1", false)));
+        assert!(!is_assignment_prefix(&w("FOO=1", true)));
+        assert!(!is_assignment_prefix(&w("=x", false)));
+        assert!(!is_assignment_prefix(&w("cp", false)));
+    }
+    #[test]
+    fn sed_in_place_only_when_in_place_flag() {
+        assert!(blocks("sed -i s/a/b/ security/rules.toml", P));
+        assert!(blocks("sed --in-place s/a/b/ security/rules.toml", P));
+        assert!(blocks("sed -ri s/a/b/ security/rules.toml", P)); // bundled, i not first
+        assert!(blocks("sed -Ei s/a/b/ security/rules.toml", P));
+        assert!(blocks("sed -i.bak s/a/b/ security/rules.toml", P)); // suffix form
+        assert!(!blocks("sed -n 5p security/rules.toml", P)); // -n is not in-place
+        assert!(!blocks("sed -E s/a/b/ security/rules.toml", P));
+    }
 }
 
 /// Dep-free path glob: `*` matches any run of characters (including none); a trailing-`/` glob is a
@@ -717,6 +1373,7 @@ fn scan_cmd_cmd(rules: &Rules) -> i32 {
         None,
     ));
     findings.extend(scan_entropy(&rules.entropy, &cmd, &rules.allows, None));
+    findings.extend(detect_path_mutation(&cmd, &rules.path_mutation));
     report(&findings)
 }
 
@@ -1348,6 +2005,7 @@ fn scan_hook(rules: &Rules, root: &Path, artifacts_root: &Path, target_base: &Pa
             ));
             // Bash is a command string with no path — entropy always runs (no exclude applies).
             f.extend(scan_entropy(&rules.entropy, &joined, &rules.allows, None));
+            f.extend(detect_path_mutation(&joined, &rules.path_mutation));
             emit_decision(&f)
         }
         "Write" => {

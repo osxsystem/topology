@@ -697,12 +697,263 @@ fn real_ruleset_blocks_bash_writes_into_memory_artifacts() {
         1,
         "cp into .claude/topology/memory/"
     );
+    // Review-found regressions (the same fix applies to the memory rule).
+    assert_eq!(
+        block("echo x >| docs/memory/h.handoff.md"),
+        1,
+        "force-clobber into docs/memory/"
+    );
+    assert_eq!(
+        block("command tee docs/memory/h.handoff.md < /tmp/x"),
+        1,
+        "command-prefixed tee into memory"
+    );
 
     assert_eq!(
         block("rm -rf node_modules"),
         0,
         "an unrelated mutation is fine"
     );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_ruleset_distinguishes_reads_from_writes_to_wiring() {
+    // Read-only inspection of the wiring must be allowed; only commands that actually WRITE a
+    // protected path block. Regression guard for the tamper-* false-positive fix
+    // (docs/specs/2026-06-14-scan-tamper-false-positive.md).
+    let root = scratch_root("real_tamper_rw");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let cmd = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+
+    // Allowed: a mutating verb word appearing as a grep PATTERN or argument, not a command.
+    assert_eq!(
+        cmd("grep -n \"tee\" security/rules.toml"),
+        0,
+        "verb as search string"
+    );
+    assert_eq!(
+        cmd("grep -rn install gatekeeper/src/main.rs"),
+        0,
+        "install as search arg"
+    );
+    // Allowed: a redirect whose TARGET is not a protected path, co-occurring with a protected token.
+    assert_eq!(
+        cmd("echo done > /tmp/out; grep -rn foo gatekeeper/src/main.rs"),
+        0,
+        "redirect to unprotected"
+    );
+    assert_eq!(
+        cmd("grep -rn \"fn scan\" gatekeeper/src/scan.rs 2>/dev/null"),
+        0,
+        "stderr to /dev/null"
+    );
+
+    // Blocked: a redirect whose TARGET is a protected path (including an fd redirect).
+    assert_eq!(
+        cmd("echo x 2> security/rules.toml"),
+        1,
+        "fd-redirect overwriting rules"
+    );
+    // Blocked: a command-position verb writing a protected path (piped / privileged).
+    assert_eq!(
+        cmd("cat x | tee gatekeeper/src/scan.rs"),
+        1,
+        "piped tee write"
+    );
+    assert_eq!(
+        cmd("sudo tee security/rules.toml < /tmp/x"),
+        1,
+        "privileged tee write"
+    );
+
+    // Review-found regressions: clobber redirects and wrapped/prefixed verbs are real writes.
+    assert_eq!(
+        cmd("echo x >| security/rules.toml"),
+        1,
+        "force-clobber redirect"
+    );
+    assert_eq!(
+        cmd("echo x | command tee security/rules.toml"),
+        1,
+        "command-prefixed tee"
+    );
+    assert_eq!(
+        cmd("\\tee security/rules.toml < /tmp/x"),
+        1,
+        "backslash-escaped tee"
+    );
+    assert_eq!(
+        cmd("env FOO=1 tee security/rules.toml < /tmp/x"),
+        1,
+        "var-assignment then tee"
+    );
+    assert_eq!(
+        cmd("nohup cp /tmp/x gatekeeper/src/scan.rs"),
+        1,
+        "nohup-wrapped cp"
+    );
+    assert_eq!(
+        cmd("sudo -- tee security/rules.toml < /tmp/x"),
+        1,
+        "sudo -- tee"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn real_ruleset_tokenizes_command_structure() {
+    // Approach 3 (tokenized detection): command-position is parsed, not pattern-matched, so shell
+    // control-flow / case-patterns / negation / clobber redirects do not let a real write slip, and a
+    // verb inside quotes is an argument, not a command. See
+    // docs/specs/2026-06-14-scan-tamper-false-positive.md (Approach 3).
+    let root = scratch_root("real_tokenize");
+    fs::copy(real_rules_toml(), root.join("security").join("rules.toml")).unwrap();
+    let cmd = |s: &str| run(&root, &["scan", "--cmd"], s.as_bytes()).0;
+
+    // Block: a real write reached via a shell form the regex anchor could not see.
+    assert_eq!(
+        cmd("if true; then cp /tmp/x security/rules.toml; fi"),
+        1,
+        "keyword-led write (then)"
+    );
+    assert_eq!(
+        cmd("for f in a; do rm gatekeeper/src/scan.rs; done"),
+        1,
+        "keyword-led write (do)"
+    );
+    assert_eq!(
+        cmd("case $x in y) cp /tmp/z security/rules.toml ;; esac"),
+        1,
+        "case-pattern-led write"
+    );
+    assert_eq!(
+        cmd("! tee security/rules.toml < /tmp/x"),
+        1,
+        "negation-led write"
+    );
+    assert_eq!(
+        cmd("cp /tmp/x security//rules.toml"),
+        1,
+        "path-normalized write (double slash)"
+    );
+
+    // A quoted verb in COMMAND position is still the command (the shell removes the quotes).
+    assert_eq!(
+        cmd("\"tee\" security/rules.toml < /tmp/x"),
+        1,
+        "double-quoted verb in command position"
+    );
+    assert_eq!(
+        cmd("'cp' /tmp/x gatekeeper/src/scan.rs"),
+        1,
+        "single-quoted verb in command position"
+    );
+
+    // Allow: a mutating verb that is a non-command argument (a grep pattern) is not a write.
+    assert_eq!(
+        cmd("grep \"rm -rf x\" security/rules.toml"),
+        0,
+        "quoted verb is a search string"
+    );
+    assert_eq!(
+        cmd("grep \"fn cp\" gatekeeper/src/scan.rs"),
+        0,
+        "quoted verb in source grep"
+    );
+    assert_eq!(
+        cmd("cat docs/memory/h.handoff.md"),
+        0,
+        "reading memory is fine"
+    );
+
+    // Review round 3: tokenizer seams — process substitution, interior /./ and /.., sed long flag.
+    assert_eq!(
+        cmd("tee >(cat) security/rules.toml"),
+        1,
+        "process substitution before the operand"
+    );
+    assert_eq!(
+        cmd("echo x >(cp /tmp/y security/rules.toml)"),
+        1,
+        "write nested inside process substitution"
+    );
+    assert_eq!(
+        cmd("cp /tmp/x security/./rules.toml"),
+        1,
+        "interior /./ normalized to the protected path"
+    );
+    assert_eq!(
+        cmd("cp /tmp/x security/foo/../rules.toml"),
+        1,
+        "interior /../ resolved to the protected path"
+    );
+    assert_eq!(
+        cmd("sed --in-place s/a/b/ security/rules.toml"),
+        1,
+        "sed long in-place flag"
+    );
+    assert_eq!(
+        cmd("sed -ri s/a/b/ security/rules.toml"),
+        1,
+        "sed bundled in-place flag (i not first)"
+    );
+    assert_eq!(
+        cmd("cat security/./rules.toml"),
+        0,
+        "reading a /./ path is not a write"
+    );
+
+    // Review round 4: a write target carried inside a flag, and input-redirect sources are reads.
+    assert_eq!(
+        cmd("cp --target-directory=gatekeeper/src/ x"),
+        1,
+        "flag-carrying write target (long form)"
+    );
+    assert_eq!(
+        cmd("cp -tgatekeeper/src/ x"),
+        1,
+        "flag-carrying write target (attached short)"
+    );
+    assert_eq!(
+        cmd("tee /tmp/out < security/rules.toml"),
+        0,
+        "input-redirect source is a read, not a write"
+    );
+    assert_eq!(
+        cmd("dd < security/rules.toml of=/tmp/x"),
+        0,
+        "input-redirect source is a read (dd reads, writes /tmp/x)"
+    );
+
+    // Review round 7: a quoted ) inside a process substitution must not desync the paren scan.
+    assert_eq!(
+        cmd("echo x >(echo \")\"; cp /tmp/src security/rules.toml)"),
+        1,
+        "quoted ) inside process substitution"
+    );
+
+    // Review round 6: a path-qualified verb runs the trailing program — basename it.
+    assert_eq!(
+        cmd("/bin/cp /tmp/x security/rules.toml"),
+        1,
+        "absolute-path verb"
+    );
+    assert_eq!(cmd("./rm .git/hooks/pre-commit"), 1, "relative-path verb");
+    assert_eq!(
+        cmd("/usr/bin/sed -i s/a/b/ security/rules.toml"),
+        1,
+        "path-qualified sed in-place"
+    );
+
+    // Documented residual (must remain ALLOWED — a variable-built path can't be resolved statically).
+    assert_eq!(
+        cmd("d=security/rules.toml; cp /tmp/x $d"),
+        0,
+        "residual: variable-built path"
+    );
+
     let _ = fs::remove_dir_all(&root);
 }
 

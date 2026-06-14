@@ -161,26 +161,40 @@ severity = "block"
 description = "bypassing the pre-commit safety floor (incl. bundled short flags like -nm)"
 pattern = '\bgit\b.*\bcommit\b.*(--no-verify|\s-[A-Za-z]*n[A-Za-z]*(\s|[;&|<>)]|$))'
 
+# kind = "path-mutation": detection is the quote-aware shell tokenizer in `detect_path_mutation`
+# (gatekeeper/src/scan.rs), not a regex. It lexes the command with quote/escape awareness, splits it
+# into simple-commands at unquoted separators, skips wrapper/keyword/assignment/flag prefix tokens to
+# find each verb, and blocks iff a mutating verb (tee/cp/mv/ln/chmod/rm/dd/install/truncate, or
+# sed -i) writes a `protected` operand — or any redirect target (`>`/`>>`/`>|`/`>&`/`2>`/`&>`) is a
+# protected path. A mutating-verb word that appears only quoted (e.g. `grep "tee" rules.toml`) is an
+# argument, never a verb. It RAISES — does not close — the residual: a runtime/variable-built path
+# (`d=…; cp x $d`), an `eval`, or an interpreter write (`python -c …`) still evades static tokenizing.
 [[rule]]
 id = "tamper-security-wiring"
-kind = "command"
+kind = "path-mutation"
 severity = "block"
 description = "a Bash command mutating the security hooks, rules, scanner, or settings wiring"
-pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(\.git/hooks/|hooks/(pre-commit|security-scan)\.sh|security/rules\.toml|gatekeeper/(src/|Cargo\.)|\.claude/settings)'
+protected = [
+  ".git/hooks/",
+  "hooks/pre-commit.sh",
+  "hooks/security-scan.sh",
+  "security/rules.toml",
+  "gatekeeper/src/",
+  "gatekeeper/Cargo.",
+  ".claude/settings",
+]
 
-# Heuristic: flags a shell command that WRITES into the memory handoff directories — a redirect
-# (`>`/`>>`) or a mutating verb (tee/cp/mv/ln/chmod/rm/dd/install/truncate/sed -i), mirroring
-# tamper-security-wiring. Covers both the framework-repo path (docs/memory/) and the governed-project
-# path (.claude/topology/memory/). The tool guard only sees Write/Edit/MultiEdit; this catches the
-# obvious shell vectors that bypass it. It RAISES — does not close — the residual: an
-# indirectly-built path (variable/heredoc) or an interpreter write (`python -c …`) still evades
-# this regex. Treat a finding as a prompt for review.
+# Same path-mutation tokenizer, scoped to the memory handoff directories — the framework-repo path
+# (docs/memory/) and the governed-project path (.claude/topology/memory/). The PreToolUse tool guard
+# only `ask`s on Write/Edit/MultiEdit; this catches the obvious shell write vectors that bypass it.
+# It RAISES — does not close — the residual: a runtime/variable-built path or an interpreter write
+# still evades static tokenizing. Treat a finding as a prompt for review.
 [[rule]]
 id = "tamper-memory-artifacts"
-kind = "command"
+kind = "path-mutation"
 severity = "block"
-description = "heuristic: a shell command writing into docs/memory/ or .claude/topology/memory/ (redirect/tee/cp/mv/rm/…) — bypasses the tool guard; raises, does not close, the residual (built paths and interpreter writes still evade it)"
-pattern = '(>>?|\btee\b|\bcp\b|\bmv\b|\bln\b|\bchmod\b|\brm\b|\bdd\b|\binstall\b|\btruncate\b|sed\s+-[A-Za-z]*i)[^\n]*(docs/memory/|\.claude/topology/memory/)'
+description = "heuristic: a shell command writing into docs/memory/ or .claude/topology/memory/ (tokenized: redirect/tee/cp/mv/rm/…) — bypasses the tool guard; raises, does not close, the residual (built paths and interpreter writes still evade it)"
+protected = ["docs/memory/", ".claude/topology/memory/"]
 
 # ---------- span-scoped allowlist (exempts the matched span, never the whole line) ----------
 [[allow]]
