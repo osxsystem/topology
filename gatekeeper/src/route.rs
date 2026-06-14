@@ -103,6 +103,7 @@ mod tests {
 
     #[test]
     fn path_glob_match_parity() {
+        // Wildcard prefix / exact / substring / non-match (basic cases).
         assert!(path_glob_match("hooks/x.sh", "hooks/*"));
         assert!(path_glob_match(
             "gatekeeper/src/scan.rs",
@@ -110,5 +111,18 @@ mod tests {
         ));
         assert!(path_glob_match("src/a/secret.txt", "*secret*"));
         assert!(!path_glob_match("README.md", "hooks/*"));
+
+        // Drift tripwire vs scan.rs:498-527 — the load-bearing edge cases (R3):
+        // trailing-`/` directory glob matches the dir itself and anything beneath, but not a
+        // sibling whose name merely starts with the prefix, nor a nested same-named dir.
+        assert!(path_glob_match("tests/fixtures/", "tests/fixtures/"));
+        assert!(path_glob_match("tests/fixtures/neg.txt", "tests/fixtures/"));
+        assert!(!path_glob_match("tests/fixtures-bak/x", "tests/fixtures/"));
+        assert!(!path_glob_match("pkg/tests/fixtures/x", "tests/fixtures/"));
+        // exact glob (no `*`) must match exactly — a longer string does not.
+        assert!(!path_glob_match("Cargo.tomlx", "Cargo.toml"));
+        // middle `*` spans path separators; first/last literals anchored.
+        assert!(path_glob_match("src/a/b.rs", "src/*b.rs"));
+        assert!(!path_glob_match("src/a/b.rsx", "src/*b.rs"));
     }
 }
