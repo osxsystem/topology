@@ -4,16 +4,50 @@ Earlier releases (≤ v0.4.0) predate this file; see the GitHub releases page fo
 
 ## Unreleased
 
-Phase 15 burn-in harness (ROADMAP Phase 15) — measurement only; flips nothing.
+_Nothing yet._
 
-- `scripts/burn-in-replay-tdd.sh`: replays the TDD red-green engine over the repo's own
-  historical merge pairs into a dedicated gitignored `docs/logs/burn-in-tdd.jsonl`
-  (truncated per run), then summarises via `scripts/shadow-stats.sh`. Produces the
-  `N/50 evals, <2% false-block` figure the warn→block flip is gated on (ADR-0017).
-- `scripts/burn-in-entropy-sweep.sh`: counts entropy `WARN` hits per 10k working-tree
-  lines (applying `exclude_paths` itself; skips >5 MiB files), the FP proxy for ADR-0018.
-- Neither script changes any default, edits any engine, or blocks; `just test-burn-in`
-  covers them with a stubbed `gatekeeper`.
+## v0.12.0 — 2026-06-14
+
+### Added
+
+- **Path-triggered routing.** `gatekeeper route --paths/--staged-paths` maps changed files to the
+  skills/gates they implicate (`pathTriggers.globs` in `skill-rules.json`), wired live as a PostToolUse
+  hook. A 56-prompt intent-labeled router eval harness reports recall 0.956 / precision 0.921 (≥ the
+  0.90 / 0.80 targets).
+- **`gatekeeper doctor` — approval-trailer collision probe.** Advisory `WARN:` when recent commits carry
+  an agent `Co-Authored-By` trailer that would collide with the design gate's `approval_provenance`
+  check under `[design] approval = "human-commit"` (a human approval commit otherwise read as agent
+  self-approval). Scope-gated to the resolved `human-commit` mode; never changes doctor's exit code.
+- **Phase 15 burn-in harness** (measurement only; flips nothing).
+  - `scripts/burn-in-replay-tdd.sh`: replays the TDD red-green engine over the repo's own historical
+    merge pairs into a gitignored `docs/logs/burn-in-tdd.jsonl`, summarised via `scripts/shadow-stats.sh`
+    — the `N/50 evals, <2% false-block` figure the warn→block flip is gated on (ADR-0017).
+  - `scripts/burn-in-entropy-sweep.sh`: entropy `WARN` hits per 10k working-tree lines, the FP proxy for
+    ADR-0018.
+  - Neither changes a default or blocks; `just test-burn-in` covers them with a stubbed `gatekeeper`.
+
+### Changed
+
+- **Security scanner — tokenized tamper detection.** The `tamper-security-wiring` /
+  `tamper-memory-artifacts` rules now use a quote-aware shell tokenizer (`kind = "path-mutation"`)
+  instead of regex. This fixes a false-positive that fail-closed-blocked benign reads (e.g.
+  `grep "tee" security/rules.toml`) and comprehensively handles the mistake-class write surface across
+  shell command positions; the deliberate-evasion tail remains the documented out-of-threat-model
+  residual.
+- **Replay command allowlist auto-includes the configured test command.** `effective_allowed_prefixes`
+  extends `[verify] allowed_command_prefixes` with the project's own `test_command` / `[tdd]
+  replay_test_command`, so a non-Rust stack's configured test command (e.g. `swift test`) is no longer
+  silently rejected → Indeterminate in replay mode. Add-only — grants nothing beyond the existing
+  allowlist knob, and the security scanner still vetoes dangerous commands independently.
+
+### Docs
+
+- **Portability-first experiment closed** (`docs/2026-06-14-portability-experiment-remeasure.md`). A
+  field report ("Topology not worth it" on a Swift app) was tested by shipping portability + bug-fix
+  slices, then re-measuring. Verdict (3 independent analysts): it holds for tiny/deadline work but not in
+  general (~35% methodology, ~65% portability — now fixed); the gates demonstrably caught defects a
+  lighter process missed. Recommendation: scale ceremony to blast radius (proportional, not advisory
+  gates).
 
 ## v0.11.0 — 2026-06-13
 
