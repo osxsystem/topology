@@ -1,0 +1,55 @@
+{"prompt": "I'm starting a brand new feature, where do I begin?", "expect": ["getting-started", "brainstorm-design"]}
+{"prompt": "What should I work on next?", "expect": ["getting-started"]}
+{"prompt": "Let's kick off the payments module work", "expect": ["getting-started"]}
+{"prompt": "Begin a new project here from scratch", "expect": ["getting-started"]}
+{"prompt": "Where do I start with this codebase?", "expect": ["getting-started"]}
+{"prompt": "Design an API for the notification service", "expect": ["brainstorm-design"]}
+{"prompt": "I want to build a new caching layer", "expect": ["brainstorm-design"]}
+{"prompt": "Should we add a rate limiter to the gateway?", "expect": ["brainstorm-design"]}
+{"prompt": "Here's an idea for restructuring the auth flow", "expect": ["brainstorm-design"]}
+{"prompt": "Create a feature for exporting reports to CSV", "expect": ["brainstorm-design", "getting-started"]}
+{"prompt": "Write a plan to migrate the database", "expect": ["write-plan"]}
+{"prompt": "Give me a breakdown of the work into tasks", "expect": ["write-plan"]}
+{"prompt": "Decompose this epic into steps", "expect": ["write-plan"]}
+{"prompt": "Break down the refactor into small tasks", "expect": ["write-plan", "tdd-loop"]}
+{"prompt": "What are the steps to ship this?", "expect": ["write-plan"]}
+{"prompt": "Write a test for the parser", "expect": ["tdd-loop"]}
+{"prompt": "Implement the login function", "expect": ["tdd-loop", "brainstorm-design"]}
+{"prompt": "Refactor this method to be pure", "expect": ["tdd-loop"]}
+{"prompt": "Fix the off-by-one in the pagination code", "expect": ["tdd-loop"]}
+{"prompt": "Add a helper function to normalize paths", "expect": ["tdd-loop", "brainstorm-design"]}
+{"prompt": "There's a bug where the cart total is wrong", "expect": ["systematic-debug"]}
+{"prompt": "The build is failing with a cryptic error", "expect": ["systematic-debug"]}
+{"prompt": "It crashes on startup and I don't know why", "expect": ["systematic-debug"]}
+{"prompt": "This endpoint doesn't work after the upgrade", "expect": ["systematic-debug"]}
+{"prompt": "I'm getting a stack trace from the worker", "expect": ["systematic-debug"]}
+{"prompt": "Is this feature done and ready to merge?", "expect": ["verify-before-done", "finish-branch"]}
+{"prompt": "Verify that the fix actually works", "expect": ["verify-before-done"]}
+{"prompt": "I think it's complete, can we confirm?", "expect": ["verify-before-done"]}
+{"prompt": "Is it working now?", "expect": ["verify-before-done"]}
+{"prompt": "Please review this branch before we merge", "expect": ["code-review", "finish-branch"]}
+{"prompt": "Can you audit the diff for problems?", "expect": ["code-review"]}
+{"prompt": "I'd like a critique of my implementation", "expect": ["code-review"]}
+{"prompt": "Do a code review of the new module", "expect": ["code-review"]}
+{"prompt": "There's an API key hard-coded in the config", "expect": ["security-scanning"]}
+{"prompt": "Scan the repo for secrets before committing", "expect": ["security-scanning"]}
+{"prompt": "Is this a dangerous command to run?", "expect": ["security-scanning"]}
+{"prompt": "Add a credential to the environment file", "expect": ["security-scanning"]}
+{"prompt": "Set up the pre-commit security checks", "expect": ["security-scanning"]}
+{"prompt": "Let's merge this and wrap up the branch", "expect": ["finish-branch"]}
+{"prompt": "Open a PR for the routing work", "expect": ["finish-branch"]}
+{"prompt": "Time to ship it and clean up", "expect": ["finish-branch"]}
+{"prompt": "Close out this pull request", "expect": ["finish-branch"]}
+{"prompt": "This same mistake keeps happening, let's remember it", "expect": ["capture-gotcha"]}
+{"prompt": "That's a recurring gotcha worth capturing", "expect": ["capture-gotcha"]}
+{"prompt": "It happened again, promote this to a lesson", "expect": ["capture-gotcha"]}
+{"prompt": "Plan and then implement the search feature", "expect": ["write-plan", "tdd-loop", "brainstorm-design"]}
+{"prompt": "Design, build, and test the webhook handler", "expect": ["brainstorm-design", "tdd-loop"]}
+{"prompt": "Review the code then we can ship", "expect": ["code-review", "finish-branch"]}
+{"prompt": "Debug the failing test and fix it", "expect": ["systematic-debug", "tdd-loop"]}
+{"prompt": "What's the weather like today?", "expect": []}
+{"prompt": "Tell me a joke about cats", "expect": []}
+{"prompt": "Summarize the history of the Roman empire", "expect": []}
+{"prompt": "Translate this sentence into French", "expect": []}
+{"prompt": "What time zone is Tokyo in?", "expect": []}
+{"prompt": "Recommend a good pasta recipe", "expect": []}
