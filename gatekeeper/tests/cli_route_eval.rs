@@ -78,7 +78,9 @@ fn routed_skills(root: &Path, prompt: &str) -> BTreeSet<String> {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Parse the "  - <skill> [<enforcement>]" lines.
+    // Parse the "  - <skill> [<enforcement>]" lines. Relies on `activate` NOT echoing the
+    // prompt back (verified) — if that invariant ever changes, the `prec_total > 0` guard in
+    // the test still fails loudly rather than silently mis-parsing.
     stdout
         .lines()
         .filter_map(|l| {
@@ -137,16 +139,19 @@ fn router_meets_recall_precision_floor() {
     }
     let _ = fs::remove_dir_all(&root);
 
-    let recall = if recall_total == 0 {
-        1.0
-    } else {
-        recall_hit as f64 / recall_total as f64
-    };
-    let precision = if prec_total == 0 {
-        1.0
-    } else {
-        prec_hit as f64 / prec_total as f64
-    };
+    // Fail LOUDLY (not via a 0/0 → 1.0 false pass) if the router produced nothing or the
+    // corpus carried no require-skill expectations — e.g. a broken binary path or a changed
+    // `- <skill>` output format. A self-gating CI eval must not silently pass on no data.
+    assert!(
+        recall_total > 0,
+        "no require-skill expectations parsed from the corpus"
+    );
+    assert!(
+        prec_total > 0,
+        "router produced no routed outputs across the whole corpus — parser or binary broken?"
+    );
+    let recall = recall_hit as f64 / recall_total as f64;
+    let precision = prec_hit as f64 / prec_total as f64;
     eprintln!(
         "router eval: recall={recall:.3} ({recall_hit}/{recall_total} require-skill expectations), \
          precision={precision:.3} ({prec_hit}/{prec_total} routed outputs); \
