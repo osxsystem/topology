@@ -226,6 +226,28 @@ impl ProjectConfig {
         Self::load_result(artifacts_root).unwrap_or_default_warn(&path)
     }
 
+    /// The replay command allowlist, extended with the project's own configured test commands.
+    /// Add-only: appends `test_command` and `[tdd] replay_test_command` (verbatim, deduped, empties
+    /// skipped) so a project that declares its test command does not ALSO have to duplicate it in
+    /// `[verify] allowed_command_prefixes`. Grants nothing beyond the existing allowlist knob (same
+    /// config.toml source); the security scanner still vetoes dangerous commands independently.
+    pub fn effective_allowed_prefixes(&self) -> Vec<String> {
+        let mut prefixes = self.allowed_command_prefixes.clone();
+        for cmd in [
+            self.test_command.as_deref(),
+            self.tdd_replay_test_command.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let trimmed = cmd.trim();
+            if !trimmed.is_empty() && !prefixes.iter().any(|p| p == trimmed) {
+                prefixes.push(trimmed.to_string());
+            }
+        }
+        prefixes
+    }
+
     /// Load and return a `LoadResult` — callers decide how to handle `ParseFailed`.
     pub fn load_result(artifacts_root: &Path) -> LoadResult {
         let path = artifacts_root.join("config.toml");
@@ -594,5 +616,82 @@ mod tests {
             Some("cargo test --test x".to_string())
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── effective_allowed_prefixes (slice #3 replay-allowlist portability) ────
+
+    #[test]
+    fn effective_includes_test_command() {
+        let cfg = ProjectConfig {
+            test_command: Some("swift test".into()),
+            ..ProjectConfig::default()
+        };
+        let eff = cfg.effective_allowed_prefixes();
+        assert!(eff.contains(&"swift test".to_string()));
+        // Add-only: defaults are preserved.
+        assert!(eff.contains(&"cargo test".to_string()));
+    }
+
+    #[test]
+    fn effective_includes_tdd_replay_command() {
+        let cfg = ProjectConfig {
+            tdd_replay_test_command: Some("pytest -q".into()),
+            ..ProjectConfig::default()
+        };
+        let eff = cfg.effective_allowed_prefixes();
+        assert!(eff.contains(&"pytest -q".to_string()));
+    }
+
+    #[test]
+    fn effective_dedupes_existing() {
+        let cfg = ProjectConfig {
+            test_command: Some("cargo test".into()),
+            ..ProjectConfig::default()
+        };
+        let eff = cfg.effective_allowed_prefixes();
+        let occurrences = eff.iter().filter(|p| *p == "cargo test").count();
+        assert_eq!(
+            occurrences, 1,
+            "cargo test must appear exactly once: {eff:?}"
+        );
+    }
+
+    #[test]
+    fn effective_skips_empty() {
+        let cfg = ProjectConfig {
+            test_command: Some("".into()),
+            tdd_replay_test_command: Some("   ".into()),
+            ..ProjectConfig::default()
+        };
+        let eff = cfg.effective_allowed_prefixes();
+        assert_eq!(eff, cfg.allowed_command_prefixes);
+    }
+
+    #[test]
+    fn effective_is_identity_when_unset() {
+        let cfg = ProjectConfig::default();
+        assert_eq!(
+            cfg.effective_allowed_prefixes(),
+            cfg.allowed_command_prefixes
+        );
+    }
+
+    #[test]
+    fn effective_unblocks_via_is_command_allowed() {
+        use crate::verify::is_command_allowed;
+        let cfg = ProjectConfig {
+            test_command: Some("swift test".into()),
+            ..ProjectConfig::default()
+        };
+        // Before: the raw allowlist rejects the configured command.
+        assert!(!is_command_allowed(
+            &["swift", "test"],
+            &cfg.allowed_command_prefixes
+        ));
+        // After: the effective allowlist accepts it.
+        assert!(is_command_allowed(
+            &["swift", "test"],
+            &cfg.effective_allowed_prefixes()
+        ));
     }
 }

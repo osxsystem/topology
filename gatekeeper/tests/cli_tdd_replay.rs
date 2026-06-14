@@ -391,23 +391,26 @@ fn tdd_parse_failed_exits_2() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// ── 7. replay mode with a NON-ALLOWLISTED test_command → fail-closed (exit 2) ─
+// ── 7. replay mode with an UNRUNNABLE test_command → fail-closed (exit 2) ─────
 
 #[test]
-fn replay_nonallowlisted_command_fails_closed() {
+fn replay_unrunnable_command_fails_closed() {
     // A vacuous repo (assert!(true) test commit then a production commit) in
-    // replay mode, but the configured `test_command` is `make test` — NOT in the
-    // default allowlist (cargo/just/git). A command that cannot run cannot prove
-    // the test was red at the merge-base, so the gate must FAIL CLOSED rather than
-    // certify a pass off a command it never executed.
+    // replay mode, with a configured `test_command` that CANNOT RUN — here a binary
+    // that does not exist on PATH. A command that never reaches a real exit cannot
+    // prove the test was red at the merge-base, so the gate must FAIL CLOSED rather
+    // than certify a pass off a command it never executed. This is the FM2 guard.
     //
-    // SOUNDNESS HOLE (the red): `replay_red_green` maps `verify::execute_step`'s
-    // `Err(_)` — which is exactly what a non-allowlisted command returns — to
-    // `Ok(ReplayVerdict::Pass)`. So today the gate emits a false `result:"pass"`
-    // and exits 0, re-opening FM2: a misconfigured replay command makes a vacuous
-    // `assert!(true)` test "pass" in replay mode.
+    // MECHANISM NOTE (slice #3): the replay-allowlist portability fix auto-includes
+    // the configured `test_command` in the effective allowlist, so a non-default
+    // command is no longer *rejected* by the allowlist. The genuine "never executed"
+    // path is therefore a SPAWN FAILURE: `execute_step` returns
+    // `Ok(StepResult { detail: "failed to spawn…" })`, which `replay_red_green` maps
+    // to `Indeterminate` (tdd.rs:317-321) → fail-closed. This test guards the FM2
+    // property via that spawn-failure path — independent of the allowlist mechanism,
+    // which is exactly the soundness property that must survive the portability fix.
     let (root, base) = build_replay_crate(
-        "noallow",
+        "unrunnable",
         "replay",
         "vac.rs",
         "#[test]\nfn vac() {\n    assert!(true);\n}\n",
@@ -415,10 +418,11 @@ fn replay_nonallowlisted_command_fails_closed() {
         "pub fn feat() {}\n",
     );
 
-    // Replay mode with a non-allowlisted top-level command.
+    // Replay mode with a command whose binary does not exist (auto-allowlisted by
+    // the slice-3 fix, but unspawnable).
     fs::write(
         root.join("docs").join("config.toml"),
-        "test_command = \"make test\"\n\n[tdd]\nmode = \"replay\"\n",
+        "test_command = \"topology-no-such-test-runner-xyzzy run\"\n\n[tdd]\nmode = \"replay\"\n",
     )
     .unwrap();
 
@@ -426,37 +430,36 @@ fn replay_nonallowlisted_command_fails_closed() {
 
     assert_eq!(
         code, 2,
-        "FAIL-OPEN: a non-allowlisted replay command cannot prove red and must \
-         fail closed with exit 2; got exit {code}; out: {out}"
+        "FAIL-OPEN: a replay command that cannot run (spawn failure) cannot prove \
+         red and must fail closed with exit 2; got exit {code}; out: {out}"
     );
-    // Tolerant fail-closed message check: SOME indication the command was not
-    // allowed / could not run — NOT a pass.
+    // Tolerant fail-closed message check: SOME indication the command could not run
+    // — NOT a pass.
     let lower = out.to_lowercase();
     assert!(
-        lower.contains("allow") || lower.contains("cannot"),
-        "expected a fail-closed message mentioning the command is not allowed / \
-         cannot run; out: {out}"
+        lower.contains("spawn") || lower.contains("cannot") || lower.contains("indeterminate"),
+        "expected a fail-closed message indicating the command could not run; out: {out}"
     );
 
     let _ = fs::remove_dir_all(&root);
 }
 
-// ── 8. history mode + non-allowlisted command → SHADOW logs skip, not pass ───
+// ── 8. history mode + unrunnable command → SHADOW logs skip, not pass ────────
 
 #[test]
-fn history_nonallowlisted_logs_skip_not_pass() {
+fn history_unrunnable_command_logs_skip_not_pass() {
     // Same vacuous repo, but `mode = "history"` (non-enforcing) with a
-    // non-allowlisted `make test` command. The legacy heuristic passes → exit 0.
-    // The replay could NOT run (non-allowlisted), so the burn-in SHADOW log must
-    // record `result:"skip"` — NOT `result:"pass"`. Logging a `pass` for a command
-    // that never executed poisons the false-block-rate burn-in with a phantom red.
+    // `test_command` whose binary does not exist. The legacy heuristic passes →
+    // exit 0. The replay could NOT run (spawn failure), so the burn-in SHADOW log
+    // must record `result:"skip"` — NOT `result:"pass"`. Logging a `pass` for a
+    // command that never executed poisons the false-block-rate burn-in with a
+    // phantom red. This is the FM2 burn-in-integrity guard.
     //
-    // The red: `replay_red_green` swallows the non-allowlist `Err(_)` to
-    // `Ok(ReplayVerdict::Pass)`, so `replay_after_heuristic` emits the shadow with
-    // `ShadowResult::Pass` ("red at merge-base") instead of taking its `Err`
-    // skip-logging branch. Today the SHADOW line carries `"result":"pass"`.
+    // MECHANISM NOTE (slice #3): the configured command is now auto-allowlisted, so
+    // the "never executed" path is the spawn failure → `Indeterminate` → `Skip`
+    // (tdd.rs:317-321, 538-549). This test guards the property via that path.
     let (root, base) = build_replay_crate(
-        "histnoallow",
+        "histunrunnable",
         "history",
         "vac.rs",
         "#[test]\nfn vac() {\n    assert!(true);\n}\n",
@@ -466,7 +469,7 @@ fn history_nonallowlisted_logs_skip_not_pass() {
 
     fs::write(
         root.join("docs").join("config.toml"),
-        "test_command = \"make test\"\n\n[tdd]\nmode = \"history\"\n",
+        "test_command = \"topology-no-such-test-runner-xyzzy run\"\n\n[tdd]\nmode = \"history\"\n",
     )
     .unwrap();
 
@@ -489,13 +492,69 @@ fn history_nonallowlisted_logs_skip_not_pass() {
     );
     assert!(
         !shadow_line.contains("\"result\":\"pass\""),
-        "BURN-IN POISONED: a non-allowlisted command that never ran must log \
+        "BURN-IN POISONED: a command that never ran must log \
          result:\"skip\", not result:\"pass\"; line: {shadow_line}"
     );
     assert!(
         shadow_line.contains("\"result\":\"skip\""),
         "expected the SHADOW line to log result:\"skip\" for a command that \
          could not run; line: {shadow_line}"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── 9. slice #3: an auto-included non-default command RUNS (locks the wiring) ─
+
+#[test]
+fn replay_autoincluded_command_runs_and_establishes_red() {
+    // slice #3 (replay-allowlist portability): a configured `test_command` that is
+    // NOT in the default allowlist (here `false`, which exists on PATH) is
+    // auto-included in the effective allowlist, so `execute_step` RUNS it instead of
+    // rejecting it. `false` exits nonzero, which the replay reads as red at base ⇒
+    // `ReplayVerdict::Pass` ⇒ the gate exits 0 and the SHADOW logs `result:"pass"`.
+    //
+    // NOTE: `false` is a degenerate always-nonzero stand-in chosen only because it is
+    // guaranteed runnable AND non-default — it proves the command is RUN (not
+    // rejected), not that a real test was exercised; the genuine-red contract is
+    // pinned separately by `replay_rejects_vacuous_test` / `replay_accepts_genuine_red_first`.
+    //
+    // PRE-FIX this command was rejected (not in allowed_command_prefixes) ⇒ `Err` ⇒
+    // `Indeterminate` ⇒ exit 2. So this test FAILS without the fix and locks the
+    // wiring of `effective_allowed_prefixes()` into `execute_step` (verify.rs:471).
+    let (root, base) = build_replay_crate(
+        "autoincl",
+        "replay",
+        "vac.rs",
+        "#[test]\nfn vac() {\n    assert!(true);\n}\n",
+        "feat.rs",
+        "pub fn feat() {}\n",
+    );
+
+    // A real, runnable, non-default command that exits nonzero (read as red at base).
+    fs::write(
+        root.join("docs").join("config.toml"),
+        "test_command = \"false\"\n\n[tdd]\nmode = \"replay\"\n",
+    )
+    .unwrap();
+
+    let (code, out) = run(&root, &["check", "tdd", "--feature", "x", "--base", &base]);
+
+    assert_eq!(
+        code, 0,
+        "an auto-included non-default command must RUN and establish red ⇒ exit 0 \
+         (pre-fix it was rejected ⇒ exit 2); got exit {code}; out: {out}"
+    );
+    let shadow_line = out
+        .lines()
+        .find(|l| l.starts_with("SHADOW ") && l.contains("\"check\":\"replay\""))
+        .unwrap_or_else(|| {
+            panic!("expected a `SHADOW ...\"check\":\"replay\"...` line; out: {out}")
+        });
+    assert!(
+        shadow_line.contains("\"result\":\"pass\""),
+        "expected replay to PASS (red established by the auto-included command that \
+         actually ran); line: {shadow_line}"
     );
 
     let _ = fs::remove_dir_all(&root);

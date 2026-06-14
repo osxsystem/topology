@@ -468,7 +468,7 @@ pub fn execute_step(
     }
 
     // Fail-closed: token-boundary allowlist
-    if !is_command_allowed(&argv, &cfg.allowed_command_prefixes) {
+    if !is_command_allowed(&argv, &cfg.effective_allowed_prefixes()) {
         return Err(format!(
             "command rejected: not in allowed_command_prefixes: {raw:?}"
         ));
@@ -656,6 +656,7 @@ pub fn static_analyse(text: &str, cfg: &ProjectConfig) -> StaticAnalysis {
     let block_count = blocks.len();
     let mut command_count = 0;
     let mut all_allowlisted = true;
+    let allowed = cfg.effective_allowed_prefixes();
 
     for block in &blocks {
         match block {
@@ -663,7 +664,7 @@ pub fn static_analyse(text: &str, cfg: &ProjectConfig) -> StaticAnalysis {
                 for step in steps {
                     command_count += 1;
                     let argv: Vec<&str> = step.raw_command.split_whitespace().collect();
-                    if !is_command_allowed(&argv, &cfg.allowed_command_prefixes) {
+                    if !is_command_allowed(&argv, &allowed) {
                         all_allowlisted = false;
                     }
                 }
@@ -977,7 +978,7 @@ fn run_legacy_shadow(
             continue;
         }
 
-        if !is_command_allowed(&argv, &cfg.allowed_command_prefixes) {
+        if !is_command_allowed(&argv, &cfg.effective_allowed_prefixes()) {
             emit_shadow(
                 "verify",
                 "replay",
