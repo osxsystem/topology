@@ -1,6 +1,16 @@
 # Topology
 
+> ## ⚠️ Archived / Discontinued
+>
+> **This project is no longer maintained.** Development stopped at [v0.12.0](https://github.com/osxsystem/topology/releases/tag/v0.12.0).
+>
+> Topology was an experiment in making an AI-agent development methodology *executable* — gates enforced by a Rust `gatekeeper` instead of soft rules. The experiment didn't pan out: the ceremony cost of the full gate sequence outweighed its benefit on real work, and the [portability re-measure](docs/2026-06-14-portability-experiment-remeasure.md) concluded only ~35% of the value was methodology (the rest was packaging). The remaining work to make ceremony proportional to blast radius was never finished.
+>
+> The repository is left read-only as a record. Fork freely if any of the ideas are useful to you.
+
 A **harness-native operator system** for building software with AI coding agents and humans *together* — a development methodology made executable. Built on **Rust** (the enforcement engine), **Bash** (hooks and install glue), and **Markdown** (skills, instincts, and the agent definition), and designed to run natively across **Claude Code, Codex, Cursor, and OpenCode**.
+
+**Latest release: [v0.12.0](https://github.com/osxsystem/topology/releases/latest)**
 
 Topology is a starter you own. It ships a thin, opinionated methodology enforced by **gates** (objective, checkable conditions) rather than **rules** (soft suggestions agents quietly skip). Fork it, swap the gates for your own taste, and grow the skill library reactively.
 
@@ -26,24 +36,31 @@ A methodology serves as a structured framework that defines roles, responsibilit
 topology/
 ├── AGENTS.md                  # the agent definition + bootstrap (portable across clients)
 ├── CLAUDE.md                  # symlink -> AGENTS.md (so Claude Code reads the same source)
-├── skills/                    # Markdown skills (the methodology + meta skills)
+├── skills/                    # Markdown skills (the gate sequence + meta skills)
 │   ├── _getting-started/
-│   ├── brainstorm-design/
-│   ├── write-plan/
-│   ├── tdd-loop/
-│   ├── systematic-debug/
-│   ├── verify-before-done/
-│   ├── code-review/
-│   └── finish-branch/
+│   ├── research-first/  brainstorm-design/  write-plan/
+│   ├── tdd-loop/  verify-before-done/  code-review/  finish-branch/
+│   ├── systematic-debug/  security-scanning/
+│   └── resume/  capture-gotcha/
+├── instincts/                 # always-on reasoning guardrails (one Markdown file each)
+├── security/                  # rules.toml: secret + dangerous-command scan rules
 ├── gatekeeper/                # Rust CLI that enforces the gates
 │   ├── Cargo.toml
-│   └── src/main.rs
+│   └── src/                   # main.rs + per-gate modules (tdd, verify, review, scan, adapt, doctor, learn, memory, …)
 ├── hooks/
 │   ├── skill-activation.sh    # UserPromptSubmit hook: forces skill evaluation
+│   ├── security-scan.sh       # PreToolUse + pre-commit scan veto
+│   ├── learn-capture.sh       # captures gotchas into the learn ledger
+│   ├── pre-commit.sh          # runs gate + scan checks before commit
 │   └── skill-rules.json       # keyword/file -> skill routing
+├── adapters/                  # per-harness mapping reference (adapt generates native configs)
+├── templates/                 # scaffolding templates (the governed-project contract)
+├── memory/                    # handoff artifact protocol + template
 └── scripts/
-    ├── install.sh             # build the binary + wire up the symlink/hooks
-    └── new-skill.sh           # scaffold a new skill from the template
+    ├── install.sh             # build/download the binary + wire up the symlink/hooks
+    ├── fetch-gatekeeper.sh    # download a prebuilt binary for this platform
+    ├── new-skill.sh           # scaffold a new skill from the template
+    └── …                      # build-payload, burn-in, metrics, shadow-stats helpers
 ```
 
 ## The core idea: gates, not rules
