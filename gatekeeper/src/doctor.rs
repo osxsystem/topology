@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::config;
 use crate::instinct;
 use crate::learn;
 use crate::scan;
@@ -73,6 +74,35 @@ pub fn parse_version_file(path: &Path) -> VersionProbe {
 /// test rather than just asserting values the test itself constructed.
 pub fn version_skew(vf: &VersionFile) -> bool {
     vf.version != version::tool()
+}
+
+/// Pure decision fn for the C6 approval-trailer-collision doctor probe.
+///
+/// Given a block of git trailer lines (folded `%(trailers)` output, the same rendering the gate
+/// reads at `main.rs:1710`) and the configured `agent_trailer_patterns`, returns
+/// `Some((matched_value, matched_pattern))` for the first `Co-Authored-By:` value that matches an
+/// agent pattern, or `None` if none match. Mirrors the design gate's matcher mechanics
+/// (`main.rs:1731-1759`): the key is matched case-insensitively,
+/// the value is the trimmed remainder after the 15-char `co-authored-by:` prefix, and patterns
+/// that fail to compile are skipped (a bad regex is not a positive).
+fn approval_trailer_collision(trailers: &str, patterns: &[String]) -> Option<(String, String)> {
+    for line in trailers.lines() {
+        let lc = line.to_lowercase();
+        if !lc.starts_with("co-authored-by:") {
+            continue;
+        }
+        // The key is fixed-length ASCII, so slicing the ORIGINAL line by the
+        // lowercase-key length is byte-safe and preserves the value's original case.
+        let value = line["co-authored-by:".len()..].trim();
+        for pattern in patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if re.is_match(value) {
+                    return Some((value.to_string(), pattern.clone()));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Run all doctor probes and print a report. Returns 0 (all ok) or 1 (any FAIL).
@@ -381,6 +411,12 @@ pub fn cmd_doctor(root: &Path, source: &RootSource) -> i32 {
     // settings.json no longer exists on disk — catches the worktree-portability break before it
     // surfaces as a runtime PreToolUse hook error. Issue #52.
     probe_settings_paths(&crate::project_root());
+
+    // ── approval-trailer collision (advisory, C6) ────────────────────────────
+    // Warn when recent authored commits carry an agent Co-Authored-By trailer that would
+    // collide with the design gate's approval_provenance check under approval="human-commit".
+    // Advisory only — never flips doctor to a failure.
+    probe_approval_trailer_collision(&crate::project_root(), &crate::artifacts_root());
 
     // ── Summary ─────────────────────────────────────────────────────────────
     if failures == 0 {
@@ -775,6 +811,63 @@ fn probe_settings_paths(project_root: &Path) {
     }
 }
 
+/// Advisory probe (C6): warn when recent authored commits carry an agent `Co-Authored-By`
+/// trailer that would collide with the design gate's `approval_provenance` check under
+/// `[design] approval = "human-commit"`.
+///
+/// Scope-gated to the resolved `human-commit` mode (the only mode where the collision can block),
+/// so it activates automatically if the roadmap flips the default. Reads the same folded
+/// `%(trailers)` rendering the gate reads (`main.rs:1710`), over recent non-merge commits. Advisory
+/// only: returns `()` and never touches the `failures` counter.
+fn probe_approval_trailer_collision(project_root: &Path, artifacts_root: &Path) {
+    let cfg = config::ProjectConfig::load(artifacts_root);
+    if cfg.design_approval != config::DesignApproval::HumanCommit {
+        println!(
+            "approval trailer collision: n/a (approval=status-line; provenance check is shadow)"
+        );
+        return;
+    }
+
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args([
+            "log",
+            "-n",
+            "20",
+            "--no-merges",
+            // Folded %(trailers) — the exact rendering the gate reads (main.rs:1710), so the
+            // probe's line-by-line match cannot diverge from the gate's.
+            "--format=%(trailers)",
+        ])
+        .output();
+    // Distinguish git *failure* (not a repo / no commits / git missing) from a successful run that
+    // simply found no trailers. Empty-but-successful output is the legitimate "commits exist, none
+    // carry a Co-Authored-By trailer" case, which must resolve to `ok`, not `n/a` — so it falls
+    // through to the matcher (which returns None on empty input) rather than short-circuiting here.
+    let stdout = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => {
+            println!("approval trailer collision: n/a (git history unavailable)");
+            return;
+        }
+    };
+
+    match approval_trailer_collision(&stdout, &cfg.design_agent_trailer_patterns) {
+        Some((value, pattern)) => println!(
+            "approval trailer collision: WARN: recent commits carry an agent Co-Authored-By trailer \
+             (\"{value}\") matching agent_trailer_patterns pattern \"{pattern}\"; under [design] \
+             approval=\"human-commit\" a human approval commit carrying this trailer would be read as \
+             agent self-approval and FAIL the design gate. Drop the always-add-Co-Authored-By rule \
+             from your harness/commit template for approval commits, or relax [design] \
+             agent_trailer_patterns."
+        ),
+        None => {
+            println!("approval trailer collision: ok (no agent trailer on recent authored commits)")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,5 +1029,99 @@ mod tests {
             hooks_dir.display()
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── approval_trailer_collision unit tests ─────────────────────────────────
+    // Pure decision fn for the C6 doctor probe: given a block of git trailer lines
+    // and the configured agent_trailer_patterns, returns Some((value, pattern)) on
+    // the first Co-Authored-By value that matches an agent pattern, else None.
+
+    #[test]
+    fn claude_co_author_matches_default_pattern() {
+        let trailers = "Signed-off-by: Jane <j@x>\n\
+             Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n";
+        let patterns = vec!["(?i)claude".to_string()];
+        let hit = approval_trailer_collision(trailers, &patterns);
+        assert!(
+            hit.is_some(),
+            "a Claude Co-Authored-By trailer must match (?i)claude"
+        );
+        let (value, pattern) = hit.unwrap();
+        assert_eq!(
+            pattern, "(?i)claude",
+            "the matched pattern must be reported"
+        );
+        assert!(
+            value.contains("Claude"),
+            "the matched value must be the trailer value; got: {value:?}"
+        );
+    }
+
+    #[test]
+    fn clean_human_trailers_no_match() {
+        let trailers = "Signed-off-by: Jane <j@x>\nReviewed-by: Bob <b@x>";
+        let patterns = vec!["(?i)claude".to_string(), "(?i)copilot".to_string()];
+        assert_eq!(
+            approval_trailer_collision(trailers, &patterns),
+            None,
+            "clean human trailers must not match any agent pattern"
+        );
+    }
+
+    #[test]
+    fn only_co_authored_by_key_examined() {
+        // The value contains "claude" but the key is Reviewed-by, not Co-Authored-By.
+        let trailers = "Reviewed-by: claude-bot <c@x>";
+        let patterns = vec!["(?i)claude".to_string()];
+        assert_eq!(
+            approval_trailer_collision(trailers, &patterns),
+            None,
+            "only the Co-Authored-By key is examined; a non-CoAuthored-By value must not match"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_key_and_non_default_pattern() {
+        // Lowercase key plus a non-default pattern.
+        let trailers = "co-authored-by: GitHub Copilot <c@x>";
+        let patterns = vec!["(?i)copilot".to_string()];
+        let hit = approval_trailer_collision(trailers, &patterns);
+        assert!(
+            hit.is_some(),
+            "a lowercase co-authored-by key with a Copilot value must match (?i)copilot"
+        );
+        let (value, pattern) = hit.unwrap();
+        assert_eq!(pattern, "(?i)copilot");
+        assert!(
+            value.contains("Copilot"),
+            "the matched value must be the trailer value; got: {value:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_pattern_skipped_valid_still_matches() {
+        // A bad regex in the list must be skipped (no panic) and a valid one still matches.
+        let trailers = "Co-Authored-By: Claude X <y>";
+        let patterns = vec!["(unclosed".to_string(), "(?i)claude".to_string()];
+        let hit = approval_trailer_collision(trailers, &patterns);
+        assert!(
+            hit.is_some(),
+            "an invalid regex must be skipped and the valid pattern must still match"
+        );
+        let (_value, pattern) = hit.unwrap();
+        assert_eq!(
+            pattern, "(?i)claude",
+            "the reported pattern must be the valid one, not the skipped bad one"
+        );
+    }
+
+    #[test]
+    fn empty_input_no_match() {
+        let patterns = vec!["(?i)claude".to_string()];
+        assert_eq!(
+            approval_trailer_collision("", &patterns),
+            None,
+            "empty trailer input must not match"
+        );
     }
 }
