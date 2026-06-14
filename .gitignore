@@ -11,6 +11,7 @@
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/agent-memory/
+.claude/settings.local.json
 
 # docs/memory/ is committed source (framework-repo handoff artifacts, ADR-0013).
 # Governed-project handoffs land under .claude/topology/memory/ in the project repo, not here.
