@@ -46,6 +46,7 @@ mod instinct;
 mod learn;
 mod memory;
 mod review;
+mod route;
 mod scan;
 mod tdd;
 mod verify;
@@ -91,6 +92,13 @@ pub(crate) static SUBCOMMANDS: &[SubcommandSpec] = &[
         synopsis: "Read a prompt on stdin, print routed skills.",
         known_flags: &[],
         handler: |args| cmd_activate(args),
+    },
+    SubcommandSpec {
+        name: "route",
+        usage: "USAGE:\n  gatekeeper route --paths <p1> [<p2>...]\n  gatekeeper route --staged-paths",
+        synopsis: "Route skills by file paths.",
+        known_flags: &["--paths", "--staged-paths"],
+        handler: |args| cmd_route(args),
     },
     SubcommandSpec {
         name: "check research",
@@ -625,6 +633,72 @@ fn cmd_activate(args: &[String]) -> i32 {
     }
     print!("{}", instinct::activate_section(&framework_root()));
     println!("You may not write production code before the design and plan gates pass.");
+    0
+}
+
+/// `route` — route skills by the file paths an edit touches (path-triggered routing).
+///
+/// Paths come from `--paths <p1> [<p2>...]` (the rest of the args) or from
+/// `git diff --cached --name-only` when `--staged-paths` is given. The routed skills are
+/// printed with the same grammar as `activate`, under a path-specific header.
+fn cmd_route(args: &[String]) -> i32 {
+    if let Some(code) = check_help_or_unknown(
+        "route",
+        args,
+        &["--paths", "--staged-paths"],
+        lookup_usage("route"),
+    ) {
+        return code;
+    }
+
+    let paths: Vec<String> = if let Some(pos) = args.iter().position(|a| a == "--paths") {
+        args[pos + 1..].to_vec()
+    } else if args.iter().any(|a| a == "--staged-paths") {
+        let output = Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .output();
+        match output {
+            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect(),
+            _ => {
+                eprintln!("gatekeeper route: failed to list staged paths");
+                return 1;
+            }
+        }
+    } else {
+        eprintln!(
+            "gatekeeper route: expected --paths <p1> [<p2>...] or --staged-paths\n{}",
+            lookup_usage("route")
+        );
+        return 2;
+    };
+
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+
+    let rules_path = framework_root().join("hooks").join("skill-rules.json");
+    let matched = match fs::read_to_string(&rules_path) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => route::route_by_paths(&v, &path_refs),
+            Err(e) => {
+                eprintln!("gatekeeper: skill-rules.json parse error: {e}");
+                return 1;
+            }
+        },
+        Err(_) => Vec::new(),
+    };
+
+    println!("Topology: evaluate your skills before acting.");
+    if matched.is_empty() {
+        println!("No path-routed skills matched. Still run `getting-started` to pick the gate.");
+    } else {
+        println!("Routed skills for these paths:");
+        for (name, enforcement) in matched {
+            println!("  - {name} [{enforcement}]");
+        }
+    }
     0
 }
 

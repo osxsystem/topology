@@ -321,9 +321,12 @@ canonical usage list.
 |---|---|
 | `gatekeeper list` | List available skills and their descriptions. |
 | `gatekeeper activate` | Read a prompt on **stdin**, print the skills it routes in plus the always-on instincts. (This is what the `UserPromptSubmit` hook runs.) |
+| `gatekeeper route --paths <p1> [<p2>...]` | Route skills by the **file paths** an edit touches (matched against each skill's `pathTriggers.globs`) rather than prompt keywords. |
+| `gatekeeper route --staged-paths` | Same, but takes the touched paths from `git diff --cached --name-only` (the staged set). |
 
 ```bash
 echo "fix the failing login test" | gatekeeper activate
+gatekeeper route --paths hooks/security-scan.sh
 ```
 
 ### Gate checks — `gatekeeper check <gate>`
