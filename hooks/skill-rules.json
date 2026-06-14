@@ -63,6 +63,9 @@
       "priority": "high",
       "promptTriggers": {
         "keywords": ["secret", "credential", "api key", "scan", "security", "dangerous command", "pre-commit"]
+      },
+      "pathTriggers": {
+        "globs": ["hooks/*", "security/*", "gatekeeper/src/scan.rs", ".claude/settings.json", "*secret*"]
       }
     },
     "finish-branch": {
